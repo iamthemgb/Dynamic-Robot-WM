@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from dynamic_robot_dataset.cli import (
+    _annotate_plans_with_counterfactual_hashes,
     _feature_unit,
     _native_plans_from_adapter,
     _planned_episode_declarations,
@@ -174,10 +175,19 @@ def test_general_native_generation_rebinds_real_actions_and_sweeps() -> None:
         assert plan.options["backend"] == "native_mujoco"
         assert plan.options["native_scenario_spec"]["branch"] == "success_seeking"
     declarations = _planned_episode_declarations(native)
+    annotated = _annotate_plans_with_counterfactual_hashes(native, declarations)
     assert len(declarations) == 1
     assert declarations[0].relation.value == "physics"
     assert declarations[0].expected_member_count == 5
     assert declarations[0].intervention_fields == ["gravity"]
+    assert set(declarations[0].expected_member_plan_hashes) == {
+        plan.episode_uuid for plan in native
+    }
+    assert all(
+        plan.options["planned_counterfactual_fixed_hashes"]["physics"]
+        == declarations[0].fixed_field_hashes
+        for plan in annotated
+    )
 
 
 def test_pilot_hours_are_unique_episode_allocations_and_not_submitted() -> None:

@@ -648,6 +648,9 @@ def _planned_episode_declarations(plans: Sequence[Any]) -> list[CounterfactualFa
                 "initial_state": sha256_json(siblings[0].scene_parameters),
                 "physics": sha256_json(siblings[0].physics),
             },
+            expected_member_plan_hashes={
+                value.episode_uuid: value.config_hash for value in siblings
+            },
         )
         declaration.validate()
         declarations.append(declaration)
@@ -698,10 +701,56 @@ def _planned_episode_declarations(plans: Sequence[Any]) -> list[CounterfactualFa
                 "action": sha256_json(siblings[0].action_hash),
                 "nonintervened_physics": next(iter(nonintervened)),
             },
+            expected_member_plan_hashes={
+                value.episode_uuid: value.config_hash for value in siblings
+            },
         )
         declaration.validate()
         declarations.append(declaration)
     return sorted(declarations, key=lambda value: (value.relation.value, value.family_id))
+
+
+def _annotate_plans_with_counterfactual_hashes(
+    plans: Sequence[Any],
+    declarations: Sequence[CounterfactualFamilyRecord],
+) -> list[Any]:
+    """Persist the immutable declaration hashes into ordinary run records."""
+
+    by_key = {
+        (declaration.relation, declaration.family_id): declaration
+        for declaration in declarations
+    }
+    annotated: list[Any] = []
+    for plan in plans:
+        hashes: dict[str, dict[str, str]] = {}
+        action = by_key.get(
+            (CounterfactualRelation.ACTION, str(plan.counterfactual_bundle_id))
+        )
+        if action is not None:
+            hashes[CounterfactualRelation.ACTION.value] = dict(
+                action.fixed_field_hashes
+            )
+        if plan.physics_counterfactual_family_id:
+            physics = by_key.get(
+                (
+                    CounterfactualRelation.PHYSICS,
+                    str(plan.physics_counterfactual_family_id),
+                )
+            )
+            if physics is not None:
+                hashes[CounterfactualRelation.PHYSICS.value] = dict(
+                    physics.fixed_field_hashes
+                )
+        annotated.append(
+            replace(
+                plan,
+                options={
+                    **dict(plan.options),
+                    "planned_counterfactual_fixed_hashes": hashes,
+                },
+            )
+        )
+    return annotated
 
 
 def _command_inventory(arguments: argparse.Namespace) -> int:
@@ -861,6 +910,9 @@ def _command_generate(arguments: argparse.Namespace) -> int:
     if backend_name == "native_mujoco":
         plans = _native_plans_from_adapter(plans, config)
     planned_declarations = _planned_episode_declarations(plans)
+    plans = _annotate_plans_with_counterfactual_hashes(
+        plans, planned_declarations
+    )
     if arguments.dry_run:
         _json_print(
             {
