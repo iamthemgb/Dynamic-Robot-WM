@@ -1,0 +1,59 @@
+schema_version: dynamic-robot-failure-codes/v1
+success_code: none
+codes:
+  unexpected_failure: Objective evaluator rejected a nominal success-seeking rollout.
+  spatial_near_miss: Target and tool did not enter the required spatial corridor.
+  timing_near_miss: Tool arrived outside the valid interaction interval.
+  no_contact: Required contact never occurred.
+  contact_without_completion: Contact occurred but the task objective was not completed.
+  slip: Object contacted or entered the tool and subsequently escaped.
+  unstable_retention: Object was not retained through the required terminal interval.
+  wrong_action: Action was intentionally incorrect or directed away from the target.
+  no_op: No meaningful action was commanded.
+  bad_rebound_prediction: Interception used an incorrect rebound prediction.
+  floor_contact: Object reached the floor when the task required interception.
+  excessive_penetration: Physics QC detected unacceptable interpenetration.
+  unstable_physics: Simulation produced reset, divergence, or unexplained energy gain.
+  cropped_event: Critical event was outside both camera views.
+  truncated_outcome: Clip ended before sufficient outcome evidence was observed.
+  cloth_metric_failed: Cloth objective metric did not meet its configured threshold.
+  rope_metric_failed: Rope objective metric did not meet its configured threshold.
+  unintended_snag: Rope snagged outside an intended fixture contact region.
+  ring_not_crossed: Required rope section did not cross and remain beyond the ring plane.
+  soft_body_metric_failed: Soft-body objective metric did not meet its configured threshold.
+  label_unverified: No calibrated objective evaluator is available.
+  controller_no_op: The controller was disabled or issued no effective task motion.
+  receptacle_near_miss: The receptacle approached but did not enter the required catch corridor.
+  receptacle_missed_object: The receptacle remained outside the required catch corridor.
+  object_not_retained: The object contacted or entered the receptacle but escaped before the terminal check.
+  tool_near_miss: The interception tool approached but did not contact the rolling object.
+  tool_missed_rolling_object: The interception tool did not contact the rolling object.
+  object_not_retained_in_goal: Tool contact occurred but the rolling object did not settle inside the goal region.
+  paddle_missed_projectile: The projectile did not contact the rebound paddle.
+  paddle_near_miss: The projectile passed close to, but did not contact, the rebound paddle.
+  incorrect_rebound_direction: Paddle contact occurred but the measured outgoing direction missed the objective corridor.
+  target_region_not_contacted: The commanded cloth target region was not contacted.
+  insufficient_cloth_displacement: Cloth target-region displacement remained below the objective threshold.
+  corner_not_grasped: The required cloth corner was not acquired.
+  insufficient_corner_lift: The required cloth corner did not exceed the lift-height threshold.
+  fold_edge_not_grasped: The required cloth fold edge was not acquired.
+  insufficient_fold_overlap: The measured cloth overlap or mirror alignment remained below threshold.
+  cloth_not_grasped: The cloth manipulation proxy or gripper did not acquire the required region.
+  cloth_spill_outside_box: Too much cloth area remained outside the target box.
+  coil_geometry_not_formed: Rope curvature and endpoint geometry did not form the required coil.
+  endpoint_not_dragged_to_target: The rope endpoint did not reach the drag target region.
+  rope_not_draped_over_support: Rope segments did not occupy both required sides of the support.
+  wave_amplitude_or_frequency_too_low: The rope wave metric remained below its amplitude or oscillation threshold.
+  insufficient_rope_sweep: Rope swept area or displacement remained below threshold.
+  rope_did_not_cross_and_remain_beyond_ring: The specified rope section failed the ring-plane crossing and retention test.
+  insufficient_tug_displacement: Rope endpoint separation or tension displacement remained below threshold.
+  rope_not_twirl_elevated: The required rope fraction did not remain elevated during the twirl.
+  insufficient_wrap_around_post: Rope winding angle around the post remained below threshold.
+  insufficient_compression: Soft-body compression remained below the objective threshold.
+  insufficient_indentation_depth: Soft-body indentation remained below the objective threshold.
+  insufficient_tensile_strain: Soft-body tensile strain remained below the objective threshold.
+  insufficient_rebound_height: Soft-body rebound height remained below the objective threshold.
+  legacy_proxy_quarantined: A legacy assistance/scripted-motion proxy is retained only for reproducibility and has no objective release label.
+rules:
+  task_success_false_forbids: [none, null, ""]
+  unverified_requires_label_status: unverified

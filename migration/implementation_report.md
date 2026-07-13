@@ -1,0 +1,99 @@
+# Migration implementation report
+
+Date: 2026-07-13
+
+## Result
+
+The read-only source-copy phase is complete. It selected and copied the
+accessible canonical non-fluid generators, retained meaningful version
+differences, and recorded missing, duplicate, scripted, preview, and development
+lineages without modifying any source tree. This is not a declaration that
+native generator integration or end-to-end migration acceptance is complete.
+
+- **148** allowlisted files (**1,418,073 bytes**) were copied byte-for-byte:
+  59 from mzl7, 29 from zl664, and 60 from zss8.
+- All 148 source-after-copy, source-at-copy snapshot, and legacy-copy SHA-256
+  values match. No source file changed during migration.
+- `source_mapping.yaml` contains one record for every copied file: 123 name a
+  maintained adapter/evaluator target, while 25 documentation and launcher
+  records deliberately have `new_refactored_path: null` because they are
+  provenance-only.
+- `asset_catalog.parquet` contains 4,584 external descriptor records and a
+  non-null SHA-256 for every record. No external asset repository was copied.
+- Generated videos, trajectories, datasets, logs, caches, environments,
+  backups, pilots, debug/smoke outputs, third-party trees, and fluids were not
+  copied.
+
+## Canonical decisions
+
+| Unified category | Selected lineage | Status |
+|---|---|---|
+| Cloth | mzl7 neutral-tabletop and kitchen packages; continuous materials retained as a kitchen mode | Copied; labels and assisted grasps require canonical evaluation/flags |
+| Rolling interception | mzl7 `ball_roll_interception_scripts` | Exact production package copied; success-conditioned retry must not survive refactoring |
+| Projectile interception | mzl7 `projectile_ball_catch_robocasa_kitchen_scenes_scripts` | Available implementation matches observed production family IDs, defaults, and metadata schema; copied with historical-name and behavioral uncertainty |
+| Robotiq catch v1 | zl664 current Robotiq package and MuJoCo support | Copied; `_gpu` output excluded as duplicate trajectory lineage |
+| Franka catch v1/v2 | zss8 current Franka catch package | Copied; versions remain explicit because timing, images, trajectories, and outcomes differ |
+| Scripted bounce | zss8 current bounce package | Copied only for reproducibility and permanently classified `scripted_motion` |
+| Robotiq catch v2 | zss8 Robotiq copy | Copied as a meaningful camera/control/visual variant of v1 |
+| Rope | zss8 per-view package | Copied; composite output excluded and equality/snags require explicit treatment |
+| Soft body | zl664 preview package | Copied as current accessible source; no output becomes release-eligible without verified metrics |
+
+The compared but unselected projectile forks are documented with component tree
+hashes in `source_inventory.json`. Hashes and diffs establish that they are
+related forks with divergent scene/variant code. Any predecessor ordering is an
+inference from wrapper references, names, and feature accretion because no source
+history is available.
+
+## Remaining blockers and uncertainties
+
+1. The historical projectile package named by production Slurm,
+   `scripts_mujoco_projectile_catch_robocasa_train2500_yaml_scenes`, does not
+   exist at the source root. The selected available package matches the observed
+   production interface, defaults, and metadata schema. That similarity does not
+   prove equivalent rollout behavior or byte identity to the missing package.
+2. mzl7's `scripts_mujoco_nominal_catch` and
+   `scripts_mujoco_lat_drift_catch` still return `EACCES`. Accessible zl664/zss8
+   catch implementations let the selected migration scope proceed without those
+   directories. Their contents were not inspected, and no source-equivalence or
+   feature-parity claim is made.
+3. The selected source trees are not Git worktrees. Provenance uses file and
+   tree SHA-256 values instead of fabricated commits.
+4. RobotWin assets are SAPIEN-oriented. They require explicit conversion,
+   collision, articulation, and scale validation before MuJoCo use.
+5. Physics/label defects listed in `known_issues.md` remain refactoring and QC
+   gates; copying a legacy source does not endorse its labels or physics.
+
+## Artifacts
+
+- `source_inventory.json`: evidence-based selected/missing component inventory
+  and grouped exclusion status. Its broad excluded-lineage record is not an
+  exhaustive per-directory manifest; see `known_issues.md` for the granularity
+  boundary.
+- `source_mapping.yaml`: exact 148-file migration ledger.
+- `source_before_after_hashes.json`: source immutability and copy-integrity proof.
+- `known_issues.md`: canonical/excluded table and concrete label/physics issues.
+- `migration_plan.md`: fixed lineage, schema, asset, and validation decisions.
+- `asset_catalog.parquet`: external asset descriptor inventory.
+- `legacy_sources/{mzl7,zl664,zss8}`: immutable byte-identical snapshots.
+
+The maintained generator code must use the new common CLI and schema; legacy
+Slurm files are provenance only because they contain stale absolute paths and,
+in one case, the missing historical module name.
+
+## Maintained implementation boundary
+
+The current refactored family layer implements the common planning, identity,
+state/action/physics separation, objective evaluators, failure codes, physics
+checks, and exact smoke interface. Its rigid families use named abstract
+free-contact solvers (`native_mujoco=false`), while cloth, rope, soft-body, and
+legacy cases use explicitly quarantined scripted geometry/response proxies.
+These are useful for deterministic schema and pipeline validation, but they are
+not native replacements for the copied Franka, Robotiq, MuJoCo-flex, or rope
+generators. All diagnostic-renderer/proxy records carry exclusion flags and do
+not enter the default training manifest. Native embodiment and renderer
+integration remains a production scale-up blocker.
+
+In `source_mapping.yaml`, `new_refactored_path` names the maintained adapter or
+evaluator target and `major_changes` records the required treatment. Neither
+field claims that every legacy controller, camera, robot state, or task variant
+has already reached native feature parity.

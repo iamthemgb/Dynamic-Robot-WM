@@ -1,0 +1,62 @@
+schema_version: dynamic-robot-dataset/v1
+coordinate_convention:
+  units: SI
+  handedness: right
+  up_axis: +Z
+  quaternion_order: WXYZ
+  pose_order: position_then_quaternion
+  default_velocity_frame: world
+identity_required:
+  - episode_uuid
+  - episode_index
+  - split_group_id
+  - counterfactual_bundle_id
+  - physics_counterfactual_family_id
+  - scene_seed
+  - branch_seed
+  - family
+  - subfamily
+  - variant
+  - intended_branch
+  - actual_outcome
+  - task_success
+  - failure_mode
+  - label_status
+  - release_tier
+  - source_generator
+  - source_generator_version
+  - generator_git_commit
+  - config_hash
+  - simulator_name
+  - simulator_version
+  - renderer
+  - action_mode
+modalities:
+  persistent_physics:
+    named_values: true
+    validity_mask: true
+    implementation_mask: true
+  transient_state:
+    named_fields: true
+    frame_aligned: true
+  action:
+    named_fields: true
+    action_mode_required: true
+  contacts:
+    long_format: true
+  cameras:
+    intrinsics_and_extrinsics_required: true
+assistance_required:
+  - dynamics_mode
+  - assisted_grasp
+  - assisted_retention
+  - equality_constraint_active
+  - latch_active
+  - constraint_activation_time
+  - constraint_deactivation_time
+release_policy:
+  default_requires:
+    label_status: verified_objective
+    physics_qc_pass: true
+    hard_qc_pass: true
+    release_tier: free_contact

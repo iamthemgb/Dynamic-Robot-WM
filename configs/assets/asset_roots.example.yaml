@@ -1,0 +1,18 @@
+schema_version: dynamic-robot-assets/v1
+roots:
+  robocasa:
+    environment: ROBOCASA_ROOT
+    default: /gpfs/radev/project/sous/mzl7/robocasa
+  robotwin:
+    environment: ROBOTWIN_ROOT
+    default: /gpfs/radev/project/sous/zl664/demo_mujoco_arm_gripper/third_party/robotwin_1_0
+  robotwin_2:
+    environment: ROBOTWIN_2_ROOT
+    default: /gpfs/radev/project/sous/zl664/demo_mujoco_arm_gripper/third_party/robotwin_2_0
+  mujoco_menagerie:
+    environment: MUJOCO_MENAGERIE_ROOT
+    default: /gpfs/radev/project/sous/zl664/demo_mujoco_arm_gripper/third_party/mujoco_menagerie
+policy:
+  copy_external_assets: false
+  require_notice_path: true
+  hash_referenced_files: true

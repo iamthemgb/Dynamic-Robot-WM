@@ -1,0 +1,17 @@
+schema_version: dynamic-robot-randomization/v1
+background_mix:
+  clean_franka_lab: 0.60
+  robocasa_kitchen_tabletop: 0.25
+  robotwin_cluttered_tabletop: 0.15
+bundle_invariants:
+  - background_style
+  - scene_assets
+  - lighting
+  - camera_poses
+  - object_appearance
+  - object_geometry
+rules:
+  independent_of_intended_branch: true
+  independent_of_actual_outcome: true
+  physics_family_visuals_fixed: true
+

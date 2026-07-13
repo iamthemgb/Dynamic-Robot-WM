@@ -1,0 +1,27 @@
+schema_version: dynamic-robot-camera/v1
+resolution: [832, 480]
+fps: 30
+pixel_format: yuv420p
+codec: h264
+views:
+  main:
+    role: close_three_quarter_external
+    distortion_model: none
+    near_m: 0.01
+    far_m: 50.0
+  secondary:
+    role_by_family:
+      falling_catch: side
+      rolling_interception: top_oblique
+      projectile_rebound: side
+      cloth: top_oblique
+      rope: top_oblique
+      soft_body: side
+    distortion_model: none
+    near_m: 0.01
+    far_m: 50.0
+qc:
+  require_event_visible_in_at_least_one_view: true
+  require_target_visible_fraction: 0.90
+  reject_black_void_fraction_above: 0.35
+

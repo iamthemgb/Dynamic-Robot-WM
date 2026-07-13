@@ -1,0 +1,4 @@
+-r base.txt
+mujoco==3.10.0
+scipy>=1.13,<2
+

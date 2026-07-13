@@ -1,0 +1,20 @@
+schema_version: dynamic-robot-splits/v1
+seed: dynamic-robot-split-v1
+fractions:
+  train: 0.90
+  validation: 0.05
+  test: 0.05
+group_keys:
+  - split_group_id
+  - counterfactual_bundle_id
+  - physics_counterfactual_family_id
+  - scene_seed
+  - parent_episode_uuid
+prevent_near_duplicate_leakage: true
+ood_manifests:
+  - unseen_object_assets
+  - unseen_backgrounds
+  - unseen_physics_ranges
+  - unseen_camera_poses
+  - unseen_tool_geometries
+

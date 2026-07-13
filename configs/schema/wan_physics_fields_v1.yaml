@@ -1,0 +1,39 @@
+schema_version: wan-physics-fields/v1
+fields:
+  - gravity_x_m_s2
+  - gravity_y_m_s2
+  - gravity_z_m_s2
+  - mass_kg
+  - radius_m
+  - static_friction
+  - dynamic_friction
+  - torsional_friction
+  - rolling_friction
+  - restitution
+  - contact_stiffness_n_m
+  - density_kg_m3
+  - thickness_m
+  - linear_damping
+  - angular_damping
+  - young_modulus_pa
+  - poisson_ratio
+  - stretch_stiffness
+  - bend_stiffness
+  - shear_stiffness
+  - twist_stiffness
+  - rope_length_m
+  - rope_radius_m
+  - rope_linear_density_kg_m
+  - cloth_areal_density_kg_m2
+  - table_friction
+  - gripper_friction
+  - air_drag
+  - fluid_density_kg_m3
+  - sim_timestep_s
+  - control_timestep_s
+  - video_timestep_s
+  - deformable_edge_damping_source_units
+notes:
+  fluid_density_kg_m3: Reserved for loader compatibility and always masked in this non-fluid repository.
+  static_friction: Mask unless the simulator/source explicitly implements a static coefficient.
+  restitution: Use measured effective restitution when exact Newton restitution is not implemented.

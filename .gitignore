@@ -1,0 +1,31 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Smoke artifacts stay local. Keep small reports and contact sheets reviewable.
+outputs/smoke_tests/**/data/
+outputs/smoke_tests/**/videos/
+outputs/smoke_tests/**/high_rate/
+outputs/smoke_tests/**/events/
+outputs/smoke_tests/**/objects/
+outputs/smoke_tests/**/tracks/
+outputs/smoke_tests/**/*.mp4
+outputs/smoke_tests/**/*.parquet
+outputs/smoke_tests/**/*.npz
+outputs/smoke_tests/**/*.partial
+outputs/smoke_tests/**/.records/
+outputs/smoke_tests/**/.staging/
+outputs/smoke_tests/**/.finalize_context.json
+
+# Local asset roots and resolved run state are machine-specific.
+configs/assets/asset_roots.local.yaml
+*.resolved.yaml
+*.lock.json

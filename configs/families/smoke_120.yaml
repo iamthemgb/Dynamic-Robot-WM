@@ -1,0 +1,26 @@
+schema_version: dynamic-robot-smoke/v1
+name: canonical_smoke_120
+max_episode_branches: 120
+views: [main, secondary]
+camera_preset: two_view_832x480
+background_styles:
+  - clean_franka_lab
+  - robocasa_kitchen_tabletop
+  - robotwin_cluttered_tabletop
+counts:
+  falling_catch: 24
+  rolling_interception: 16
+  projectile_rebound: 30
+  cloth: 16
+  rope: 18
+  soft_body: 12
+  legacy_proxy_quarantine: 4
+validation:
+  require_objective_success_and_failure:
+    - falling_catch
+    - rolling_interception
+    - projectile_rebound
+    - cloth
+    - rope
+  require_objective_cloth_metric: true
+  run_wan_roundtrip: true
