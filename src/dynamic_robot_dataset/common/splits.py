@@ -138,14 +138,52 @@ class SplitAssigner:
             Split.VALIDATION: len(values) * self.validation_fraction,
             Split.TEST: len(values) * self.test_fraction,
         }
-        counts = {split: 0 for split in targets}
+        counts: dict[Split, int] = {split: 0 for split in targets}
         tie_order = {Split.TRAIN: 0, Split.VALIDATION: 1, Split.TEST: 2}
+        group_splits: dict[str, Split] = {}
         for group_id, indices in groups:
             split = max(
                 targets,
                 key=lambda candidate: (targets[candidate] - counts[candidate], -tie_order[candidate]),
             )
+            group_splits[group_id] = split
             counts[split] += len(indices)
+
+        # A large connected component encountered near a capacity boundary can
+        # overshoot one bucket even when later small groups could repair the
+        # ratio.  Deterministic single-group moves minimize total squared count
+        # error without ever breaking a leakage component.
+        def allocation_error(candidate_counts: Mapping[Split, int]) -> float:
+            return sum(
+                (candidate_counts[split] - target) ** 2
+                for split, target in targets.items()
+            )
+
+        while True:
+            current_error = allocation_error(counts)
+            best_move: tuple[
+                tuple[float, int, int], str, Split, Split, dict[Split, int]
+            ] | None = None
+            for group_index, (group_id, indices) in enumerate(groups):
+                source = group_splits[group_id]
+                size = len(indices)
+                for destination in targets:
+                    if destination == source:
+                        continue
+                    candidate_counts = dict(counts)
+                    candidate_counts[source] -= size
+                    candidate_counts[destination] += size
+                    error = allocation_error(candidate_counts)
+                    key = (error, group_index, tie_order[destination])
+                    if error < current_error and (best_move is None or key < best_move[0]):
+                        best_move = (key, group_id, source, destination, candidate_counts)
+            if best_move is None:
+                break
+            _, group_id, _, destination, counts = best_move
+            group_splits[group_id] = destination
+
+        for group_id, indices in groups:
+            split = group_splits[group_id]
             for index in indices:
                 record = values[index]
                 assignments[index] = SplitAssignment(

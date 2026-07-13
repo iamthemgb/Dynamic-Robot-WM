@@ -21,6 +21,7 @@ from dynamic_robot_dataset.common.paths import (
     portable_relative_path,
 )
 from dynamic_robot_dataset.common.provenance import environment_hash
+from dynamic_robot_dataset.common.qc import exact_duplicate_split_leakage
 from dynamic_robot_dataset.common.schema import (
     DynamicsMode,
     EpisodeRecord,
@@ -220,6 +221,69 @@ def test_counterfactual_relations_stay_in_one_split() -> None:
     assignments = SplitAssigner(seed=11).assign(records)
     assert len({assignment.split for assignment in assignments}) == 1
     assert validate_no_split_leakage(records, assignments) == []
+
+
+def test_identical_state_trajectories_stay_in_one_split() -> None:
+    records = [
+        _episode(
+            0,
+            counterfactual_bundle_id="bundle-a",
+            physics_counterfactual_family_id="physics-a",
+            split_group_id="scene-a",
+            extras={"trajectory_hash": "same-physical-trajectory"},
+        ),
+        _episode(
+            1,
+            counterfactual_bundle_id="bundle-b",
+            physics_counterfactual_family_id="physics-b",
+            split_group_id="scene-b",
+            scene_seed=999,
+            extras={"trajectory_hash": "same-physical-trajectory"},
+        ),
+    ]
+    assignments = SplitAssigner(seed=17).assign(records)
+    assert len({assignment.split_group_id for assignment in assignments}) == 1
+    assert len({assignment.split for assignment in assignments}) == 1
+
+
+def test_exact_video_duplicates_crossing_splits_are_leakage() -> None:
+    group = [[
+        "00000000-0000-4000-8000-000000000000:observation.images.main",
+        "00000000-0000-4000-8000-000000000001:observation.images.main",
+    ]]
+    split_by_uuid = {
+        "00000000-0000-4000-8000-000000000000": "train",
+        "00000000-0000-4000-8000-000000000001": "test",
+    }
+    problems = exact_duplicate_split_leakage(group, split_by_uuid)
+    assert len(problems) == 1
+    assert "exact duplicate video group crosses splits" in problems[0]
+
+
+def test_finite_split_assignment_rebalances_whole_groups() -> None:
+    records = []
+    index = 0
+    for group_index, group_size in enumerate((18, 16, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 1, 1)):
+        for _ in range(group_size):
+            records.append(
+                _episode(
+                    index,
+                    counterfactual_bundle_id=f"bundle-{group_index}",
+                    physics_counterfactual_family_id=f"physics-{group_index}",
+                    split_group_id=f"group-{group_index}",
+                    scene_seed=group_index,
+                )
+            )
+            index += 1
+    assignments = SplitAssigner(seed=0).assign(records)
+    counts = {
+        split: sum(assignment.split == split for assignment in assignments)
+        for split in ("train", "validation", "test")
+    }
+    assert sum(counts.values()) == len(records)
+    assert abs(counts["train"] - 0.90 * len(records)) <= 5
+    assert abs(counts["validation"] - 0.05 * len(records)) <= 5
+    assert abs(counts["test"] - 0.05 * len(records)) <= 5
 
 
 def test_split_validator_catches_scene_and_parent_leakage() -> None:

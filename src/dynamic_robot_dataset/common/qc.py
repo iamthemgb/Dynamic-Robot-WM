@@ -218,6 +218,26 @@ class DatasetQCReport:
         }
 
 
+def exact_duplicate_split_leakage(
+    duplicate_groups: Sequence[Sequence[str]], split_by_uuid: Mapping[str, str]
+) -> list[str]:
+    """Describe byte-identical video groups assigned to multiple splits."""
+
+    problems: list[str] = []
+    for group in duplicate_groups:
+        episode_uuids = {item.split(":", 1)[0] for item in group}
+        splits = {
+            split_by_uuid[episode_uuid]
+            for episode_uuid in episode_uuids
+            if episode_uuid in split_by_uuid
+        }
+        if len(splits) > 1:
+            problems.append(
+                f"exact duplicate video group crosses splits {sorted(splits)}: {list(group)}"
+            )
+    return sorted(problems)
+
+
 def _frame_signature(frame: bytes, width: int, height: int) -> int:
     luminance: list[int] = []
     for row in range(8):
@@ -709,12 +729,25 @@ class QCValidator:
         leakage = validate_no_split_leakage(records)
         global_failures = [f"split leakage: {value}" for value in leakage]
         release_uuids = {record.episode_uuid for record in records if record.release_eligible}
+        split_by_uuid = {record.episode_uuid: record.split.value for record in records}
+        global_failures.extend(exact_duplicate_split_leakage(duplicate_groups, split_by_uuid))
+        exact_duplicate_warnings: list[str] = []
         for group in duplicate_groups:
-            if any(item.split(":", 1)[0] in release_uuids for item in group):
+            episode_uuids = {item.split(":", 1)[0] for item in group}
+            duplicate_splits = {
+                split_by_uuid[episode_uuid]
+                for episode_uuid in episode_uuids
+                if episode_uuid in split_by_uuid
+            }
+            if len(duplicate_splits) > 1:
+                continue
+            elif episode_uuids & release_uuids:
                 global_failures.append(f"exact duplicate release video: {group}")
+            else:
+                exact_duplicate_warnings.append(f"exact duplicate nonrelease video: {group}")
         if any(record.release_eligible and record.split.value == "unassigned" for record in records):
             global_failures.append("release-eligible episodes remain split=unassigned")
-        global_warnings = [
+        global_warnings = exact_duplicate_warnings + [
             f"approximate duplicate candidate (Hamming distance {distance}): {left}, {right}"
             for left, right, distance in perceptual_pairs
         ]

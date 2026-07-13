@@ -24,6 +24,7 @@ from PIL import Image, ImageDraw
 from .common.cameras import CameraCalibration, invert_rigid_transform
 from .common.contacts import normalize_assistance, select_task_event_time
 from .common.episode_writer import EpisodeWriter
+from .common.hashing import sha256_json
 from .common.paths import atomic_write_json
 from .common.provenance import GenerationProvenance, environment_hash, get_git_commit
 from .common.qc import validate_dataset
@@ -371,6 +372,30 @@ def _record(result: SimulationResult, episode_index: int, git_commit: str) -> Ep
             "action_hash": result.plan.action_hash,
             "physics_hash": result.plan.physics_hash,
             "counterfactual_invariant_hash": result.plan.invariant_hash,
+            # Split grouping consumes these identities before media are
+            # written.  Excluding timestamps and assistance/QC flags makes the
+            # hashes describe physical state rather than branch bookkeeping.
+            "initial_state_hash": sha256_json(
+                {
+                    key: value
+                    for key, value in result.states[0].items()
+                    if key != "timestamp"
+                    and not key.startswith("assistance.")
+                    and not key.endswith("_flag")
+                }
+            ),
+            "trajectory_hash": sha256_json(
+                [
+                    {
+                        key: value
+                        for key, value in state.items()
+                        if key != "timestamp"
+                        and not key.startswith("assistance.")
+                        and not key.endswith("_flag")
+                    }
+                    for state in result.states
+                ]
+            ),
             "physics_variant": result.plan.physics_variant,
             "scene_parameters": dict(result.plan.scene_parameters),
             "branch_parameters": dict(result.plan.branch_parameters),
