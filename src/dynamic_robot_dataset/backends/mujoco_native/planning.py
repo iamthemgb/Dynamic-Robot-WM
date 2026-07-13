@@ -877,7 +877,12 @@ def scenario_to_episode_plan(spec: ScenarioSpec) -> EpisodePlan:
         robot_model=spec.robot_model,
         tool_type=spec.tool.kind.value,
         episode_uuid=deterministic_uuid(
-            "native-episode", bundle_id, physics_cf_id, physics_hash, spec.seed
+            "native-episode",
+            bundle_id,
+            physics_cf_id,
+            physics_hash,
+            action_hash,
+            spec.seed,
         ),
         counterfactual_bundle_id=bundle_id,
         physics_counterfactual_family_id=physics_cf_id,

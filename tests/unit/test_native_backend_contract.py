@@ -101,6 +101,25 @@ def test_scenario_round_trip_preserves_density_and_identity() -> None:
     assert scenario_to_episode_plan(restored).options["native_scenario_spec"] == spec.to_dict()
 
 
+def test_native_action_counterfactual_episode_ids_are_unique() -> None:
+    success = scenario_to_episode_plan(
+        make_scenario_spec(
+            "centered_vertical_drop", seed=713, branch=IntendedBranch.SUCCESS
+        )
+    )
+    no_op = scenario_to_episode_plan(
+        make_scenario_spec(
+            "centered_vertical_drop", seed=713, branch=IntendedBranch.NO_OP
+        )
+    )
+
+    assert success.counterfactual_bundle_id == no_op.counterfactual_bundle_id
+    assert success.split_group_id == no_op.split_group_id
+    assert success.physics_hash == no_op.physics_hash
+    assert success.action_hash != no_op.action_hash
+    assert success.episode_uuid != no_op.episode_uuid
+
+
 def test_paddle_geometry_maps_thickness_width_and_height_to_local_axes() -> None:
     spec = make_scenario_spec("paddle_block", seed=17)
     root = ET.fromstring("<mujoco><worldbody><body name='hand'/></worldbody></mujoco>")
