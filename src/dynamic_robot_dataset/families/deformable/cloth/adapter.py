@@ -196,7 +196,7 @@ class ClothAdapter(FamilyAdapter):
                 "timestamp": time_s,
                 "cloth.vertices": [list(point) for point in mesh],
                 "cloth.centroid": list(centroid(mesh)),
-                "assistance.active": bool(branch["attachment_enabled"] and time_s / plan.duration_s < branch["release_fraction"]),
+                "assistance.active": bool(branch["attachment_enabled"] and time_s / plan.duration_s <= branch["release_fraction"]),
             }
             for time_s, mesh in zip(frame_times, meshes)
         ]
@@ -205,7 +205,7 @@ class ClothAdapter(FamilyAdapter):
                 "timestamp": time_s,
                 "command.task": scene["task"],
                 "command.magnitude": branch["control_magnitude"],
-                "command.attachment": bool(branch["attachment_enabled"] and time_s / plan.duration_s < branch["release_fraction"]),
+                "command.attachment": bool(branch["attachment_enabled"] and time_s / plan.duration_s <= branch["release_fraction"]),
             }
             for time_s in frame_times
         ]

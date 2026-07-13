@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -21,8 +22,13 @@ from dynamic_robot_dataset.common.native_suite import (
     build_planned_counterfactual_family_records,
     plan_suite_cases,
 )
+from dynamic_robot_dataset.common.qc import _objective_metric_success_reference
 from dynamic_robot_dataset.common.schema import EpisodeRecord
 from dynamic_robot_dataset.common.suites import expand_suite
+from dynamic_robot_dataset.smoke_runner import (
+    _frame_rows as smoke_frame_rows,
+    _record as smoke_record,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -185,6 +191,158 @@ def test_execution_routes_native_and_diagnostic_without_relabeling() -> None:
     }
 
 
+def test_runtime_merge_retains_distinct_legacy_proxy_simulator_lineages(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / ".suite_runtime"
+    runtime_root.mkdir()
+    config_hash = "c" * 64
+    simulator_names = (
+        "legacy_quarantine.scripted_bounce",
+        "legacy_quarantine.legacy_motion_proxy",
+        "legacy_quarantine.assisted_latch",
+        "legacy_quarantine.equality_grasp",
+    )
+    for case_index, simulator_name in enumerate(simulator_names):
+        provenance = {
+            "source_generator": (
+                "dynamic_robot_dataset.families.legacy_proxy_quarantine.adapter."
+                "LegacyProxyQuarantineAdapter"
+            ),
+            "source_generator_version": "1.0.0",
+            "generator_git_commit": "d" * 40,
+            "config_hash": config_hash,
+            "simulator_name": simulator_name,
+            "simulator_version": "legacy-proxy-v1",
+            "renderer": "dynamic_robot_dataset.diagnostic_state_renderer/v1",
+            "execution_backend": "diagnostic_quarantine",
+            "integrated_native_backend": False,
+            "release_eligibility_is_per_episode": True,
+            "asset_roots": {},
+        }
+        (runtime_root / f"case-{case_index:06d}.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "dynamic-robot-suite-runtime-context/v1",
+                    "config_hash": config_hash,
+                    "cameras": [],
+                    "provenance": [provenance],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    cameras, provenance_rows = cli._merge_suite_runtime_rows(
+        tmp_path,
+        config_hash=config_hash,
+    )
+
+    assert cameras == {}
+    assert len(provenance_rows) == len(simulator_names)
+    assert {row["simulator_name"] for row in provenance_rows.values()} == set(simulator_names)
+    assert all(key == cli._suite_provenance_key(row) for key, row in provenance_rows.items())
+
+
+@pytest.mark.parametrize(
+    ("family", "subfamily", "branch"),
+    [
+        ("cloth", "poke_cloth", "contact_failure"),
+        ("rope", "drag_endpoint", "contact_failure"),
+        ("cloth", "poke_cloth", "success_seeking"),
+        ("legacy_proxy_quarantine", "scripted_bounce", "success_seeking"),
+    ],
+)
+def test_diagnostic_candidates_write_honest_unverified_v2_records(
+    family: str,
+    subfamily: str,
+    branch: str,
+) -> None:
+    item = next(
+        value
+        for value in plan_suite_cases(expand_suite(SUITE))
+        if value.execution_backend == "diagnostic_quarantine"
+        and value.case.family == family
+        and value.case.subfamily == subfamily
+        and value.episode_plan.intended_branch == branch
+    )
+    result, rendered = cli._execute_suite_item(item, None)
+
+    record = cli._episode_record(result, item.case.case_index, "e" * 40, rendered)
+    record.validate()
+
+    assert record.actual_outcome == "unverified"
+    assert record.actual_outcome_class.value == "unverified"
+    assert record.task_success is False
+    assert record.partial_success_score is None
+    assert record.label_confidence is None
+    assert record.label_status.value == "unverified"
+    assert record.release_eligible is False
+    expected_code = (
+        "legacy_proxy_quarantined"
+        if result.outcome.failure_mode == "legacy_proxy_quarantined"
+        else "label_unverified"
+    )
+    assert record.failure_mode == record.primary_failure_code == expected_code
+    candidate = record.objective_evidence["diagnostic_candidate_outcome"]
+    assert candidate["actual_outcome"] == result.actual_outcome
+    assert candidate["task_success"] == result.outcome.task_success
+    assert candidate["failure_mode"] == result.outcome.failure_mode
+    assert candidate["partial_success_score"] == result.outcome.partial_success_score
+    assert record.objective_metrics == result.outcome.metrics
+    assert record.objective_evidence["independently_recomputed"] is False
+    expected_success, subject = _objective_metric_success_reference(record)
+    assert expected_success is result.outcome.task_success
+    assert subject == "diagnostic candidate task_success"
+    smoke_projection = smoke_record(result, item.case.case_index, "e" * 40)
+    assert (
+        smoke_projection.actual_outcome,
+        smoke_projection.task_success,
+        smoke_projection.partial_success_score,
+        smoke_projection.failure_mode,
+        smoke_projection.label_confidence,
+    ) == (
+        record.actual_outcome,
+        record.task_success,
+        record.partial_success_score,
+        record.failure_mode,
+        record.label_confidence,
+    )
+    assert (
+        smoke_projection.objective_evidence["diagnostic_candidate_outcome"]
+        == record.objective_evidence["diagnostic_candidate_outcome"]
+    )
+
+
+def test_diagnostic_action_bundles_preserve_initial_state_and_vary_saved_actions() -> None:
+    grouped: dict[str, list[EpisodeRecord]] = defaultdict(list)
+    for item in plan_suite_cases(expand_suite(SUITE)):
+        if item.case.family not in {"cloth", "rope"}:
+            continue
+        result, rendered = cli._execute_suite_item(item, None)
+        grouped[item.episode_plan.counterfactual_bundle_id].append(
+            cli._episode_record(result, item.case.case_index, "e" * 40, rendered)
+        )
+
+    assert sum(len(records) for records in grouped.values()) == 28
+    for records in grouped.values():
+        assert len({record.extras["derived_initial_state_hash"] for record in records}) == 1
+        assert len({record.extras["derived_action_hash"] for record in records}) == len(records)
+
+
+def test_diagnostic_cloth_assistance_intervals_match_frame_mechanism_ids() -> None:
+    for item in plan_suite_cases(expand_suite(SUITE)):
+        if item.case.family != "cloth":
+            continue
+        result, _ = cli._execute_suite_item(item, None)
+        for rows in (
+            cli._default_frame_rows(result, item.case.case_index),
+            smoke_frame_rows(result, item.case.case_index),
+        ):
+            for row in rows:
+                mechanism_active = bool(row["assistance.mechanism_ids"])
+                assert mechanism_active == bool(row["assistance.active"])
+
+
 def test_expected_declarations_use_persisted_hash_contract_and_keep_missing_members() -> None:
     cases = [
         case
@@ -256,6 +414,44 @@ def test_planned_hash_copy_cannot_hide_tampered_runtime_metadata() -> None:
     assert any("changes runtime field scene_seed" in problem for problem in problems)
     assert any("changes invariant appearance" in problem for problem in problems)
     assert any("changes invariant physics" in problem for problem in problems)
+
+
+def test_physics_sweeps_ignore_derived_solver_hash_and_id_ood_partition() -> None:
+    cases = [
+        case
+        for case in expand_suite(SUITE)
+        if case.family == "projectile_rebound"
+        and case.subfamily == "gravity_sweep"
+    ]
+    planned = plan_suite_cases(cases)
+    declaration = next(
+        value
+        for value in build_planned_counterfactual_family_records(planned)
+        if value.relation == CounterfactualRelation.PHYSICS
+    )
+    records = [_record(item, index) for index, item in enumerate(planned)]
+    for index, record in enumerate(records):
+        record.physics.solver_settings = {"model_hash": f"model-{index}"}
+        record.physics.parameter_range_provenance["partition"] = (
+            "test_ood" if index in {0, len(records) - 1} else "train_id"
+        )
+    derived = {
+        record.episode_uuid: {
+            "derived_initial_state_hash": record.extras["derived_initial_state_hash"],
+            "derived_action_hash": record.extras["derived_action_hash"],
+        }
+        for record in records
+    }
+
+    assert validate_counterfactual_family_records(
+        [declaration], records, derived_by_uuid=derived
+    ) == []
+
+    records[0].physics.solver_settings["contact_resolution"] = "tampered"
+    problems = validate_counterfactual_family_records(
+        [declaration], records, derived_by_uuid=derived
+    )
+    assert any("changes invariant nonintervened_physics" in problem for problem in problems)
 
 
 def test_acceptance_gates_require_exact_160_views_styles_categories_and_rigid_outcomes() -> None:

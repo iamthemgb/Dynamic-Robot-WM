@@ -161,6 +161,19 @@ class CounterfactualFamilyRecord:
 def _physics_payload(record: EpisodeRecord, intervention_fields: Sequence[str] = ()) -> dict[str, Any]:
     excluded = set(intervention_fields)
     value = record.physics.to_dict()
+    # The model hash is derived from the complete intervened model, and ID/OOD
+    # partition labels describe sampling provenance. Neither is an independent
+    # physical field that counterfactual siblings must hold fixed. Stable
+    # solver settings remain invariant and therefore stay in this payload.
+    solver_settings = dict(value.pop("solver_settings", {}) or {})
+    solver_settings.pop("model_hash", None)
+    value["solver_settings"] = solver_settings
+    provenance = dict(value.pop("parameter_range_provenance", {}) or {})
+    value["parameter_range_provenance"] = {
+        name: item
+        for name, item in provenance.items()
+        if name != "partition"
+    }
     value["parameters"] = {
         name: parameter
         for name, parameter in value["parameters"].items()
@@ -203,6 +216,7 @@ _TRANSIENT_SEMANTIC_FIELDS = {
     "free_fall",
     "object.motion_mode",
     "object.active_surface",
+    "rope.snag_flag",
 }
 _TRANSIENT_SEMANTIC_PREFIXES = (
     "action.",
@@ -219,9 +233,12 @@ def derived_action_hash_from_rows(rows: Sequence[Mapping[str, Any]]) -> str:
     action_fields = [
         "timestamp",
         *sorted(
-            name
-            for name in (rows[0] if rows else {})
-            if name.startswith("action.")
+            {
+                name
+                for row in rows
+                for name in row
+                if name.startswith("action.")
+            }
         ),
     ]
     return sha256_json([[row.get(name) for name in action_fields] for row in rows])
@@ -618,6 +635,7 @@ class ObjectiveRecomputeInput:
     frame_rows: Sequence[Mapping[str, Any]]
     event_rows: Sequence[Mapping[str, Any]]
     object_state_rows: Sequence[Mapping[str, Any]]
+    transition_rows: Sequence[Mapping[str, Any]] | None = None
 
 
 @dataclass(slots=True)
@@ -683,7 +701,7 @@ class ObjectiveEvaluatorRegistry:
     def get(self, evaluator_id: str, evaluator_version: str) -> PersistedObjectiveEvaluator | None:
         key = (evaluator_id, evaluator_version)
         evaluator = self._evaluators.get(key)
-        if evaluator is None and key == ("native_rigid_state_event", "1.1.0"):
+        if evaluator is None and key == ("native_rigid_state_event", "1.2.0"):
             # Keep schema-only commands free of simulator imports and avoid a
             # module-initialisation cycle by loading the built-in bridge only
             # when its immutable identifier is requested.

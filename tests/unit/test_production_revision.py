@@ -23,7 +23,10 @@ from dynamic_robot_dataset.common.statistics import cramers_v
 from dynamic_robot_dataset.common.visual_qc import NATIVE_VISUAL_THRESHOLDS
 from dynamic_robot_dataset.common.suites import expand_suite, load_pilot_plan
 from dynamic_robot_dataset.common.readiness import load_gate_config
-from dynamic_robot_dataset.common.qc import _event_aware_free_fall_mask
+from dynamic_robot_dataset.common.qc import (
+    _ballistic_evidence_mode,
+    _event_aware_free_fall_mask,
+)
 from dynamic_robot_dataset.families.base import normalize_branch
 from dynamic_robot_dataset.families import get_family
 from dynamic_robot_dataset.families.deformable.rope.native_contract import (
@@ -52,6 +55,40 @@ def test_encoded_gravity_mask_excludes_contact_between_video_frames() -> None:
     )
 
     assert mask == [True, False, False, False, False, False]
+
+
+def test_ballistic_qc_applicability_is_task_contract_specific() -> None:
+    record = type("Record", (), {})()
+    record.family = "falling_catch"
+    record.extras = {"native_scenario_spec": {"scenario": "centered_drop"}}
+    assert _ballistic_evidence_mode(record) == "precontact"
+    record.family = "projectile_rebound"
+    record.extras = {"native_scenario_spec": {"scenario": "ramp_launch"}}
+    assert _ballistic_evidence_mode(record) == "post_release"
+    record.family = "rolling_interception"
+    record.extras = {"native_scenario_spec": {"scenario": "straight_roll"}}
+    assert _ballistic_evidence_mode(record) == "not_required"
+    record.extras = {}
+    assert _ballistic_evidence_mode(record) == "not_required"
+
+
+def test_post_release_gravity_mask_accepts_free_flight_after_surface_contact() -> None:
+    rows = [
+        {
+            "timestamp": index / 30.0,
+            "free_fall": index >= 4,
+            "object.motion_mode": "free_flight" if index >= 4 else "rolling",
+            "contact.role": "none" if index >= 4 else "support",
+        }
+        for index in range(8)
+    ]
+    mask = _event_aware_free_fall_mask(
+        rows,
+        [{"timestamp": 1.5 / 30.0, "event_type": "surface_contact"}],
+        "free_fall",
+        precontact_only=False,
+    )
+    assert mask[-2:] == [True, True]
 
 
 def test_camera_config_and_enforced_visual_thresholds_are_identical() -> None:

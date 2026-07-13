@@ -13,9 +13,14 @@ from ...families.base import OutcomeResult, stable_hash
 
 
 EVALUATOR_ID = "native_rigid_state_event"
-EVALUATOR_VERSION = "1.1.0"
+EVALUATOR_VERSION = "1.2.0"
 OBJECTIVE_THRESHOLDS = {
     "retention_dwell_s": 0.35,
+    "transport_terminal_error_m": 0.08,
+    "brake_retention_fraction": 0.95,
+    "tilt_minimum_rad": 0.12,
+    "edge_excursion_tool_fraction": 0.45,
+    "edge_recovery_tool_fraction": 0.60,
     "rolling_block_speed_m_s": 0.28,
     "goal_radius_m": 0.24,
     "projectile_reverse_speed_m_s": 0.10,
@@ -88,10 +93,280 @@ def _ordered(expected: Sequence[str], observed: Sequence[str]) -> bool:
     return all(any(value == target for value in iterator) for target in expected)
 
 
+def _transition_surface_release_evidence(
+    spec: ScenarioSpec,
+    events: Sequence[Mapping[str, Any]],
+    transitions: Sequence[Mapping[str, Any]],
+    *,
+    surface: str,
+    terminal_time_s: float,
+) -> dict[str, Any]:
+    """Score one release from solver-rate, content-validated transitions."""
+
+    surface_times = [
+        float(event["timestamp"])
+        for event in events
+        if event.get("object_b") == surface
+    ]
+    release_x_raw = spec.extras.get("transition_release_x_m")
+    direction = int(spec.extras.get("transition_direction", 1))
+    minimum_dwell = float(
+        spec.extras.get("transition_minimum_free_flight_dwell_s", 0.06)
+    )
+    first_surface = min(surface_times, default=None)
+    base = {
+        "passed": False,
+        "surface_contact_time_s": first_surface,
+        "free_flight_start_time_s": None,
+        "free_flight_dwell_s": 0.0,
+        "release_x_m": release_x_raw,
+        "direction": direction,
+        "minimum_dwell_s": minimum_dwell,
+        "evidence_source": "persisted_transition_rows",
+    }
+    if first_surface is None or release_x_raw is None or direction not in {-1, 1}:
+        return base
+    release_x = float(release_x_raw)
+    ordered = sorted(
+        (dict(row) for row in transitions),
+        key=lambda row: float(row.get("timestamp", 0.0)),
+    )
+
+    def valid_boundary(row: Mapping[str, Any]) -> bool:
+        try:
+            position = row["object_position_m"]
+            return bool(
+                row.get("event_type") == "surface_release_boundary_crossing"
+                and row.get("surface") == surface
+                and row.get("from") == "pre_release_region"
+                and row.get("to") == "post_release_region"
+                and abs(float(row["release_x_m"]) - release_x) <= 1e-9
+                and int(row["direction"]) == direction
+                and isinstance(position, Sequence)
+                and len(position) == 3
+                and all(math.isfinite(float(value)) for value in position)
+                and direction * (float(position[0]) - release_x) >= -1e-6
+                and float(row["timestamp"]) > first_surface + 1e-9
+            )
+        except (KeyError, TypeError, ValueError, IndexError):
+            return False
+
+    boundary_rows = [
+        row
+        for row in ordered
+        if row.get("event_type") == "surface_release_boundary_crossing"
+        and row.get("surface") == surface
+    ]
+    valid_boundaries = [row for row in boundary_rows if valid_boundary(row)]
+    if not valid_boundaries:
+        return {
+            **base,
+            "invalid_boundary_row_count": len(boundary_rows),
+        }
+    first_boundary = valid_boundaries[0]
+    boundary_time = float(first_boundary["timestamp"])
+    preceding_motion = [
+        row
+        for row in ordered
+        if row.get("event_type") == "motion_mode_transition"
+        and first_surface + 1e-9
+        < float(row.get("timestamp", 0.0))
+        <= boundary_time + 1e-9
+    ]
+    preceding_free_flight = bool(
+        preceding_motion and preceding_motion[-1].get("to") == "free_flight"
+    )
+    pre_boundary_contact = min(
+        (
+            float(event["timestamp"])
+            for event in events
+            if first_surface + 1e-9
+            < float(event["timestamp"])
+            < boundary_time - 1e-9
+        ),
+        default=math.inf,
+    )
+    pre_boundary_return = min(
+        (
+            float(row["timestamp"])
+            for row in ordered
+            if row.get("event_type") == "motion_mode_transition"
+            and row.get("from") == "free_flight"
+            and row.get("to") != "free_flight"
+            and first_surface + 1e-9
+            < float(row["timestamp"])
+            < boundary_time - 1e-9
+        ),
+        default=math.inf,
+    )
+    post_boundary_contact = min(
+        (
+            float(event["timestamp"])
+            for event in events
+            if float(event["timestamp"]) > boundary_time + 1e-9
+        ),
+        default=math.inf,
+    )
+    post_boundary_mode_change = min(
+        (
+            float(row["timestamp"])
+            for row in ordered
+            if row.get("event_type") == "motion_mode_transition"
+            and float(row["timestamp"]) > boundary_time + 1e-9
+        ),
+        default=math.inf,
+    )
+    dwell = max(
+        0.0,
+        min(
+            float(terminal_time_s),
+            post_boundary_contact,
+            post_boundary_mode_change,
+        )
+        - boundary_time,
+    )
+    return {
+        **base,
+        "passed": bool(
+            preceding_free_flight
+            and not math.isfinite(pre_boundary_contact)
+            and not math.isfinite(pre_boundary_return)
+            and dwell + 1e-9 >= minimum_dwell
+        ),
+        "free_flight_start_time_s": boundary_time,
+        "free_flight_dwell_s": dwell,
+        "release_x_m": release_x,
+        "intervening_contact_time_s": (
+            post_boundary_contact if math.isfinite(post_boundary_contact) else None
+        ),
+        "intervening_motion_transition_time_s": (
+            post_boundary_mode_change
+            if math.isfinite(post_boundary_mode_change)
+            else None
+        ),
+        "pre_boundary_contact_time_s": (
+            pre_boundary_contact if math.isfinite(pre_boundary_contact) else None
+        ),
+        "pre_boundary_free_flight_return_time_s": (
+            pre_boundary_return if math.isfinite(pre_boundary_return) else None
+        ),
+        "preceding_free_flight_transition": preceding_free_flight,
+        "invalid_boundary_row_count": len(boundary_rows) - len(valid_boundaries),
+    }
+
+
+def _surface_to_free_flight_evidence(
+    spec: ScenarioSpec,
+    frames: Sequence[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
+    transitions: Sequence[Mapping[str, Any]] | None,
+    *,
+    surface: str,
+) -> dict[str, Any]:
+    """Measure an ordered, geometrically cleared, sustained flight transition."""
+
+    surface_times = [
+        float(event["timestamp"])
+        for event in events
+        if event.get("object_b") == surface
+    ]
+    release_x_raw = spec.extras.get("transition_release_x_m")
+    direction = int(spec.extras.get("transition_direction", 1))
+    minimum_dwell = float(
+        spec.extras.get("transition_minimum_free_flight_dwell_s", 0.06)
+    )
+    if not surface_times or release_x_raw is None or direction not in {-1, 1}:
+        return {
+            "passed": False,
+            "surface_contact_time_s": min(surface_times, default=None),
+            "free_flight_start_time_s": None,
+            "free_flight_dwell_s": 0.0,
+            "release_x_m": release_x_raw,
+            "direction": direction,
+            "minimum_dwell_s": minimum_dwell,
+            "evidence_source": (
+                "persisted_transition_rows"
+                if transitions is not None
+                else "encoded_frame_fallback"
+            ),
+        }
+    first_surface = min(surface_times)
+    if transitions is not None:
+        return _transition_surface_release_evidence(
+            spec,
+            events,
+            transitions,
+            surface=surface,
+            terminal_time_s=float(frames[-1]["timestamp"]),
+        )
+    intervening_contact_time = min(
+        (
+            float(event["timestamp"])
+            for event in events
+            if float(event["timestamp"]) > first_surface + 1e-9
+        ),
+        default=math.inf,
+    )
+    release_x = float(release_x_raw)
+    runs: list[tuple[float, float]] = []
+    run_start: float | None = None
+    run_end: float | None = None
+    for row in frames:
+        timestamp = float(row["timestamp"])
+        mode = str(row.get("motion_mode") or row.get("object.motion_mode") or "")
+        active_surface = str(
+            row.get("active_surface") or row.get("object.active_surface") or "none"
+        )
+        position_x = float(_vector(row, "object.position")[0])
+        eligible = bool(
+            timestamp > first_surface
+            and timestamp < intervening_contact_time
+            and mode == "free_flight"
+            and active_surface in {"", "none"}
+            and direction * (position_x - release_x) >= 0.0
+        )
+        if eligible:
+            if run_start is None:
+                run_start = timestamp
+            run_end = timestamp
+        elif run_start is not None:
+            runs.append((run_start, float(run_end)))
+            run_start = run_end = None
+    if run_start is not None:
+        runs.append((run_start, float(run_end)))
+    selected = runs[0] if runs else (None, None)
+    best_start, best_end = selected
+    dwell = (
+        0.0
+        if best_start is None or best_end is None
+        else max(0.0, best_end - best_start)
+    )
+    return {
+        "passed": bool(
+            best_start is not None
+            and best_end is not None
+            and best_end - best_start + 1e-9 >= minimum_dwell
+        ),
+        "surface_contact_time_s": first_surface,
+        "intervening_contact_time_s": (
+            intervening_contact_time
+            if math.isfinite(intervening_contact_time)
+            else None
+        ),
+        "free_flight_start_time_s": best_start,
+        "free_flight_dwell_s": dwell,
+        "release_x_m": release_x,
+        "direction": direction,
+        "minimum_dwell_s": minimum_dwell,
+        "evidence_source": "encoded_frame_fallback",
+    }
+
+
 def evaluate_saved_native_episode(
     spec: ScenarioSpec,
     frame_rows: Sequence[Mapping[str, Any]],
     event_rows: Sequence[Mapping[str, Any]],
+    transition_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> ObjectiveEvaluation:
     """Recompute labels without reading intended branch or generator outcomes."""
 
@@ -253,6 +528,7 @@ def evaluate_saved_native_episode(
     success = False
     score = 0.0
     failure = "unexpected_failure"
+    transition_failure = False
     if spec.family == NativeFamily.FALLING_CATCH:
         inside = [_inside_tool(spec, row) for row in frames]
         dwell = 0
@@ -275,6 +551,7 @@ def evaluate_saved_native_episode(
         }.get(spec.scenario)
         phase_complete = required_phase is None or required_phase in phases
         task_specific_evidence = True
+        task_specific_progress = 1.0
         relative_positions = [_tool_relative(row) for row in frames]
         if spec.scenario == RigidScenario.CATCH_TRANSPORT:
             terminal_target = np.asarray(
@@ -285,8 +562,30 @@ def evaluate_saved_native_episode(
                     _vector(final, "robot.tool_position") - terminal_target
                 )
             )
-            task_specific_evidence = terminal_position_error <= 0.08
-            metrics["transport_terminal_position_error_m"] = terminal_position_error
+            initial_target_error = float(
+                np.linalg.norm(
+                    _vector(frames[0], "robot.tool_position") - terminal_target
+                )
+            )
+            task_specific_progress = max(
+                0.0,
+                min(
+                    1.0,
+                    1.0
+                    - terminal_position_error
+                    / max(
+                        initial_target_error,
+                        OBJECTIVE_THRESHOLDS["transport_terminal_error_m"],
+                    ),
+                ),
+            )
+            task_specific_evidence = terminal_position_error <= OBJECTIVE_THRESHOLDS[
+                "transport_terminal_error_m"
+            ]
+            metrics.update(
+                transport_terminal_position_error_m=terminal_position_error,
+                transport_initial_target_error_m=initial_target_error,
+            )
         elif spec.scenario == RigidScenario.CATCH_BRAKE:
             brake_indices = [
                 index
@@ -298,7 +597,14 @@ def evaluate_saved_native_episode(
                 if brake_indices
                 else 0.0
             )
-            task_specific_evidence = brake_retention_fraction >= 0.95
+            task_specific_progress = min(
+                1.0,
+                brake_retention_fraction
+                / OBJECTIVE_THRESHOLDS["brake_retention_fraction"],
+            )
+            task_specific_evidence = brake_retention_fraction >= OBJECTIVE_THRESHOLDS[
+                "brake_retention_fraction"
+            ]
             metrics["brake_retention_fraction"] = brake_retention_fraction
         elif spec.scenario == RigidScenario.CATCH_TILT:
             initial_rotation = _rotation_wxyz(
@@ -314,7 +620,13 @@ def evaluate_saved_native_episode(
                     min(1.0, (float(np.trace(relative_rotation)) - 1.0) / 2.0),
                 )
                 maximum_tilt = max(maximum_tilt, math.acos(cosine))
-            task_specific_evidence = maximum_tilt >= 0.12
+            task_specific_progress = min(
+                1.0,
+                maximum_tilt / OBJECTIVE_THRESHOLDS["tilt_minimum_rad"],
+            )
+            task_specific_evidence = maximum_tilt >= OBJECTIVE_THRESHOLDS[
+                "tilt_minimum_rad"
+            ]
             metrics["measured_maximum_tool_tilt_rad"] = maximum_tilt
         elif spec.scenario == RigidScenario.CATCH_EDGE_RECOVERY:
             edge_excursion = max(
@@ -326,8 +638,29 @@ def evaluate_saved_native_episode(
                 abs(float(relative_positions[-1][1])),
             )
             task_specific_evidence = (
-                edge_excursion >= 0.45 * min(spec.tool.half_extents_m[:2])
-                and final_offset <= 0.60 * min(spec.tool.half_extents_m[:2])
+                edge_excursion
+                >= OBJECTIVE_THRESHOLDS["edge_excursion_tool_fraction"]
+                * min(spec.tool.half_extents_m[:2])
+                and final_offset
+                <= OBJECTIVE_THRESHOLDS["edge_recovery_tool_fraction"]
+                * min(spec.tool.half_extents_m[:2])
+            )
+            excursion_threshold = (
+                OBJECTIVE_THRESHOLDS["edge_excursion_tool_fraction"]
+                * min(spec.tool.half_extents_m[:2])
+            )
+            recovery_threshold = (
+                OBJECTIVE_THRESHOLDS["edge_recovery_tool_fraction"]
+                * min(spec.tool.half_extents_m[:2])
+            )
+            excursion_progress = min(
+                1.0, edge_excursion / max(excursion_threshold, 1e-9)
+            )
+            recovery_progress = min(
+                1.0, recovery_threshold / max(final_offset, 1e-9)
+            )
+            task_specific_progress = 0.5 * (
+                excursion_progress + recovery_progress
             )
             metrics.update(
                 edge_excursion_m=edge_excursion,
@@ -335,20 +668,46 @@ def evaluate_saved_native_episode(
             )
         phase_complete = phase_complete and task_specific_evidence
         success = retained and phase_complete
-        score = min(1.0, dwell_s / OBJECTIVE_THRESHOLDS["retention_dwell_s"]) if tool_events else max(
-            0.0, 1.0 - minimum_tool_distance / 0.35
+        retention_progress = (
+            min(1.0, dwell_s / OBJECTIVE_THRESHOLDS["retention_dwell_s"])
+            if tool_events
+            else max(0.0, 1.0 - minimum_tool_distance / 0.35)
         )
+        phase_progress = (
+            1.0
+            if required_phase is None
+            else (
+                task_specific_progress
+                if required_phase in phases
+                else 0.0
+            )
+        )
+        if success:
+            score = 1.0
+        elif retained and required_phase is not None:
+            # Retention is half of a post-contact task. Keep a failed second
+            # phase strictly below one so the closed partial-success class and
+            # its score agree.
+            score = min(0.99, 0.5 + 0.49 * phase_progress)
+        else:
+            score = retention_progress
         metrics.update(
             object_entered_receptacle=any(inside),
             object_retained_until_end=retained,
             retention_dwell_s=dwell_s,
             post_contact_phase_completed=phase_complete,
             task_specific_post_contact_evidence=task_specific_evidence,
+            retention_progress=retention_progress,
+            post_contact_phase_progress=phase_progress,
         )
         if success:
             failure = "none"
         elif tool_events:
-            failure = "object_not_retained"
+            failure = (
+                "contact_without_completion"
+                if retained
+                else "object_not_retained"
+            )
         elif controller_no_op:
             failure = "controller_no_op"
         elif minimum_tool_distance <= 0.25:
@@ -372,9 +731,19 @@ def evaluate_saved_native_episode(
             terminal_goal_dwell += 1
         terminal_goal_dwell_s = terminal_goal_dwell / spec.video_hz
         if spec.scenario == RigidScenario.RAMP_TO_TABLE:
-            success = "ramp_surface" in contacts and "table_surface" in contacts
+            success = _ordered(("ramp_surface", "table_surface"), contacts)
+            metrics["expected_sequence_observed"] = success
         elif spec.scenario == RigidScenario.ROLL_OFF_EDGE:
-            success = "table_surface" in contacts and "free_flight" in modes
+            transition = _surface_to_free_flight_evidence(
+                spec,
+                frames,
+                events,
+                transition_rows,
+                surface="table_surface",
+            )
+            success = bool(transition["passed"])
+            metrics["surface_to_free_flight"] = transition
+            metrics["expected_sequence_observed"] = success
         elif spec.scenario == RigidScenario.STRAIGHT_ROLL:
             success = "rolling" in modes and abs(float(_vector(final, "object.position")[1])) < 0.5
         elif spec.scenario == RigidScenario.STRAIGHT_SLIDE:
@@ -427,6 +796,10 @@ def evaluate_saved_native_episode(
         )
         if success:
             failure = "none"
+        elif spec.scenario == RigidScenario.ROLL_OFF_EDGE:
+            failure = "contact_without_completion"
+            score = 0.0
+            transition_failure = True
         elif tool_events:
             failure = "object_not_retained_in_goal"
         elif controller_no_op:
@@ -472,9 +845,27 @@ def evaluate_saved_native_episode(
         elif spec.scenario == RigidScenario.FLOOR_TO_WALL:
             success = _ordered(("table_surface", "wall_surface"), contacts)
         elif spec.scenario == RigidScenario.RAMP_LAUNCH:
-            success = "ramp_surface" in contacts and "free_flight" in modes
+            transition = _surface_to_free_flight_evidence(
+                spec,
+                frames,
+                events,
+                transition_rows,
+                surface="ramp_surface",
+            )
+            success = bool(transition["passed"])
+            metrics["surface_to_free_flight"] = transition
+            metrics["expected_sequence_observed"] = success
         elif spec.scenario == RigidScenario.PROJECTILE_ROLL_OFF_EDGE:
-            success = "table_surface" in contacts and "free_flight" in modes
+            transition = _surface_to_free_flight_evidence(
+                spec,
+                frames,
+                events,
+                transition_rows,
+                surface="table_surface",
+            )
+            success = bool(transition["passed"])
+            metrics["surface_to_free_flight"] = transition
+            metrics["expected_sequence_observed"] = success
         elif spec.scenario == RigidScenario.BOUNCE_TO_INTERCEPTION:
             success = _ordered(("table_surface", "native_tool"), contacts)
         else:
@@ -515,6 +906,13 @@ def evaluate_saved_native_episode(
         )
         if success:
             failure = "none"
+        elif spec.scenario in {
+            RigidScenario.RAMP_LAUNCH,
+            RigidScenario.PROJECTILE_ROLL_OFF_EDGE,
+        }:
+            failure = "contact_without_completion"
+            score = 0.0
+            transition_failure = True
         elif tool_events:
             failure = "incorrect_rebound_direction"
         elif controller_no_op:
@@ -525,8 +923,10 @@ def evaluate_saved_native_episode(
             failure = "paddle_missed_projectile"
     if success:
         actual = "success"
+    elif transition_failure:
+        actual = "contact_failure"
     elif tool_events:
-        actual = "partial_success" if score >= 0.5 else "contact_failure"
+        actual = "partial_success" if 0.5 <= score < 1.0 else "contact_failure"
     elif controller_no_op:
         actual = "no_op"
     elif misdirected_action_measured:
@@ -541,6 +941,9 @@ def evaluate_saved_native_episode(
         "stored_rows_recomputed": True,
         "frame_count": len(frames),
         "event_count": len(events),
+        "transition_count": (
+            None if transition_rows is None else len(transition_rows)
+        ),
         "first_timestamp_s": float(frames[0]["timestamp"]),
         "last_timestamp_s": float(frames[-1]["timestamp"]),
     }

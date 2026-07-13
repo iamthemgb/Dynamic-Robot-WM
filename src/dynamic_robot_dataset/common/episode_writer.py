@@ -61,6 +61,19 @@ def write_parquet_atomic(
         table = rows
     else:
         values = list(rows)
+        if values and schema is None:
+            # ``Table.from_pylist`` otherwise infers its struct fields from
+            # the first mapping and silently drops keys that appear only in
+            # later heterogeneous event/transition rows. Materialize the
+            # union so solver-rate boundary and restitution evidence survives
+            # the immutable Parquet round trip.
+            field_names = sorted(
+                {name for value in values for name in value}
+            )
+            values = [
+                {name: value.get(name) for name in field_names}
+                for value in values
+            ]
         table = pa.Table.from_pylist(values, schema=schema) if values else (
             pa.Table.from_pylist([], schema=schema) if schema is not None else pa.table({})
         )
@@ -77,6 +90,55 @@ def write_parquet_atomic(
     finally:
         temporary.unlink(missing_ok=True)
     return target
+
+
+_ASSISTANCE_MECHANISM_IDS_FIELD = "assistance.mechanism_ids"
+
+
+def _canonical_frame_table(rows: Iterable[Mapping[str, Any]]) -> Any:
+    """Build a frame table with stable types for semantically typed columns.
+
+    Arrow infers ``list<null>`` when every mechanism list in one episode is
+    empty. That makes an otherwise valid unassisted episode incompatible with
+    an assisted episode whose corresponding column is ``list<string>``. The
+    canonical frame contract always stores mechanism IDs as strings, including
+    when the list is empty or the producer omitted the optional field.
+    """
+
+    pa, _ = _pyarrow()
+    values = [dict(row) for row in rows]
+    mechanism_ids_by_frame: list[list[str]] = []
+    for frame_index, row in enumerate(values):
+        raw_ids = row.get(_ASSISTANCE_MECHANISM_IDS_FIELD, [])
+        if isinstance(raw_ids, (str, bytes)) or not isinstance(raw_ids, Sequence):
+            raise ValueError(
+                f"Frame {frame_index} {_ASSISTANCE_MECHANISM_IDS_FIELD!r} "
+                "must be a sequence of strings"
+            )
+        mechanism_ids = list(raw_ids)
+        if any(
+            not isinstance(identifier, str) or not identifier.strip()
+            for identifier in mechanism_ids
+        ):
+            raise ValueError(
+                f"Frame {frame_index} {_ASSISTANCE_MECHANISM_IDS_FIELD!r} contains an invalid ID"
+            )
+        row[_ASSISTANCE_MECHANISM_IDS_FIELD] = mechanism_ids
+        mechanism_ids_by_frame.append(mechanism_ids)
+
+    table = pa.Table.from_pylist(values)
+    typed_column = pa.array(
+        mechanism_ids_by_frame,
+        type=pa.list_(pa.string()),
+    )
+    column_index = table.schema.get_field_index(_ASSISTANCE_MECHANISM_IDS_FIELD)
+    if column_index < 0:
+        return table.append_column(_ASSISTANCE_MECHANISM_IDS_FIELD, typed_column)
+    return table.set_column(
+        column_index,
+        _ASSISTANCE_MECHANISM_IDS_FIELD,
+        typed_column,
+    )
 
 
 def read_parquet_rows(path: str | Path) -> list[dict[str, Any]]:
@@ -520,7 +582,10 @@ class EpisodeWriter:
                 f"Frame timestamps differ from encoded PTS by up to {worst_timestamp_error}s"
             )
 
-        write_parquet_atomic(resolve_dataset_path(transaction_dir, paths["frame"]), frames)
+        write_parquet_atomic(
+            resolve_dataset_path(transaction_dir, paths["frame"]),
+            _canonical_frame_table(frames),
+        )
         write_parquet_atomic(
             resolve_dataset_path(transaction_dir, paths["high_rate"]),
             high_rate,

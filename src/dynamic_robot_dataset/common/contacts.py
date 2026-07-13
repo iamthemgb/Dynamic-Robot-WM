@@ -9,6 +9,21 @@ from typing import Any, Iterable, Mapping
 from .schema import DynamicsMode, SchemaValidationError
 
 
+def assistance_interval_contains(
+    interval: Mapping[str, Any],
+    timestamp_s: float,
+    *,
+    tolerance_s: float = 1e-9,
+) -> bool:
+    """Use one inclusive, floating-point-safe assistance interval predicate."""
+
+    start = float(interval["start_time_s"])
+    end_raw = interval.get("end_time_s")
+    return start - tolerance_s <= timestamp_s and (
+        end_raw is None or timestamp_s <= float(end_raw) + tolerance_s
+    )
+
+
 def _finite_vector(value: tuple[float, ...], length: int, name: str) -> None:
     if len(value) != length or not all(math.isfinite(component) for component in value):
         raise SchemaValidationError(f"{name} must contain {length} finite values")

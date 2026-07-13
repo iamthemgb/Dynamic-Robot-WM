@@ -12,7 +12,11 @@ from dynamic_robot_dataset.common.cameras import (
     quaternion_xyzw_to_wxyz,
 )
 from dynamic_robot_dataset.common.contacts import AssistanceSample, AssistanceSummary
-from dynamic_robot_dataset.common.episode_writer import EpisodeWriter
+from dynamic_robot_dataset.common.episode_writer import (
+    EpisodeWriter,
+    _canonical_frame_table,
+    write_parquet_atomic,
+)
 from dynamic_robot_dataset.common.paths import (
     ExistingOutputError,
     ResumeGuard,
@@ -178,6 +182,76 @@ def test_episode_uuid_cannot_escape_writer_staging_root(tmp_path: Path) -> None:
         writer._transaction_dir("..")
 
 
+def test_frame_mechanism_ids_keep_list_string_schema_when_all_empty(
+    tmp_path: Path,
+) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    empty_table = _canonical_frame_table(
+        [
+            {"timestamp": 0.0, "assistance.mechanism_ids": []},
+            {"timestamp": 0.1, "assistance.mechanism_ids": []},
+        ]
+    )
+    assisted_table = _canonical_frame_table(
+        [
+            {"timestamp": 0.0, "assistance.mechanism_ids": []},
+            {"timestamp": 0.1, "assistance.mechanism_ids": ["retention-latch"]},
+        ]
+    )
+
+    expected_type = pa.list_(pa.string())
+    assert empty_table.schema.field("assistance.mechanism_ids").type == expected_type
+    assert assisted_table.schema.field("assistance.mechanism_ids").type == expected_type
+
+    empty_path = write_parquet_atomic(tmp_path / "empty.parquet", empty_table)
+    assisted_path = write_parquet_atomic(tmp_path / "assisted.parquet", assisted_table)
+    assert (
+        pq.ParquetFile(empty_path).schema_arrow.field("assistance.mechanism_ids").type
+        == expected_type
+    )
+    assert (
+        pq.ParquetFile(assisted_path).schema_arrow.field("assistance.mechanism_ids").type
+        == expected_type
+    )
+
+
+def test_parquet_roundtrip_preserves_fields_first_seen_in_later_rows(
+    tmp_path: Path,
+) -> None:
+    pq = pytest.importorskip("pyarrow.parquet")
+    path = write_parquet_atomic(
+        tmp_path / "heterogeneous.parquet",
+        [
+            {
+                "timestamp": 0.04,
+                "event_type": "motion_mode_transition",
+                "from": "rolling",
+                "to": "free_flight",
+            },
+            {
+                "timestamp": 0.07,
+                "event_type": "surface_release_boundary_crossing",
+                "from": "pre_release_region",
+                "to": "post_release_region",
+                "surface": "ramp_surface",
+                "release_x_m": -0.21,
+                "direction": 1,
+                "object_position_m": [-0.20, 0.0, 0.15],
+                "measured_effective_restitution": 0.63,
+            },
+        ],
+    )
+
+    rows = pq.read_table(path).to_pylist()
+    assert rows[0]["surface"] is None
+    assert rows[1]["surface"] == "ramp_surface"
+    assert rows[1]["release_x_m"] == pytest.approx(-0.21)
+    assert rows[1]["direction"] == 1
+    assert rows[1]["object_position_m"] == pytest.approx([-0.20, 0.0, 0.15])
+    assert rows[1]["measured_effective_restitution"] == pytest.approx(0.63)
+
+
 def test_exact_timestamps_and_causal_controller_alignment() -> None:
     frames = exact_frame_timestamps(4, 30)
     assert frames == [0.0, 1 / 30, 2 / 30, 0.1]
@@ -235,6 +309,35 @@ def test_counterfactual_relations_stay_in_one_split() -> None:
     assert len({assignment.split for assignment in assignments}) == 1
     assert {assignment.split_group_id for assignment in assignments} == {"scene-family"}
     assert validate_no_split_leakage(records, assignments) == []
+
+
+def test_ood_partition_forces_the_entire_connected_family_to_test() -> None:
+    records = [
+        _episode(
+            index,
+            counterfactual_bundle_id="action-family",
+            physics_counterfactual_family_id="physics-family",
+            split_group_id="scene-family",
+            scene_seed=7,
+        )
+        for index in range(3)
+    ]
+    for record, partition in zip(records, ("train_id", "test_ood", "train_id")):
+        record.physics.parameter_range_provenance["partition"] = partition
+
+    assignments = SplitAssigner(seed=11).assign(records)
+
+    assert {assignment.split for assignment in assignments} == {"test"}
+    assert validate_no_split_leakage(records, assignments) == []
+    tampered = [
+        {
+            "episode_uuid": assignment.episode_uuid,
+            "split": "train",
+        }
+        for assignment in assignments
+    ]
+    problems = validate_no_split_leakage(records, tampered)
+    assert any("physics partition test_ood must be assigned to test" in value for value in problems)
 
 
 def test_identical_state_trajectories_stay_in_one_split() -> None:

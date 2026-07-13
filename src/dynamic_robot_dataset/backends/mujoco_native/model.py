@@ -34,6 +34,11 @@ TOOL_SITE = "native_task_tool_site"
 TOOL_GEOM_PREFIX = "native_tool_"
 OBJECT_CONTACT_PRIORITY = 1
 RESTITUTION_SOLVER_PROFILE_VERSION = "native-restitution-solver-map/v1"
+RAMP_CENTER_X_M = -0.62
+RAMP_CENTER_Z_M = 0.075
+RAMP_HALF_LENGTH_M = 0.42
+RAMP_HALF_THICKNESS_M = 0.025
+RAMP_PITCH_RAD = 0.18
 _RESTITUTION_DAMPING_KNOTS = (
     (0.05, 1.000),
     (0.25, 0.740),
@@ -289,9 +294,9 @@ def _add_world_geometry(root: ET.Element, spec: ScenarioSpec) -> tuple[str, ...]
                 _surface_geom(
                     world,
                     name="ramp_surface",
-                    position=(-0.62, 0.0, 0.075),
-                    size=(0.42, 0.34, 0.025),
-                    euler=(0.0, 0.18, 0.0),
+                    position=(RAMP_CENTER_X_M, 0.0, RAMP_CENTER_Z_M),
+                    size=(RAMP_HALF_LENGTH_M, 0.34, RAMP_HALF_THICKNESS_M),
+                    euler=(0.0, RAMP_PITCH_RAD, 0.0),
                     friction=spec.surface_friction,
                 )
             )
@@ -313,9 +318,9 @@ def _add_world_geometry(root: ET.Element, spec: ScenarioSpec) -> tuple[str, ...]
                 _surface_geom(
                     world,
                     name="ramp_surface",
-                    position=(-0.62, 0.0, 0.075),
-                    size=(0.42, 0.34, 0.025),
-                    euler=(0.0, 0.18, 0.0),
+                    position=(RAMP_CENTER_X_M, 0.0, RAMP_CENTER_Z_M),
+                    size=(RAMP_HALF_LENGTH_M, 0.34, RAMP_HALF_THICKNESS_M),
+                    euler=(0.0, -RAMP_PITCH_RAD, 0.0),
                     friction=spec.surface_friction,
                 )
             )

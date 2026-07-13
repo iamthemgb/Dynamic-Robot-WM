@@ -19,6 +19,10 @@ from dynamic_robot_dataset.backends.mujoco_native.backend import (
 )
 from dynamic_robot_dataset.backends.mujoco_native.model import _add_tool
 from dynamic_robot_dataset.common.hashing import sha256_file
+from dynamic_robot_dataset.common.episode_writer import (
+    read_parquet_rows,
+    write_parquet_atomic,
+)
 from dynamic_robot_dataset.common.contract_v2 import (
     DEFAULT_OBJECTIVE_EVALUATORS,
     ObjectiveRecomputeInput,
@@ -118,6 +122,398 @@ def test_native_action_counterfactual_episode_ids_are_unique() -> None:
     assert success.physics_hash == no_op.physics_hash
     assert success.action_hash != no_op.action_hash
     assert success.episode_uuid != no_op.episode_uuid
+
+
+def test_ramp_launch_rejects_initial_or_contact_chatter_free_flight() -> None:
+    spec = make_scenario_spec("ramp_launch", seed=714)
+    rows = _projectile_action_rows([0.205, -0.220, 0.425], moving_command=False)
+    rows[0].update(
+        {
+            "object.position": [-0.78, 0.0, 0.11],
+            "motion_mode": "free_flight",
+            "object.active_surface": "none",
+        }
+    )
+    rows[1].update(
+        {
+            # Still above the ramp, before the declared positive-X release
+            # edge; unordered mode membership must not count as a launch.
+            "object.position": [-0.40, 0.0, 0.16],
+            "motion_mode": "free_flight",
+            "object.active_surface": "none",
+        }
+    )
+    evaluation = evaluate_saved_native_episode(
+        spec,
+        rows,
+        [{"timestamp": 0.1, "object_b": "ramp_surface"}],
+    )
+
+    assert evaluation.outcome.task_success is False
+    assert evaluation.outcome.failure_mode == "contact_without_completion"
+    assert evaluation.actual_outcome_class == "contact_failure"
+    assert evaluation.outcome.metrics["surface_to_free_flight"]["passed"] is False
+
+
+def test_ramp_to_table_requires_contact_order() -> None:
+    spec = make_scenario_spec("ramp_to_table", seed=719)
+    rows = _projectile_action_rows(
+        [0.205, -0.220, 0.425], moving_command=False
+    )
+    rows[0].update(
+        {
+            "object.position": [-0.78, 0.0, 0.12],
+            "motion_mode": "rolling",
+            "object.active_surface": "ramp_surface",
+        }
+    )
+    rows[1].update(
+        {
+            "object.position": [0.10, 0.0, 0.03],
+            "motion_mode": "rolling",
+            "object.active_surface": "table_surface",
+        }
+    )
+    reversed_order = evaluate_saved_native_episode(
+        spec,
+        rows,
+        [
+            {"timestamp": 0.1, "object_b": "table_surface"},
+            {"timestamp": 0.2, "object_b": "ramp_surface"},
+        ],
+    )
+    correct_order = evaluate_saved_native_episode(
+        spec,
+        rows,
+        [
+            {"timestamp": 0.1, "object_b": "ramp_surface"},
+            {"timestamp": 0.2, "object_b": "table_surface"},
+        ],
+    )
+
+    assert reversed_order.outcome.task_success is False
+    assert reversed_order.outcome.metrics["expected_sequence_observed"] is False
+    assert correct_order.outcome.task_success is True
+    assert correct_order.outcome.metrics["expected_sequence_observed"] is True
+
+
+def test_ramp_launch_does_not_credit_a_later_bounce_after_short_release() -> None:
+    spec = make_scenario_spec("ramp_launch", seed=715)
+    release_x = float(spec.extras["transition_release_x_m"])
+    template = _projectile_action_rows(
+        [0.205, -0.220, 0.425], moving_command=False
+    )[0]
+
+    def row(
+        timestamp: float,
+        position_x: float,
+        mode: str,
+        surface: str,
+    ) -> dict[str, object]:
+        value = dict(template)
+        value.update(
+            {
+                "timestamp": timestamp,
+                "object.position": [position_x, 0.0, 0.15],
+                "motion_mode": mode,
+                "object.active_surface": surface,
+            }
+        )
+        return value
+
+    rows = [
+        row(0.00, release_x - 0.10, "rolling", "ramp_surface"),
+        row(0.10, release_x + 0.01, "free_flight", "none"),
+        row(0.12, release_x + 0.03, "free_flight", "none"),
+        row(0.15, release_x + 0.04, "sliding", "table_surface"),
+        row(0.30, release_x + 0.08, "free_flight", "none"),
+        row(0.40, release_x + 0.12, "free_flight", "none"),
+        row(0.50, release_x + 0.16, "free_flight", "none"),
+    ]
+    evaluation = evaluate_saved_native_episode(
+        spec,
+        rows,
+        [
+            {"timestamp": 0.0, "object_b": "ramp_surface"},
+            {"timestamp": 0.15, "object_b": "table_surface"},
+        ],
+    )
+
+    transition = evaluation.outcome.metrics["surface_to_free_flight"]
+    assert transition["free_flight_start_time_s"] == pytest.approx(0.10)
+    assert transition["free_flight_dwell_s"] == pytest.approx(0.02)
+    assert transition["passed"] is False
+    assert evaluation.actual_outcome_class == "contact_failure"
+
+
+def test_ramp_launch_does_not_credit_first_sampled_flight_after_fixture_contact() -> None:
+    spec = make_scenario_spec("ramp_launch", seed=716)
+    release_x = float(spec.extras["transition_release_x_m"])
+    template = _projectile_action_rows(
+        [0.205, -0.220, 0.425], moving_command=False
+    )[0]
+
+    def row(
+        timestamp: float,
+        position_x: float,
+        mode: str,
+        surface: str,
+    ) -> dict[str, object]:
+        value = dict(template)
+        value.update(
+            {
+                "timestamp": timestamp,
+                "object.position": [position_x, 0.0, 0.15],
+                "motion_mode": mode,
+                "object.active_surface": surface,
+            }
+        )
+        return value
+
+    rows = [
+        row(0.00, release_x - 0.10, "rolling", "ramp_surface"),
+        # The direct departure was shorter than the persisted frame period;
+        # the first saved post-edge row is already on another fixture.
+        row(0.15, release_x + 0.04, "sliding", "table_surface"),
+        row(0.30, release_x + 0.08, "free_flight", "none"),
+        row(0.40, release_x + 0.12, "free_flight", "none"),
+        row(0.50, release_x + 0.16, "free_flight", "none"),
+    ]
+    evaluation = evaluate_saved_native_episode(
+        spec,
+        rows,
+        [
+            {"timestamp": 0.0, "object_b": "ramp_surface"},
+            {"timestamp": 0.15, "object_b": "table_surface"},
+        ],
+    )
+
+    transition = evaluation.outcome.metrics["surface_to_free_flight"]
+    assert transition["free_flight_start_time_s"] is None
+    assert transition["intervening_contact_time_s"] == pytest.approx(0.15)
+    assert transition["passed"] is False
+    assert evaluation.actual_outcome_class == "contact_failure"
+
+    # A rearmed contact with the origin surface is equally decisive: the
+    # unsampled first departure has already ended, so a later bounce cannot
+    # become the intended launch.
+    same_surface_rows = [dict(value) for value in rows]
+    same_surface_rows[1]["object.active_surface"] = "ramp_surface"
+    same_surface = evaluate_saved_native_episode(
+        spec,
+        same_surface_rows,
+        [
+            {"timestamp": 0.0, "object_b": "ramp_surface"},
+            {"timestamp": 0.15, "object_b": "ramp_surface"},
+        ],
+    )
+    same_transition = same_surface.outcome.metrics["surface_to_free_flight"]
+    assert same_transition["free_flight_start_time_s"] is None
+    assert same_transition["intervening_contact_time_s"] == pytest.approx(0.15)
+    assert same_transition["passed"] is False
+
+
+def test_transition_rows_bind_first_subframe_boundary_departure() -> None:
+    spec = make_scenario_spec("ramp_launch", seed=717)
+    release_x = float(spec.extras["transition_release_x_m"])
+    template = _projectile_action_rows(
+        [0.205, -0.220, 0.425], moving_command=False
+    )[0]
+
+    def row(timestamp: float, position_x: float, mode: str) -> dict[str, object]:
+        value = dict(template)
+        value.update(
+            {
+                "timestamp": timestamp,
+                "object.position": [position_x, 0.0, 0.15],
+                "motion_mode": mode,
+                "object.active_surface": (
+                    "none" if mode == "free_flight" else "ramp_surface"
+                ),
+            }
+        )
+        return value
+
+    rows = [
+        row(0.0, release_x - 0.10, "rolling"),
+        row(0.1, release_x + 0.01, "free_flight"),
+        row(0.2, release_x + 0.10, "free_flight"),
+    ]
+    transitions = [
+        {
+            "timestamp": 0.04,
+            "event_type": "motion_mode_transition",
+            "from": "rolling",
+            "to": "free_flight",
+            "object_position_m": [release_x - 0.03, 0.0, 0.15],
+        },
+        {
+            "timestamp": 0.07,
+            "event_type": "surface_release_boundary_crossing",
+            "from": "pre_release_region",
+            "to": "post_release_region",
+            "surface": "ramp_surface",
+            "release_x_m": release_x,
+            "direction": 1,
+            "object_position_m": [release_x, 0.0, 0.15],
+        },
+    ]
+    evaluation = evaluate_saved_native_episode(
+        spec,
+        rows,
+        [{"timestamp": 0.0, "object_b": "ramp_surface"}],
+        transitions,
+    )
+    transition = evaluation.outcome.metrics["surface_to_free_flight"]
+    assert transition["evidence_source"] == "persisted_transition_rows"
+    assert transition["free_flight_start_time_s"] == pytest.approx(0.07)
+    assert transition["passed"] is True
+    assert evaluation.actual_outcome_class == "success"
+
+    fabricated = [dict(value) for value in transitions]
+    fabricated[1]["release_x_m"] = release_x + 0.05
+    rejected = evaluate_saved_native_episode(
+        spec,
+        rows,
+        [{"timestamp": 0.0, "object_b": "ramp_surface"}],
+        fabricated,
+    )
+    rejected_transition = rejected.outcome.metrics["surface_to_free_flight"]
+    assert rejected_transition["invalid_boundary_row_count"] == 1
+    assert rejected_transition["passed"] is False
+
+    # Even without a rearmed contact event, a sub-frame mode change closes
+    # the first boundary-crossing run. A later flight cannot replace it.
+    failed = evaluate_saved_native_episode(
+        spec,
+        [
+            rows[0],
+            row(0.30, release_x + 0.08, "free_flight"),
+            row(0.40, release_x + 0.12, "free_flight"),
+        ],
+        [{"timestamp": 0.0, "object_b": "ramp_surface"}],
+        [
+            *transitions,
+            {
+                "timestamp": 0.09,
+                "event_type": "motion_mode_transition",
+                "from": "free_flight",
+                "to": "rolling",
+            },
+            {
+                "timestamp": 0.25,
+                "event_type": "surface_release_boundary_crossing",
+                "from": "pre_release_region",
+                "to": "post_release_region",
+                "surface": "ramp_surface",
+                "release_x_m": release_x,
+                "direction": 1,
+            },
+        ],
+    )
+    failed_transition = failed.outcome.metrics["surface_to_free_flight"]
+    assert failed_transition["free_flight_dwell_s"] == pytest.approx(0.02)
+    assert failed_transition["passed"] is False
+    assert failed.actual_outcome_class == "contact_failure"
+
+    # If the first departure returns to support before crossing the boundary,
+    # a later solver-rate crossing is still not allowed to replace it.
+    preboundary_return = evaluate_saved_native_episode(
+        spec,
+        [
+            rows[0],
+            row(0.30, release_x + 0.08, "free_flight"),
+            row(0.40, release_x + 0.12, "free_flight"),
+        ],
+        [{"timestamp": 0.0, "object_b": "ramp_surface"}],
+        [
+            transitions[0],
+            {
+                "timestamp": 0.08,
+                "event_type": "motion_mode_transition",
+                "from": "free_flight",
+                "to": "rolling",
+            },
+            {
+                "timestamp": 0.20,
+                "event_type": "motion_mode_transition",
+                "from": "rolling",
+                "to": "free_flight",
+            },
+            {
+                "timestamp": 0.25,
+                "event_type": "surface_release_boundary_crossing",
+                "from": "pre_release_region",
+                "to": "post_release_region",
+                "surface": "ramp_surface",
+                "release_x_m": release_x,
+                "direction": 1,
+                "object_position_m": [release_x, 0.0, 0.15],
+            },
+        ],
+    )
+    preboundary_transition = preboundary_return.outcome.metrics[
+        "surface_to_free_flight"
+    ]
+    assert preboundary_transition[
+        "pre_boundary_free_flight_return_time_s"
+    ] == pytest.approx(0.08)
+    assert preboundary_transition["passed"] is False
+
+
+def test_transition_evidence_survives_parquet_roundtrip(tmp_path) -> None:
+    spec = make_scenario_spec("ramp_launch", seed=718)
+    release_x = float(spec.extras["transition_release_x_m"])
+    rows = _projectile_action_rows(
+        [0.205, -0.220, 0.425], moving_command=False
+    )
+    rows[0].update(
+        {
+            "object.position": [release_x - 0.10, 0.0, 0.15],
+            "motion_mode": "rolling",
+            "object.active_surface": "ramp_surface",
+        }
+    )
+    rows[1].update(
+        {
+            "object.position": [release_x + 0.10, 0.0, 0.18],
+            "motion_mode": "free_flight",
+            "object.active_surface": "none",
+        }
+    )
+    transitions = [
+        {
+            "timestamp": 0.04,
+            "event_type": "motion_mode_transition",
+            "from": "rolling",
+            "to": "free_flight",
+            "active_surface": "none",
+            "object_position_m": [release_x - 0.03, 0.0, 0.15],
+        },
+        {
+            "timestamp": 0.07,
+            "event_type": "surface_release_boundary_crossing",
+            "from": "pre_release_region",
+            "to": "post_release_region",
+            "surface": "ramp_surface",
+            "release_x_m": release_x,
+            "direction": 1,
+            "object_position_m": [release_x, 0.0, 0.16],
+        },
+    ]
+    path = write_parquet_atomic(tmp_path / "transitions.parquet", transitions)
+    persisted = read_parquet_rows(path)
+
+    assert persisted[1]["surface"] == "ramp_surface"
+    assert persisted[1]["direction"] == 1
+    evaluation = evaluate_saved_native_episode(
+        spec,
+        rows,
+        [{"timestamp": 0.0, "object_b": "ramp_surface"}],
+        persisted,
+    )
+    assert evaluation.outcome.metrics["surface_to_free_flight"]["passed"] is True
+    assert evaluation.actual_outcome_class == "success"
 
 
 def test_paddle_geometry_maps_thickness_width_and_height_to_local_axes() -> None:

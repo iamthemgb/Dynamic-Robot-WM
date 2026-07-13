@@ -25,12 +25,17 @@ from .common.contract_v2 import (
     validate_counterfactual_family_records,
 )
 from .common.hashing import sha256_file, sha256_json
+from .common.labels import project_candidate_outcome
 from .common.native_suite import (
     PlannedSuiteEpisode,
     build_planned_counterfactual_family_records,
     plan_suite_cases,
 )
-from .common.contacts import normalize_assistance, select_task_event_time
+from .common.contacts import (
+    assistance_interval_contains,
+    normalize_assistance,
+    select_task_event_time,
+)
 from .common.paths import (
     ExistingOutputError,
     ResumeMismatchError,
@@ -260,11 +265,29 @@ def _episode_record(
     persisted_action_rows = list(
         rendered.get("high_rate_rows") or result.high_rate_states or persisted_frame_rows
     )
+    if not any(
+        any(name.startswith("action.") for name in row)
+        for row in persisted_action_rows
+    ):
+        # Older diagnostic adapters persist state-only controller-rate tables.
+        # Their frame table still contains the timestamped commanded action;
+        # hashing the state-only table would collapse every action sibling to
+        # the same timestamp-only digest.
+        persisted_action_rows = persisted_frame_rows
     derived_action_hash = derived_action_hash_from_rows(persisted_action_rows)
     derived_initial_state_hash = derived_initial_state_hash_from_rows(
         persisted_frame_rows
     )
     status = _label_status(str(result.outcome.label_status))
+    outcome_projection = project_candidate_outcome(
+        actual_outcome=result.actual_outcome,
+        task_success=result.outcome.task_success,
+        partial_success_score=result.outcome.partial_success_score,
+        failure_mode=result.outcome.failure_mode,
+        label_confidence=result.outcome.label_confidence,
+        source_label_status=str(result.outcome.label_status),
+        canonical_label_status=status,
+    )
     dynamics = DynamicsMode(str(result.dynamics_mode))
     release = ReleaseTier(str(result.release_tier))
     if dynamics == DynamicsMode.SCRIPTED_MOTION:
@@ -306,6 +329,7 @@ def _episode_record(
             ScenarioSpec.from_dict(raw_spec),
             list(rendered.get("frame_rows") or ()),
             list(rendered.get("event_rows") or result.contacts),
+            list(rendered.get("transition_rows") or ()),
         )
         if (
             independent.outcome.task_success != result.outcome.task_success
@@ -325,6 +349,14 @@ def _episode_record(
             "stored_objective_success": result.outcome.task_success,
             "independently_recomputed": False,
             "source": "native_rollout_not_yet_recomputed_from_persisted_tables",
+        }
+    if outcome_projection.diagnostic_candidate_outcome is not None:
+        objective_evidence = {
+            **objective_evidence,
+            "stored_objective_success": None,
+            "independently_recomputed": False,
+            "source": "diagnostic_candidate_outcome_unverified",
+            "diagnostic_candidate_outcome": outcome_projection.diagnostic_candidate_outcome,
         }
     threshold_set = dict(rendered.get("objective_thresholds") or {})
     first_state = dict(result.states[0]) if result.states else {}
@@ -354,11 +386,11 @@ def _episode_record(
         tool_type=result.plan.tool_type,
         action_mode=str(result.plan.options.get("action_mode", "family_specific_named_command")),
         intended_branch=result.plan.intended_branch,
-        actual_outcome=result.actual_outcome,
-        task_success=result.outcome.task_success,
-        partial_success_score=result.outcome.partial_success_score,
-        failure_mode=result.outcome.failure_mode,
-        label_confidence=result.outcome.label_confidence,
+        actual_outcome=outcome_projection.actual_outcome,
+        task_success=outcome_projection.task_success,
+        partial_success_score=outcome_projection.partial_success_score,
+        failure_mode=outcome_projection.failure_mode,
+        label_confidence=outcome_projection.label_confidence,
         label_status=status,
         dynamics_mode=dynamics,
         release_tier=release,
@@ -381,7 +413,7 @@ def _episode_record(
         ),
         objective_evaluator_version=str(
             rendered.get("objective_evaluator_version")
-            or ("1.1.0" if native_backend else "unversioned")
+            or ("1.2.0" if native_backend else "unversioned")
         ),
         objective_threshold_set_hash=str(
             rendered.get("objective_threshold_set_hash") or sha256_json(threshold_set)
@@ -521,11 +553,7 @@ def _default_frame_rows(result: Any, episode_index: int) -> list[dict[str, Any]]
             str(mechanism["mechanism_id"])
             for mechanism in result.assistance.get("mechanisms", ())
             if any(
-                float(interval["start_time_s"]) <= float(timestamp)
-                and (
-                    interval.get("end_time_s") is None
-                    or float(timestamp) <= float(interval["end_time_s"])
-                )
+                assistance_interval_contains(interval, float(timestamp))
                 for interval in mechanism.get("activation_intervals", ())
             )
         ]
@@ -991,8 +1019,8 @@ def _command_generate(arguments: argparse.Namespace) -> int:
         str(row["camera_id"]): dict(row)
         for row in ((existing_context or {}).get("cameras") or ())
     }
-    provenance_rows: dict[tuple[str, str], dict[str, Any]] = {
-        (str(row["source_generator"]), str(row["source_generator_version"])): dict(row)
+    provenance_rows = {
+        _suite_provenance_key(row): dict(row)
         for row in ((existing_context or {}).get("provenance") or ())
     }
     committed_records: list[EpisodeRecord] = []
@@ -1025,7 +1053,7 @@ def _command_generate(arguments: argparse.Namespace) -> int:
         if "videos" not in rendered:
             raise ValueError("Renderer result must contain a videos mapping")
         calibration_mapping = _register_camera_calibrations(rendered, camera_rows)
-        provenance_rows[(result.plan.source_generator, result.plan.source_generator_version)] = {
+        provenance_row = {
             "source_generator": result.plan.source_generator,
             "source_generator_version": result.plan.source_generator_version,
             "generator_git_commit": git_commit,
@@ -1033,8 +1061,16 @@ def _command_generate(arguments: argparse.Namespace) -> int:
             "simulator_name": str(result.simulator.get("name", "unknown")),
             "simulator_version": str(result.simulator.get("version", "unknown")),
             "renderer": str(rendered.get("renderer") or renderer_spec),
+            "execution_backend": backend_name,
+            "integrated_native_backend": backend_name == "native_mujoco",
+            "release_eligibility_is_per_episode": True,
             "asset_roots": asset_roots,
         }
+        provenance_key = _suite_provenance_key(provenance_row)
+        previous_provenance = provenance_rows.get(provenance_key)
+        if previous_provenance is not None and previous_provenance != provenance_row:
+            raise ExistingOutputError(f"Conflicting provenance row: {provenance_key}")
+        provenance_rows[provenance_key] = provenance_row
         record = _episode_record(result, index, git_commit, rendered)
         record.task_index = task_index_by_key[(record.family, record.subfamily)]
         committed_records.append(
@@ -1315,15 +1351,44 @@ def _execute_suite_item(
     return result, rendered
 
 
+_SuiteProvenanceKey = tuple[str, str, str, str, str, str]
+
+
+def _suite_provenance_key(row: Mapping[str, Any]) -> _SuiteProvenanceKey:
+    """Return the identity of one truthful suite execution lineage.
+
+    A source adapter can expose multiple simulators (notably the quarantined
+    legacy proxies), so adapter name/version/backend alone is not a unique
+    provenance identity. Keep those simulator and renderer lineages separate
+    while still rejecting inconsistent duplicate rows for the same identity.
+    """
+
+    return (
+        str(row["source_generator"]),
+        str(row["source_generator_version"]),
+        str(row.get("simulator_name", "unknown")),
+        str(row.get("simulator_version", "unknown")),
+        str(row.get("renderer", "unknown")),
+        str(
+            row.get("execution_backend")
+            or (
+                "native_mujoco"
+                if row.get("integrated_native_backend") is True
+                else "diagnostic"
+            )
+        ),
+    )
+
+
 def _merge_suite_runtime_rows(
     root: Path,
     *,
     config_hash: str,
-) -> tuple[dict[str, dict[str, Any]], dict[tuple[str, str, str], dict[str, Any]]]:
+) -> tuple[dict[str, dict[str, Any]], dict[_SuiteProvenanceKey, dict[str, Any]]]:
     """Recover cameras/provenance from immutable per-case resume sidecars."""
 
     cameras: dict[str, dict[str, Any]] = {}
-    provenance: dict[tuple[str, str, str], dict[str, Any]] = {}
+    provenance: dict[_SuiteProvenanceKey, dict[str, Any]] = {}
     runtime_root = root / ".suite_runtime"
     if not runtime_root.is_dir():
         return cameras, provenance
@@ -1340,11 +1405,7 @@ def _merge_suite_runtime_rows(
             cameras[identifier] = item
         for row in value.get("provenance", ()):
             item = dict(row)
-            key = (
-                str(item["source_generator"]),
-                str(item["source_generator_version"]),
-                str(item["execution_backend"]),
-            )
+            key = _suite_provenance_key(item)
             existing = provenance.get(key)
             if existing is not None and existing != item:
                 raise ExistingOutputError(f"Conflicting suite provenance row: {key}")
@@ -1712,11 +1773,7 @@ def _command_generate_suite(arguments: argparse.Namespace) -> int:
                 "release_eligibility_is_per_episode": True,
                 "asset_roots": asset_roots,
             }
-            provenance_key = (
-                str(provenance_row["source_generator"]),
-                str(provenance_row["source_generator_version"]),
-                item.execution_backend,
-            )
+            provenance_key = _suite_provenance_key(provenance_row)
             previous_provenance = provenance_rows.get(provenance_key)
             if previous_provenance is not None and previous_provenance != provenance_row:
                 raise ExistingOutputError(f"Conflicting provenance row: {provenance_key}")

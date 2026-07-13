@@ -141,10 +141,48 @@ def gravity_consistency_check(
     )
 
 
+def _ballistic_evidence_mode(record: EpisodeRecord) -> str:
+    """Return the native scenario contract's required free-flight evidence."""
+
+    scenario_spec = record.extras.get("native_scenario_spec")
+    if not isinstance(scenario_spec, Mapping):
+        return "not_required"
+    scenario = str(scenario_spec.get("scenario") or "")
+    if scenario in {"ramp_launch", "projectile_roll_off_edge", "roll_off_edge"}:
+        return "post_release"
+    if record.family in {"falling_catch", "projectile_rebound"}:
+        return "precontact"
+    return "not_required"
+
+
+def _requires_ballistic_evidence(record: EpisodeRecord) -> bool:
+    return _ballistic_evidence_mode(record) != "not_required"
+
+
+def _objective_metric_success_reference(
+    record: EpisodeRecord,
+) -> tuple[bool | None, str]:
+    """Return the label that persisted objective metrics are meant to support."""
+
+    if record.label_status.value == "verified_objective":
+        return record.task_success, "task_success"
+    candidate = record.objective_evidence.get("diagnostic_candidate_outcome")
+    if isinstance(candidate, Mapping) and isinstance(
+        candidate.get("task_success"), bool
+    ):
+        return bool(candidate["task_success"]), "diagnostic candidate task_success"
+    return None, "unverified candidate"
+
+
 def _event_aware_free_fall_mask(
     rows: Sequence[Mapping[str, Any]],
     event_rows: Sequence[Mapping[str, Any]],
     free_fall_field: str,
+    *,
+    precontact_only: bool = True,
+    release_x_m: float | None = None,
+    release_direction: int = 1,
+    stop_at_next_contact: bool = False,
 ) -> list[bool]:
     """Exclude contact-adjacent samples from encoded-rate gravity checks.
 
@@ -169,6 +207,14 @@ def _event_aware_free_fall_mask(
         if event.get("timestamp") is not None
     ]
     first_contact_time = min(contact_times, default=math.inf)
+    next_contact_time = min(
+        (
+            timestamp
+            for timestamp in contact_times
+            if timestamp > first_contact_time + 1e-9
+        ),
+        default=math.inf,
+    )
     mask: list[bool] = []
     for row, timestamp in zip(rows, timestamps):
         motion_mode = str(
@@ -181,7 +227,19 @@ def _event_aware_free_fall_mask(
             bool(row[free_fall_field])
             and motion_mode in {"", "free_flight"}
             and contact_role in {"", "none"}
-            and timestamp < first_contact_time
+            and (not precontact_only or timestamp < first_contact_time)
+            and (not stop_at_next_contact or timestamp < next_contact_time)
+            and (
+                release_x_m is None
+                or release_direction
+                * (
+                    float(
+                        row.get("object.position", row.get("object.position_world_m"))[0]
+                    )
+                    - release_x_m
+                )
+                >= 0.0
+            )
             and all(
                 abs(timestamp - event_time) > exclusion_radius_s
                 for event_time in contact_times
@@ -555,9 +613,24 @@ class QCValidator:
                     )
                     result.metrics[f"physics.{check.name}"] = check.metrics
                     if not check.passed:
-                        result.fail(f"physics {check.name}: {check.message}")
+                        if float(check.metrics.get("sample_count", 0.0)) == 0.0:
+                            if _requires_ballistic_evidence(record):
+                                result.fail(f"physics {check.name}: {check.message}")
+                            else:
+                                result.warnings.append(
+                                    f"physics {check.name} not applicable: {check.message}"
+                                )
+                        else:
+                            result.fail(f"physics {check.name}: {check.message}")
                 else:
-                    result.warnings.append("position/velocity finite-difference QC not evaluated: named fields unavailable")
+                    message = (
+                        "position/velocity finite-difference QC not evaluated: "
+                        "named fields unavailable"
+                    )
+                    if _requires_ballistic_evidence(record):
+                        result.fail(message)
+                    else:
+                        result.warnings.append(message)
                 assistance_fields = (
                     "assisted_grasp",
                     "assisted_retention",
@@ -638,9 +711,13 @@ class QCValidator:
                             [float(row["timestamp"]) for row in rows],
                             name="high-rate timestamps",
                         )
-                        result.metrics["derived_action_hash"] = (
-                            derived_action_hash_from_rows(rows)
-                        )
+                        if any(
+                            any(name.startswith("action.") for name in row)
+                            for row in rows
+                        ):
+                            result.metrics["derived_action_hash"] = (
+                                derived_action_hash_from_rows(rows)
+                            )
                     elif label == "transitions" and rows:
                         transition_rows = rows
                         validate_monotonic_timestamps(
@@ -759,14 +836,57 @@ class QCValidator:
                     [row[velocity_field] for row in frame_rows],
                     record.physics.gravity_world_m_s2,
                     free_fall_mask=_event_aware_free_fall_mask(
-                        frame_rows, event_rows, free_fall_field
+                        frame_rows,
+                        event_rows,
+                        free_fall_field,
+                        precontact_only=(
+                            _ballistic_evidence_mode(record) == "precontact"
+                        ),
+                        release_x_m=(
+                            float(record.extras["native_scenario_spec"]["extras"]["transition_release_x_m"])
+                            if _ballistic_evidence_mode(record) == "post_release"
+                            and isinstance(record.extras.get("native_scenario_spec"), Mapping)
+                            and isinstance(
+                                record.extras["native_scenario_spec"].get("extras"),
+                                Mapping,
+                            )
+                            and record.extras["native_scenario_spec"]["extras"].get(
+                                "transition_release_x_m"
+                            )
+                            is not None
+                            else None
+                        ),
+                        release_direction=(
+                            int(
+                                record.extras["native_scenario_spec"]["extras"].get(
+                                    "transition_direction", 1
+                                )
+                            )
+                            if isinstance(record.extras.get("native_scenario_spec"), Mapping)
+                            and isinstance(
+                                record.extras["native_scenario_spec"].get("extras"),
+                                Mapping,
+                            )
+                            else 1
+                        ),
+                        stop_at_next_contact=(
+                            _ballistic_evidence_mode(record) == "post_release"
+                        ),
                     ),
                 )
                 result.metrics[f"physics.{check.name}"] = check.metrics
                 if not check.passed:
-                    result.fail(f"physics {check.name}: {check.message}")
-            elif record.family in {"falling_catch", "projectile_rebound"}:
-                result.warnings.append(
+                    if float(check.metrics.get("sample_count", 0.0)) == 0.0:
+                        if _requires_ballistic_evidence(record):
+                            result.fail(f"physics {check.name}: {check.message}")
+                        else:
+                            result.warnings.append(
+                                f"physics {check.name} not applicable: {check.message}"
+                            )
+                    else:
+                        result.fail(f"physics {check.name}: {check.message}")
+            elif _requires_ballistic_evidence(record):
+                result.fail(
                     "gravity consistency not independently evaluated: no free-fall mask"
                 )
         measured_contact = record.objective_metrics.get("object_contacted_tool")
@@ -789,10 +909,21 @@ class QCValidator:
             ),
             None,
         )
-        if metric_success is not None and metric_success != record.task_success:
-            result.fail("task_success disagrees with objective evaluator metric")
+        expected_metric_success, metric_subject = _objective_metric_success_reference(
+            record
+        )
+        if (
+            metric_success is not None
+            and expected_metric_success is not None
+            and metric_success != expected_metric_success
+        ):
+            result.fail(f"{metric_subject} disagrees with objective evaluator metric")
         elif metric_success is None:
             result.warnings.append("label/metric agreement not independently evaluated: no objective_success metric")
+        elif expected_metric_success is None:
+            result.warnings.append(
+                "label/metric agreement not evaluated: unverified candidate evidence unavailable"
+            )
         evaluator = self.objective_evaluators.get(
             record.objective_evaluator_id, record.objective_evaluator_version
         )
@@ -813,6 +944,7 @@ class QCValidator:
                         frame_rows=frame_rows,
                         event_rows=event_rows,
                         object_state_rows=object_state_rows,
+                        transition_rows=transition_rows,
                     )
                 )
                 for problem in compare_recomputed_objective(record, recomputed):
@@ -1030,11 +1162,48 @@ class QCValidator:
                 first_contact = min(
                     (float(row["timestamp"]) for row in event_rows), default=math.inf
                 )
+                ballistic_mode = _ballistic_evidence_mode(record)
+                scenario_extras = (
+                    record.extras.get("native_scenario_spec", {}).get("extras", {})
+                    if isinstance(record.extras.get("native_scenario_spec"), Mapping)
+                    else {}
+                )
+                release_x = scenario_extras.get("transition_release_x_m")
+                release_direction = int(
+                    scenario_extras.get("transition_direction", 1)
+                )
+                next_contact = min(
+                    (
+                        float(row["timestamp"])
+                        for row in event_rows
+                        if float(row["timestamp"]) > first_contact + 1e-9
+                    ),
+                    default=math.inf,
+                )
                 free_flight = [
                     row
                     for row in high_rate_rows
                     if str(row.get("object.motion_mode")) == "free_flight"
-                    and float(row["timestamp"]) < first_contact
+                    and (
+                        ballistic_mode != "precontact"
+                        or float(row["timestamp"]) < first_contact
+                    )
+                    and (
+                        ballistic_mode != "post_release"
+                        or (
+                            release_x is not None
+                            and release_direction
+                            * (
+                                float(row["object.position"][0])
+                                - float(release_x)
+                            )
+                            >= 0.0
+                        )
+                    )
+                    and (
+                        ballistic_mode != "post_release"
+                        or float(row["timestamp"]) < next_contact
+                    )
                     and isinstance(row.get("object.linear_velocity"), Sequence)
                 ]
                 if len(free_flight) >= 2:
@@ -1152,6 +1321,8 @@ class QCValidator:
 
     def validate(self) -> DatasetQCReport:
         records = load_episode_records(self.root)
+        split_table = self.root / "meta" / "splits.parquet"
+        split_rows = read_parquet_rows(split_table) if split_table.is_file() else []
         results: list[EpisodeQC] = []
         exact: dict[str, list[str]] = defaultdict(list)
         perceptual: list[tuple[str, str]] = []
@@ -1170,10 +1341,20 @@ class QCValidator:
                     distance = hamming_distance_hex(left_hash, right_hash)
                     if distance <= 8:
                         perceptual_pairs.append((left_name, right_name, distance))
-        leakage = validate_no_split_leakage(records)
+        leakage = validate_no_split_leakage(
+            records,
+            split_rows if split_rows else None,
+        )
         global_failures = [f"split leakage: {value}" for value in leakage]
         release_uuids = {record.episode_uuid for record in records if record.release_eligible}
-        split_by_uuid = {record.episode_uuid: record.split.value for record in records}
+        split_by_uuid = (
+            {
+                str(row["episode_uuid"]): str(row["split"])
+                for row in split_rows
+            }
+            if split_rows
+            else {record.episode_uuid: record.split.value for record in records}
+        )
         global_failures.extend(exact_duplicate_split_leakage(duplicate_groups, split_by_uuid))
         exact_duplicate_warnings: list[str] = []
         for group in duplicate_groups:
@@ -1189,7 +1370,11 @@ class QCValidator:
                 global_failures.append(f"exact duplicate release video: {group}")
             else:
                 exact_duplicate_warnings.append(f"exact duplicate nonrelease video: {group}")
-        if any(record.release_eligible and record.split.value == "unassigned" for record in records):
+        if any(
+            record.release_eligible
+            and split_by_uuid.get(record.episode_uuid, "unassigned") == "unassigned"
+            for record in records
+        ):
             global_failures.append("release-eligible episodes remain split=unassigned")
         global_warnings = exact_duplicate_warnings + [
             f"approximate duplicate candidate (Hamming distance {distance}): {left}, {right}"

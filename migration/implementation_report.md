@@ -120,22 +120,23 @@ contracts, exact
 160-case/128-native/32-quarantine planning, symmetric counterfactual invariants,
 immutable pre-simulation membership and no-retry resume behavior, 80/10/10
 connected splits, calibration/readiness/statistics contracts, and the existing
-MP4/Parquet/Wan round trip. The final local verification for this implementation
-reported **116 passing tests**.
+MP4/Parquet/Wan round trip. The final pre-launch local verification for this
+implementation reported **146 passing tests**.
 
 A native MuJoCo integration test also executes a centered Franka drop without
 rendering at reduced dimensions. It verifies exactly one initial object-state
 write, zero object or robot state rewrites after initialization, actuator
 updates, no equality/latch assistance, physics QC, event-adaptive termination,
-v2 frame semantics, and label equivalence with the persisted-state/event
+v2 frame semantics, and label equivalence with the persisted-state/event/transition
 evaluator. A separate local no-render audit executed all 128 rigid acceptance
-branches: all 128 passed native physics QC, the maximum measured joint
-acceleration was 72.714 rad/s^2 against the unchanged 80 rad/s^2 gate, and every
-required measured rigid outcome class was present. This is useful native
-lifecycle and scenario-balance evidence, but it is **not** a finalized 832x480
-rendered acceptance artifact, a fully native 160-case suite, or physics-range
-calibration. The 32 deformable/negative-control cases remain quarantined and no
-full acceptance artifact was generated.
+branches. Every required measured rigid outcome class was present; 124 passed
+native physics QC. Cases 54, 58, 73, and 82 remain truthfully quarantined after
+measured Franka acceleration of 146.63, 162.88, 96.95, and 118.05 rad/s^2
+respectively exceeded the 80 rad/s^2 gate; cases 58 and 82 also exceeded the
+3.5 rad/s joint-velocity gate. This is useful native lifecycle and
+scenario-balance evidence, but it is **not** a passed 832x480 rendered
+acceptance artifact, a fully native 160-case suite, or physics-range
+calibration. The 32 deformable/negative-control cases remain quarantined.
 
 ## Canonical decisions
 

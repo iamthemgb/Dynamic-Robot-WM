@@ -32,9 +32,46 @@ from ...families.base import (
 )
 from .model import (
     OBJECT_CONTACT_PRIORITY,
+    RAMP_CENTER_X_M,
+    RAMP_CENTER_Z_M,
+    RAMP_HALF_LENGTH_M,
+    RAMP_HALF_THICKNESS_M,
+    RAMP_PITCH_RAD,
     RESTITUTION_SOLVER_PROFILE_VERSION,
     contact_damping_for_target,
 )
+
+
+def _ramp_supported_center_z(
+    center_x_m: float,
+    radius_m: float,
+    *,
+    pitch_rad: float,
+) -> float:
+    """Sphere-center height for slight native contact with the ramp top."""
+
+    sine = math.sin(pitch_rad)
+    cosine = math.cos(pitch_rad)
+    normal_offset = RAMP_HALF_THICKNESS_M + radius_m
+    local_x = (
+        center_x_m - RAMP_CENTER_X_M - sine * normal_offset
+    ) / cosine
+    return (
+        RAMP_CENTER_Z_M
+        - sine * local_x
+        + cosine * normal_offset
+        - 0.0002
+    )
+
+
+def _ramp_release_center_x(radius_m: float, *, pitch_rad: float) -> float:
+    """World X of the sphere center as it clears the ramp's positive-X edge."""
+
+    return (
+        RAMP_CENTER_X_M
+        + math.cos(pitch_rad) * RAMP_HALF_LENGTH_M
+        + math.sin(pitch_rad) * (RAMP_HALF_THICKNESS_M + radius_m)
+    )
 
 
 _FALLING_SCENARIOS = {
@@ -531,18 +568,36 @@ def make_scenario_spec(
         # between 30 Hz samples during a short settling drop.
         z = support_half_height - 0.0002
         if scenario == RigidScenario.RAMP_TO_TABLE:
-            x, z = -0.78, 0.17
+            x = -0.78
+            z = _ramp_supported_center_z(
+                x,
+                radius,
+                pitch_rad=RAMP_PITCH_RAD,
+            )
             direction_value = 1
+        linear_velocity = (direction_value * speed, 0.0, 0.0)
+        angular_velocity = (
+            0.0,
+            direction_value * speed / radius
+            if scenario
+            not in {
+                RigidScenario.STRAIGHT_SLIDE,
+                RigidScenario.ROLLING_SLIDING_TRANSITION,
+            }
+            else 0.0,
+            0.0,
+        )
+        if scenario == RigidScenario.RAMP_TO_TABLE:
+            linear_velocity = (
+                speed * math.cos(RAMP_PITCH_RAD),
+                0.0,
+                -speed * math.sin(RAMP_PITCH_RAD),
+            )
+            angular_velocity = (0.0, speed / radius, 0.0)
         initial = InitialStateSpec(
             position_m=(x, rng.uniform(-0.035, 0.035), z),
-            linear_velocity_m_s=(direction_value * speed, 0.0, 0.0),
-            angular_velocity_rad_s=(
-                0.0,
-                -direction_value * speed / radius
-                if scenario not in {RigidScenario.STRAIGHT_SLIDE, RigidScenario.ROLLING_SLIDING_TRANSITION}
-                else 0.0,
-                0.0,
-            ),
+            linear_velocity_m_s=linear_velocity,
+            angular_velocity_rad_s=angular_velocity,
         )
         tool_start = (0.205, -0.220, 0.425)
         if scenario == RigidScenario.CONTAINER_RECEIVE:
@@ -595,6 +650,9 @@ def make_scenario_spec(
             expected = ("ramp_surface", "table_surface")
         elif scenario == RigidScenario.ROLL_OFF_EDGE:
             expected = ("table_surface", "free_flight")
+            extra_values.setdefault("transition_release_x_m", 0.55 * direction_value)
+            extra_values.setdefault("transition_direction", direction_value)
+            extra_values.setdefault("transition_minimum_free_flight_dwell_s", 0.06)
         elif scenario in {
             RigidScenario.PADDLE_BLOCK,
             RigidScenario.REDIRECT_TO_TARGET,
@@ -620,9 +678,17 @@ def make_scenario_spec(
             # into a ground-multibounce sequence.
             z, vz = 1.05, 0.0
         if scenario == RigidScenario.RAMP_LAUNCH:
-            z, vx, vz = 0.17, 1.0, 0.35
+            ramp_speed = 2.2
+            ramp_pitch = -RAMP_PITCH_RAD
+            z = _ramp_supported_center_z(
+                -0.78,
+                radius,
+                pitch_rad=ramp_pitch,
+            )
+            vx = ramp_speed * math.cos(ramp_pitch)
+            vz = -ramp_speed * math.sin(ramp_pitch)
         elif scenario == RigidScenario.PROJECTILE_ROLL_OFF_EDGE:
-            z, vx, vz = radius + 0.002, rng.uniform(0.70, 0.90), 0.0
+            z, vx, vz = radius - 0.0002, rng.uniform(0.70, 0.90), 0.0
         initial = InitialStateSpec(
             position_m=(
                 -0.78 if scenario == RigidScenario.RAMP_LAUNCH else -0.30,
@@ -639,7 +705,18 @@ def make_scenario_spec(
                 # inside its left edge so this is roll->edge->flight rather
                 # than an object initialized in free fall.
                 position_m=(-0.20 + radius, initial.position_m[1], z),
-                angular_velocity_rad_s=(0.0, -vx / radius, 0.0),
+                linear_velocity_m_s=(vx, 0.0, 0.0),
+                angular_velocity_rad_s=(0.0, vx / radius, 0.0),
+            )
+        elif scenario == RigidScenario.RAMP_LAUNCH:
+            initial = replace(
+                initial,
+                linear_velocity_m_s=(vx, 0.0, vz),
+                angular_velocity_rad_s=(
+                    0.0,
+                    math.hypot(vx, vz) / radius,
+                    0.0,
+                ),
             )
         if scenario == RigidScenario.BOUNCE_TO_INTERCEPTION:
             # Use the validated moderate-response regime for a single table
@@ -715,8 +792,17 @@ def make_scenario_spec(
             expected = ("table_surface", "native_tool")
         elif scenario == RigidScenario.RAMP_LAUNCH:
             expected = ("ramp_surface", "free_flight")
+            extra_values.setdefault(
+                "transition_release_x_m",
+                _ramp_release_center_x(radius, pitch_rad=-RAMP_PITCH_RAD),
+            )
+            extra_values.setdefault("transition_direction", 1)
+            extra_values.setdefault("transition_minimum_free_flight_dwell_s", 0.06)
         elif scenario == RigidScenario.PROJECTILE_ROLL_OFF_EDGE:
             expected = ("table_surface", "free_flight")
+            extra_values.setdefault("transition_release_x_m", 0.90)
+            extra_values.setdefault("transition_direction", 1)
+            extra_values.setdefault("transition_minimum_free_flight_dwell_s", 0.06)
         else:
             expected = ("native_tool",)
         duration = projectile_duration
@@ -734,7 +820,11 @@ def make_scenario_spec(
         scene_style=scene_style,
         maximum_duration_s=duration,
         minimum_terminal_context_s=(
-            0.20 if family == NativeFamily.PROJECTILE_REBOUND else 0.50
+            0.12
+            if scenario == RigidScenario.RAMP_LAUNCH
+            else 0.20
+            if family == NativeFamily.PROJECTILE_REBOUND
+            else 0.50
         ),
         controller_latency_s=controller_latency_s,
         camera_latency_s=camera_latency_s,

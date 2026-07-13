@@ -509,7 +509,7 @@ class BackendRunResult:
                 "objective_evaluator_id", "native_rigid_state_event"
             ),
             "objective_evaluator_version": metrics.get(
-                "objective_evaluator_version", "1.1.0"
+                "objective_evaluator_version", "1.2.0"
             ),
             "objective_threshold_set_hash": metrics.get(
                 "objective_threshold_set_hash", "unknown"

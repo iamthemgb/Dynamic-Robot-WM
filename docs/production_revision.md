@@ -80,8 +80,8 @@ as evidence; it is never relabelled or retried merely to satisfy the intended
 class. `no_op` is a first-class measured and intended class.
 
 Native rigid records use the built-in
-`native_rigid_state_event/1.1.0` evaluator. The online label path and the QC
-path invoke the same versioned evaluator over saved frame/event evidence; QC
+`native_rigid_state_event/1.2.0` evaluator. The online label path and the QC
+path invoke the same versioned evaluator over saved frame/event/transition evidence; QC
 reconstructs the immutable scenario spec from episode provenance and never
 reads branch intent to decide the outcome.
 

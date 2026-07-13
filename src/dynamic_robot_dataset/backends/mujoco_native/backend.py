@@ -791,7 +791,19 @@ class NativeMuJoCoBackend(SimulationBackend):
         linear_velocity: np.ndarray,
         angular_velocity: np.ndarray,
         active_roles: set[str],
+        impact_roles: set[str],
     ) -> tuple[str, str, str]:
+        if impact_roles:
+            role = (
+                "native_tool"
+                if "native_tool" in impact_roles
+                else sorted(impact_roles)[0]
+            )
+            return (
+                "impact",
+                role,
+                "robot_tool" if role == "native_tool" else "fixture",
+            )
         if "native_tool" in active_roles:
             speed = float(np.linalg.norm(linear_velocity))
             return (
@@ -827,10 +839,16 @@ class NativeMuJoCoBackend(SimulationBackend):
         phase: str,
         enabled: bool,
         active_roles: set[str],
+        impact_roles: set[str] | None = None,
     ) -> _Sample:
         position, quaternion, velocity, angular_velocity = self._object_state(data, ids)
         mode, active_surface, contact_role = self._motion_mode(
-            spec, position, velocity, angular_velocity, active_roles
+            spec,
+            position,
+            velocity,
+            angular_velocity,
+            active_roles,
+            impact_roles or set(),
         )
         tool_body = int(ids["tool_body"])
         qpos_addresses = [int(model.jnt_qposadr[joint]) for joint in ids["arm_joints"]]
@@ -876,6 +894,19 @@ class NativeMuJoCoBackend(SimulationBackend):
             ],
         ]
         observed = [value for _timestamp, value in sorted(chronological)]
+
+        def stable_surface_release(surface: str) -> bool:
+            from .evaluators import _transition_surface_release_evidence
+
+            evidence = _transition_surface_release_evidence(
+                spec,
+                events,
+                transitions,
+                surface=surface,
+                terminal_time_s=sample.timestamp,
+            )
+            return bool(evidence["passed"])
+
         if spec.family == NativeFamily.FALLING_CATCH:
             inside = self._inside_tool(spec, sample)
             if spec.scenario in {
@@ -888,12 +919,16 @@ class NativeMuJoCoBackend(SimulationBackend):
             return inside and "native_tool" in contacts and sample.timestamp >= 0.70
         if spec.family == NativeFamily.ROLLING_INTERCEPTION:
             if spec.scenario == RigidScenario.ROLL_OFF_EDGE:
-                return "table_surface" in contacts and sample.motion_mode == "free_flight"
+                return stable_surface_release("table_surface")
             if spec.scenario == RigidScenario.RAMP_TO_TABLE:
                 return _ordered_subsequence(("ramp_surface", "table_surface"), contacts)
             if "native_tool" in contacts:
                 return True
             return sample.timestamp >= 1.4 and sample.motion_mode == "stationary"
+        if spec.scenario == RigidScenario.RAMP_LAUNCH:
+            return stable_surface_release("ramp_surface")
+        if spec.scenario == RigidScenario.PROJECTILE_ROLL_OFF_EDGE:
+            return stable_surface_release("table_surface")
         if spec.expected_contact_sequence:
             return _ordered_subsequence(spec.expected_contact_sequence, observed)
         return bool(events) and sample.timestamp >= 1.0
@@ -1053,7 +1088,12 @@ class NativeMuJoCoBackend(SimulationBackend):
                     "action.command.tool_target_position": sample.tool_target_position.tolist(),
                 }
             )
-        recomputed = evaluate_saved_native_episode(spec, persisted_rows, events)
+        recomputed = evaluate_saved_native_episode(
+            spec,
+            persisted_rows,
+            events,
+            transition_events,
+        )
         return recomputed.outcome, recomputed.actual_outcome_class
 
     def _physics_qc(
@@ -1080,10 +1120,27 @@ class NativeMuJoCoBackend(SimulationBackend):
         measured_accelerations: list[np.ndarray] = []
         velocity_errors: list[float] = []
         energy_values: list[float] = []
+        ballistic_energy_reference_time: float | None = None
         gravity = np.asarray(spec.gravity_m_s2, dtype=np.float64)
         first_contact_time = min(
             (float(event["timestamp"]) for event in events), default=math.inf
         )
+        next_contact_time = min(
+            (
+                float(event["timestamp"])
+                for event in events
+                if float(event["timestamp"])
+                > first_contact_time + float(model.opt.timestep)
+            ),
+            default=math.inf,
+        )
+        post_release_ballistic = spec.scenario in {
+            RigidScenario.ROLL_OFF_EDGE,
+            RigidScenario.RAMP_LAUNCH,
+            RigidScenario.PROJECTILE_ROLL_OFF_EDGE,
+        }
+        release_x = spec.extras.get("transition_release_x_m")
+        release_direction = int(spec.extras.get("transition_direction", 1))
         for previous, current in zip(sim_samples, sim_samples[1:]):
             dt = current.timestamp - previous.timestamp
             if dt <= 0:
@@ -1091,10 +1148,26 @@ class NativeMuJoCoBackend(SimulationBackend):
             # Contact-mode classification can flicker for a few solver steps
             # during rebound.  Physics-law checks therefore use the unambiguous
             # pre-first-contact free-flight interval only.
-            if (
-                previous.motion_mode == current.motion_mode == "free_flight"
-                and current.timestamp < first_contact_time - model.opt.timestep
-            ):
+            free_pair = previous.motion_mode == current.motion_mode == "free_flight"
+            if post_release_ballistic:
+                ballistic_interval = bool(
+                    free_pair
+                    and release_x is not None
+                    and previous.timestamp > first_contact_time + model.opt.timestep
+                    and current.timestamp < next_contact_time - model.opt.timestep
+                    and release_direction
+                    * (float(previous.object_position[0]) - float(release_x))
+                    >= 0.0
+                    and release_direction
+                    * (float(current.object_position[0]) - float(release_x))
+                    >= 0.0
+                )
+            else:
+                ballistic_interval = bool(
+                    free_pair
+                    and current.timestamp < first_contact_time - model.opt.timestep
+                )
+            if ballistic_interval:
                 measured_acceleration = (
                     current.object_linear_velocity - previous.object_linear_velocity
                 ) / dt
@@ -1105,9 +1178,30 @@ class NativeMuJoCoBackend(SimulationBackend):
                     current.object_linear_velocity + previous.object_linear_velocity
                 )
                 velocity_errors.append(float(np.linalg.norm(finite_difference - reference_velocity)))
+                if ballistic_energy_reference_time is None:
+                    ballistic_energy_reference_time = current.timestamp
+                # MuJoCo's semi-implicit Euler update has a known
+                # -0.5*m*|g|^2*dt^2 energy bias per gravity-only step. Remove
+                # that deterministic integrator term before assessing drift.
+                integrator_correction = (
+                    0.5
+                    * spec.object.mass_kg
+                    * float(np.dot(gravity, gravity))
+                    * float(model.opt.timestep)
+                    * (current.timestamp - ballistic_energy_reference_time)
+                )
                 energy_values.append(
-                    0.5 * spec.object.mass_kg * float(np.dot(current.object_linear_velocity, current.object_linear_velocity))
-                    - spec.object.mass_kg * float(np.dot(gravity, current.object_position))
+                    0.5
+                    * spec.object.mass_kg
+                    * float(
+                        np.dot(
+                            current.object_linear_velocity,
+                            current.object_linear_velocity,
+                        )
+                    )
+                    - spec.object.mass_kg
+                    * float(np.dot(gravity, current.object_position))
+                    + integrator_correction
                 )
         gravity_rmse = math.sqrt(sum(value * value for value in gravity_errors) / len(gravity_errors)) if gravity_errors else 0.0
         measured_gravity = (
@@ -1298,6 +1392,13 @@ class NativeMuJoCoBackend(SimulationBackend):
                 1e-6,
             )
             momentum_relative_error = momentum_residual / momentum_scale
+        ballistic_evidence_required = bool(
+            spec.family in {
+                NativeFamily.FALLING_CATCH,
+                NativeFamily.PROJECTILE_REBOUND,
+            }
+            or spec.scenario == RigidScenario.ROLL_OFF_EDGE
+        )
         checks = {
             "finite_state": bool(finite),
             "no_post_initialization_object_state_writes": bool(audit.object_state_writes_after_initialization == 0),
@@ -1305,7 +1406,14 @@ class NativeMuJoCoBackend(SimulationBackend):
             "no_equality_or_latch_assistance": bool(model.neq == 0),
             "contact_penetration_bounded": bool(audit.maximum_penetration_m <= 0.02),
             "control_within_declared_ranges": bool(audit.maximum_ctrl_range_violation <= 1e-12),
-            "free_flight_acceleration_consistent": bool(not gravity_errors or gravity_rmse <= 1.2),
+            "free_flight_measurement_available": bool(
+                not ballistic_evidence_required
+                or len(measured_accelerations) >= 2
+            ),
+            "free_flight_acceleration_consistent": bool(
+                (not ballistic_evidence_required and not gravity_errors)
+                or (bool(gravity_errors) and gravity_rmse <= 1.2)
+            ),
             "gravity_sweep_measurement_available": bool(
                 not gravity_sweep
                 or (
@@ -1706,8 +1814,21 @@ class NativeMuJoCoBackend(SimulationBackend):
         armed_roles: set[str] = set()
         absent_steps: dict[str, int] = {}
         rearm_steps = max(1, int(round(0.12 * spec.sim_hz)))
+        # MuJoCo contacts can disappear for a few solver steps while a
+        # rigid body remains geometrically supported.  Smooth only the
+        # semantic mode classifier; raw contacts, forces, and event rows stay
+        # untouched.  A 20 ms support-only carry remains below one 30 Hz video
+        # period and prevents state rows/transition sidecars from alternating
+        # between support and free flight because of solver chatter.
+        classification_hysteresis_steps = max(
+            1, int(math.ceil(0.020 * spec.sim_hz))
+        )
         active = self._active_object_contacts(model, data, ids)
         active_roles = {role for _index, role, _normal, _penetration in active}
+        last_role_normals = {
+            role: np.asarray(normal, dtype=np.float64).copy()
+            for _index, role, normal, _penetration in active
+        }
         initial_sample = self._capture_sample(
             model,
             data,
@@ -1792,6 +1913,13 @@ class NativeMuJoCoBackend(SimulationBackend):
                     )
             active = self._active_object_contacts(model, data, ids)
             active_roles = {role for _index, role, _normal, _penetration in active}
+            _position, _quaternion, current_velocity, _angular = self._object_state(
+                data, ids
+            )
+            for _index, role, normal, _penetration in active:
+                last_role_normals[role] = np.asarray(
+                    normal, dtype=np.float64
+                ).copy()
             known_roles = set(absent_steps) | set(active_roles)
             for role in known_roles:
                 if role in active_roles:
@@ -1802,19 +1930,39 @@ class NativeMuJoCoBackend(SimulationBackend):
                     absent_steps[role] = absent_steps.get(role, 0) + 1
                     if absent_steps[role] >= rearm_steps:
                         armed_roles.add(role)
-            _position, _quaternion, current_velocity, _angular = self._object_state(data, ids)
-            events.extend(
-                self._contact_events(
-                    model,
-                    data,
-                    spec,
-                    active,
-                    armed_roles,
-                    previous_velocity,
-                    current_velocity,
-                    audit,
+            classification_roles = set(active_roles)
+            active_fixture_roles = {
+                role for role in active_roles if role != "native_tool"
+            }
+            if not active_fixture_roles and "native_tool" not in active_roles:
+                classification_roles.update(
+                    role
+                    for role, count in absent_steps.items()
+                    if role in {"table_surface", "ramp_surface"}
+                    and 0 < count <= classification_hysteresis_steps
+                    and role in last_role_normals
+                    and float(
+                        np.dot(current_velocity, last_role_normals[role])
+                    )
+                    <= 0.10
                 )
+            new_contact_events = self._contact_events(
+                model,
+                data,
+                spec,
+                active,
+                armed_roles,
+                previous_velocity,
+                current_velocity,
+                audit,
             )
+            events.extend(new_contact_events)
+            impact_roles = {
+                str(event["object_b"])
+                for event in new_contact_events
+                if event.get("contact_role") != "initial_support"
+                and float(event.get("normal_velocity_pre_m_s", 0.0)) <= -0.10
+            }
             sample = self._capture_sample(
                 model,
                 data,
@@ -1825,8 +1973,10 @@ class NativeMuJoCoBackend(SimulationBackend):
                 target_rpy,
                 phase,
                 enabled,
-                active_roles,
+                classification_roles,
+                impact_roles,
             )
+            previous_sample = sim_samples[-1]
             sim_samples.append(sample)
             if sample.motion_mode != previous_mode:
                 transitions.append(
@@ -1836,9 +1986,62 @@ class NativeMuJoCoBackend(SimulationBackend):
                         "from": previous_mode,
                         "to": sample.motion_mode,
                         "active_surface": sample.active_surface,
+                        "object_position_m": [
+                            float(value) for value in sample.object_position
+                        ],
                     }
                 )
                 previous_mode = sample.motion_mode
+            release_surface = {
+                RigidScenario.ROLL_OFF_EDGE: "table_surface",
+                RigidScenario.RAMP_LAUNCH: "ramp_surface",
+                RigidScenario.PROJECTILE_ROLL_OFF_EDGE: "table_surface",
+            }.get(spec.scenario)
+            release_x_raw = spec.extras.get("transition_release_x_m")
+            release_direction = int(spec.extras.get("transition_direction", 1))
+            if (
+                release_surface is not None
+                and release_x_raw is not None
+                and release_direction in {-1, 1}
+                and sample.motion_mode == "free_flight"
+                and sample.active_surface == "none"
+            ):
+                release_x = float(release_x_raw)
+                previous_side = release_direction * (
+                    float(previous_sample.object_position[0]) - release_x
+                )
+                current_side = release_direction * (
+                    float(sample.object_position[0]) - release_x
+                )
+                crossed_boundary = previous_side < 0.0 <= current_side
+                became_free_beyond_boundary = bool(
+                    previous_sample.motion_mode != "free_flight"
+                    and current_side >= 0.0
+                )
+                boundary_already_recorded = any(
+                    event.get("event_type")
+                    == "surface_release_boundary_crossing"
+                    and event.get("surface") == release_surface
+                    for event in transitions
+                )
+                if (
+                    (crossed_boundary or became_free_beyond_boundary)
+                    and not boundary_already_recorded
+                ):
+                    transitions.append(
+                        {
+                            "timestamp": sample.timestamp,
+                            "event_type": "surface_release_boundary_crossing",
+                            "from": "pre_release_region",
+                            "to": "post_release_region",
+                            "surface": release_surface,
+                            "release_x_m": release_x,
+                            "direction": release_direction,
+                            "object_position_m": [
+                                float(value) for value in sample.object_position
+                            ],
+                        }
+                    )
             if sample.phase != previous_phase:
                 transitions.append(
                     {
@@ -1868,7 +2071,11 @@ class NativeMuJoCoBackend(SimulationBackend):
                 if decisive and decisive_since is None:
                     decisive_since = sample.timestamp
                 elif not decisive and spec.family == NativeFamily.FALLING_CATCH:
-                    # Retention must be continuous; a spill resets the dwell.
+                    # Retention must remain continuous; a spill resets the
+                    # terminal-context dwell.  In contrast, a verified
+                    # surface departure is an irreversible task event.  A
+                    # later landing must not erase a launch/edge transition
+                    # that already satisfied its minimum free-flight dwell.
                     decisive_since = None
                 terminal = self._terminal_reason(spec, sample, decisive_since)
                 if terminal is not None and not fixed_counterfactual_horizon:

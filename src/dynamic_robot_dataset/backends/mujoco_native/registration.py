@@ -1,7 +1,7 @@
 """Bridge the native evaluator into the dataset-wide persisted-QC registry.
 
 The native evaluator deliberately consumes only the immutable scenario
-contract and committed frame/event tables.  This adapter translates its
+contract and committed frame/event/transition tables.  This adapter translates its
 result into the common v2 outcome contract without consulting branch intent
 or an online simulator result.
 """
@@ -43,6 +43,7 @@ def recompute_native_objective(
         ScenarioSpec.from_dict(_scenario_payload(evidence)),
         evidence.frame_rows,
         evidence.event_rows,
+        evidence.transition_rows,
     )
     task_contact_times = [
         float(row["timestamp"])

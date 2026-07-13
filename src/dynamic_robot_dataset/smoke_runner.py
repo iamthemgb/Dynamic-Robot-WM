@@ -22,9 +22,14 @@ import yaml
 from PIL import Image, ImageDraw
 
 from .common.cameras import CameraCalibration, invert_rigid_transform
-from .common.contacts import normalize_assistance, select_task_event_time
+from .common.contacts import (
+    assistance_interval_contains,
+    normalize_assistance,
+    select_task_event_time,
+)
 from .common.episode_writer import EpisodeWriter
 from .common.hashing import sha256_json
+from .common.labels import project_candidate_outcome
 from .common.paths import atomic_write_json
 from .common.provenance import GenerationProvenance, environment_hash, get_git_commit
 from .common.qc import validate_dataset
@@ -313,6 +318,15 @@ def _label_status(value: str) -> LabelStatus:
 
 def _record(result: SimulationResult, episode_index: int, git_commit: str) -> EpisodeRecord:
     status = _label_status(result.outcome.label_status)
+    outcome_projection = project_candidate_outcome(
+        actual_outcome=result.actual_outcome,
+        task_success=result.outcome.task_success,
+        partial_success_score=result.outcome.partial_success_score,
+        failure_mode=result.outcome.failure_mode,
+        label_confidence=result.outcome.label_confidence,
+        source_label_status=str(result.outcome.label_status),
+        canonical_label_status=status,
+    )
     dynamics = DynamicsMode(result.dynamics_mode)
     release = ReleaseTier(result.release_tier)
     if dynamics == DynamicsMode.SCRIPTED_MOTION:
@@ -341,11 +355,11 @@ def _record(result: SimulationResult, episode_index: int, git_commit: str) -> Ep
             else "family_specific_scripted_proxy"
         ),
         intended_branch=result.plan.intended_branch,
-        actual_outcome=result.actual_outcome,
-        task_success=result.outcome.task_success,
-        partial_success_score=result.outcome.partial_success_score,
-        failure_mode=result.outcome.failure_mode,
-        label_confidence=result.outcome.label_confidence,
+        actual_outcome=outcome_projection.actual_outcome,
+        task_success=outcome_projection.task_success,
+        partial_success_score=outcome_projection.partial_success_score,
+        failure_mode=outcome_projection.failure_mode,
+        label_confidence=outcome_projection.label_confidence,
         label_status=status,
         dynamics_mode=dynamics,
         release_tier=release,
@@ -361,6 +375,18 @@ def _record(result: SimulationResult, episode_index: int, git_commit: str) -> Ep
         physics=_physics_metadata(result),
         assistance=normalize_assistance(result.assistance),
         objective_metrics=dict(result.outcome.metrics),
+        objective_evidence=(
+            {
+                "stored_objective_success": None,
+                "independently_recomputed": False,
+                "source": "diagnostic_candidate_outcome_unverified",
+                "diagnostic_candidate_outcome": (
+                    outcome_projection.diagnostic_candidate_outcome
+                ),
+            }
+            if outcome_projection.diagnostic_candidate_outcome is not None
+            else {}
+        ),
         randomization={
             "scene_style": result.plan.scene_style,
             "randomization_level": result.plan.randomization_level,
@@ -419,11 +445,7 @@ def _frame_rows(result: SimulationResult, episode_index: int) -> list[dict[str, 
             str(mechanism["mechanism_id"])
             for mechanism in result.assistance.get("mechanisms", ())
             if any(
-                float(interval["start_time_s"]) <= float(timestamp)
-                and (
-                    interval.get("end_time_s") is None
-                    or float(timestamp) <= float(interval["end_time_s"])
-                )
+                assistance_interval_contains(interval, float(timestamp))
                 for interval in mechanism.get("activation_intervals", ())
             )
         ]
