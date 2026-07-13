@@ -25,6 +25,11 @@ outputs/smoke_tests/**/.records/
 outputs/smoke_tests/**/.staging/
 outputs/smoke_tests/**/.finalize_context.json
 
+# Native executions are immutable local datasets and Slurm logs, not source.
+outputs/native_*/
+outputs/acceptance/
+outputs/slurm-*.out
+
 # Local asset roots and resolved run state are machine-specific.
 configs/assets/asset_roots.local.yaml
 *.resolved.yaml

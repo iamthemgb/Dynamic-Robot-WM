@@ -256,7 +256,13 @@ def counterfactual_fixed_hashes(
     derived_initial_state_hash: str | None = None,
     derived_action_hash: str | None = None,
 ) -> dict[str, str]:
-    """Compute invariant hashes from canonical metadata and persisted tables."""
+    """Return immutable planned hashes when present, else runtime hashes.
+
+    Planned hashes are the pre-simulation ledger and therefore remain the
+    values compared with a declaration.  Validation must additionally call
+    :func:`_counterfactual_runtime_hashes`; otherwise copying the planned map
+    into a tampered record would hide changes to committed metadata.
+    """
 
     planned_by_relation = record.extras.get("planned_counterfactual_fixed_hashes")
     if isinstance(planned_by_relation, Mapping):
@@ -267,6 +273,25 @@ def counterfactual_fixed_hashes(
                 for name, digest in planned.items()
                 if isinstance(digest, str) and digest
             }
+
+    return _counterfactual_runtime_hashes(
+        record,
+        relation,
+        intervention_fields=intervention_fields,
+        derived_initial_state_hash=derived_initial_state_hash,
+        derived_action_hash=derived_action_hash,
+    )
+
+
+def _counterfactual_runtime_hashes(
+    record: EpisodeRecord,
+    relation: CounterfactualRelation,
+    *,
+    intervention_fields: Sequence[str] = (),
+    derived_initial_state_hash: str | None = None,
+    derived_action_hash: str | None = None,
+) -> dict[str, str]:
+    """Hash committed metadata/tables without consulting the planned ledger."""
 
     common = {
         "scene_seed": sha256_json(record.scene_seed),
@@ -479,7 +504,29 @@ def validate_counterfactual_family_records(
                         f"{declaration.relation.value} family {declaration.family_id} "
                         f"changes fixed field {name} in {sibling.episode_uuid}"
                     )
-        # Even when a table omitted fixed hashes, detect varying computed invariants.
+            runtime = _counterfactual_runtime_hashes(
+                sibling,
+                declaration.relation,
+                intervention_fields=declaration.intervention_fields,
+                derived_initial_state_hash=derived.get(sibling.episode_uuid, {}).get(
+                    "derived_initial_state_hash"
+                ),
+                derived_action_hash=derived.get(sibling.episode_uuid, {}).get(
+                    "derived_action_hash"
+                ),
+            )
+            # These two ledger fields use the same canonical representation at
+            # plan and runtime, so bind them directly rather than only checking
+            # sibling equality.
+            for name in ("scene_seed", "split_group_id"):
+                expected = declaration.fixed_field_hashes.get(name)
+                if expected is not None and runtime.get(name) != expected:
+                    problems.append(
+                        f"{declaration.relation.value} family {declaration.family_id} "
+                        f"changes runtime field {name} in {sibling.episode_uuid}"
+                    )
+        # Even when every record carries an identical copied planned ledger,
+        # independently detect variation in committed metadata and tables.
         for name in (
             "scene_seed",
             "appearance",
@@ -489,7 +536,7 @@ def validate_counterfactual_family_records(
             "nonintervened_physics",
         ):
             values = {
-                counterfactual_fixed_hashes(
+                _counterfactual_runtime_hashes(
                     sibling,
                     declaration.relation,
                     intervention_fields=declaration.intervention_fields,

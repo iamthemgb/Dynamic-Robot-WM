@@ -101,6 +101,7 @@ def _record(
         simulator_name="test",
         simulator_version="1",
         renderer="test",
+        physics=cli._physics_metadata(item.episode_plan.physics),
         randomization={
             "scene_style": item.episode_plan.scene_style,
             "visual_seed": item.episode_plan.scene_seed,
@@ -218,6 +219,43 @@ def test_expected_declarations_use_persisted_hash_contract_and_keep_missing_memb
         derived_by_uuid={key: value for key, value in derived.items() if key != records[-1].episode_uuid},
     )
     assert any("missing expected members" in problem for problem in problems)
+
+
+def test_planned_hash_copy_cannot_hide_tampered_runtime_metadata() -> None:
+    cases = [
+        case
+        for case in expand_suite(SUITE)
+        if case.family == "falling_catch"
+        and case.subfamily == "centered_vertical_drop"
+    ]
+    planned = plan_suite_cases(cases)
+    declaration = build_planned_counterfactual_family_records(planned)[0]
+    records = [_record(item, index) for index, item in enumerate(planned)]
+    derived = {
+        record.episode_uuid: {
+            "derived_initial_state_hash": record.extras["derived_initial_state_hash"],
+            "derived_action_hash": record.extras["derived_action_hash"],
+        }
+        for record in records
+    }
+    assert validate_counterfactual_family_records(
+        [declaration], records, derived_by_uuid=derived
+    ) == []
+
+    # The copied planned hash map is unchanged.  Validation must still hash
+    # actual committed metadata and reject the modified sibling.
+    records[0].scene_seed += 1
+    records[0].randomization["scene_style"] = "forged_after_planning"
+    mass = records[0].physics.parameters["mass"]
+    records[0].physics.parameters["mass"] = replace(
+        mass, value=float(mass.value) * 2.0
+    )
+    problems = validate_counterfactual_family_records(
+        [declaration], records, derived_by_uuid=derived
+    )
+    assert any("changes runtime field scene_seed" in problem for problem in problems)
+    assert any("changes invariant appearance" in problem for problem in problems)
+    assert any("changes invariant physics" in problem for problem in problems)
 
 
 def test_acceptance_gates_require_exact_160_views_styles_categories_and_rigid_outcomes() -> None:
