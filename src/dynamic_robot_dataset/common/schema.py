@@ -220,12 +220,12 @@ def infer_actual_outcome_class(
         return ActualOutcomeClass.WRONG_ACTION
     if "near_miss" in outcome or "near_miss" in code:
         return ActualOutcomeClass.NEAR_MISS
-    if outcome == "contact_failure" or code in _CONTACT_FAILURE_CODES:
-        return ActualOutcomeClass.CONTACT_FAILURE
     if code in _INVALID_FAILURE_CODES or outcome in {"invalid", "unstable_physics"}:
         return ActualOutcomeClass.INVALID
     if outcome == "partial_success":
         return ActualOutcomeClass.PARTIAL_SUCCESS
+    if outcome == "contact_failure" or code in _CONTACT_FAILURE_CODES:
+        return ActualOutcomeClass.CONTACT_FAILURE
     return ActualOutcomeClass.MISS
 
 

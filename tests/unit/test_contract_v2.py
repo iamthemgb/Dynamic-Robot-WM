@@ -31,6 +31,7 @@ from dynamic_robot_dataset.common.schema import (
     PhysicsValue,
     ReleaseTier,
     SchemaValidationError,
+    infer_actual_outcome_class,
 )
 
 
@@ -90,6 +91,21 @@ def test_v2_outcome_is_closed_and_failure_fields_agree() -> None:
     record.primary_failure_code = "no_contact"
     with pytest.raises(SchemaValidationError, match="primary_failure_code"):
         record.validate()
+
+
+def test_compatibility_outcome_inference_prioritizes_invalid_then_partial() -> None:
+    assert infer_actual_outcome_class(
+        task_success=False,
+        actual_outcome="partial_success",
+        failure_code="contact_without_completion",
+        partial_success_score=0.75,
+    ) == ActualOutcomeClass.PARTIAL_SUCCESS
+    assert infer_actual_outcome_class(
+        task_success=False,
+        actual_outcome="partial_success",
+        failure_code="unstable_physics",
+        partial_success_score=0.75,
+    ) == ActualOutcomeClass.INVALID
 
 
 def test_physics_counterfactual_family_is_optional_for_non_sweep_episode() -> None:

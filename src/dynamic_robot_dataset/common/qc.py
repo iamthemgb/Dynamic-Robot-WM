@@ -174,6 +174,33 @@ def _objective_metric_success_reference(
     return None, "unverified candidate"
 
 
+def _ordered_contact_sequence(
+    expected: Sequence[str],
+    observed: Sequence[str],
+) -> tuple[bool, bool]:
+    """Return ``(complete, malformed)`` for an ordered contact sequence.
+
+    Repeated contacts with a stage already reached are physically ordinary and
+    do not undo progress. Once the declared sequence is complete, later
+    recontacts are also harmless. A future stage observed before its next
+    required predecessor is the only malformed ordering.
+    """
+
+    progress = 0
+    for value in observed:
+        if progress == len(expected):
+            break
+        if value == expected[progress]:
+            progress += 1
+        elif value in expected[:progress]:
+            continue
+        elif value in expected[progress + 1 :]:
+            return False, True
+        # Values outside the contract and repetitions of completed stages do
+        # not affect sequence progress.
+    return progress == len(expected), False
+
+
 def _event_aware_free_fall_mask(
     rows: Sequence[Mapping[str, Any]],
     event_rows: Sequence[Mapping[str, Any]],
@@ -810,6 +837,7 @@ class QCValidator:
             except Exception as error:
                 result.fail(f"contact events: {error}")
         if frame_rows:
+            ballistic_mode = _ballistic_evidence_mode(record)
             velocity_field = next(
                 (
                     name
@@ -830,7 +858,11 @@ class QCValidator:
                 ),
                 None,
             )
-            if velocity_field and free_fall_field:
+            if (
+                ballistic_mode != "not_required"
+                and velocity_field
+                and free_fall_field
+            ):
                 check = gravity_consistency_check(
                     [float(row["timestamp"]) for row in frame_rows],
                     [row[velocity_field] for row in frame_rows],
@@ -839,12 +871,10 @@ class QCValidator:
                         frame_rows,
                         event_rows,
                         free_fall_field,
-                        precontact_only=(
-                            _ballistic_evidence_mode(record) == "precontact"
-                        ),
+                        precontact_only=(ballistic_mode == "precontact"),
                         release_x_m=(
                             float(record.extras["native_scenario_spec"]["extras"]["transition_release_x_m"])
-                            if _ballistic_evidence_mode(record) == "post_release"
+                            if ballistic_mode == "post_release"
                             and isinstance(record.extras.get("native_scenario_spec"), Mapping)
                             and isinstance(
                                 record.extras["native_scenario_spec"].get("extras"),
@@ -869,23 +899,16 @@ class QCValidator:
                             )
                             else 1
                         ),
-                        stop_at_next_contact=(
-                            _ballistic_evidence_mode(record) == "post_release"
-                        ),
+                        stop_at_next_contact=(ballistic_mode == "post_release"),
                     ),
                 )
                 result.metrics[f"physics.{check.name}"] = check.metrics
                 if not check.passed:
                     if float(check.metrics.get("sample_count", 0.0)) == 0.0:
-                        if _requires_ballistic_evidence(record):
-                            result.fail(f"physics {check.name}: {check.message}")
-                        else:
-                            result.warnings.append(
-                                f"physics {check.name} not applicable: {check.message}"
-                            )
+                        result.fail(f"physics {check.name}: {check.message}")
                     else:
                         result.fail(f"physics {check.name}: {check.message}")
-            elif _requires_ballistic_evidence(record):
+            elif ballistic_mode != "not_required":
                 result.fail(
                     "gravity consistency not independently evaluated: no free-fall mask"
                 )
@@ -1206,7 +1229,7 @@ class QCValidator:
                     )
                     and isinstance(row.get("object.linear_velocity"), Sequence)
                 ]
-                if len(free_flight) >= 2:
+                if ballistic_mode != "not_required" and len(free_flight) >= 2:
                     check = gravity_consistency_check(
                         [float(row["timestamp"]) for row in free_flight],
                         [row["object.linear_velocity"] for row in free_flight],
@@ -1254,22 +1277,9 @@ class QCValidator:
                         ],
                     ]
                     observed = [value for _, value in sorted(chronological)]
-                    cursor = iter(observed)
-                    ordered = all(any(value == target for value in cursor) for target in expected)
-                    observed_expected = [value for value in observed if value in expected]
-                    expected_index = {value: index for index, value in enumerate(expected)}
-                    malformed_prefix = any(
-                        expected_index[right] < expected_index[left]
-                        for left, right in zip(
-                            observed_expected, observed_expected[1:]
-                        )
-                    ) or any(
-                        target in observed_expected
-                        and any(
-                            predecessor not in observed_expected
-                            for predecessor in expected[:index]
-                        )
-                        for index, target in enumerate(expected)
+                    ordered, malformed_prefix = _ordered_contact_sequence(
+                        expected,
+                        observed,
                     )
                     if malformed_prefix:
                         result.fail(

@@ -25,6 +25,7 @@ from dynamic_robot_dataset.common.native_suite import (
 )
 from dynamic_robot_dataset.common.suites import expand_suite
 from dynamic_robot_dataset.cli import _episode_record
+from dynamic_robot_dataset.smoke_runner import _record as _smoke_episode_record
 
 
 pytestmark = pytest.mark.integration
@@ -102,6 +103,22 @@ def test_failed_transport_with_full_dwell_is_scored_as_partial_progress() -> Non
     assert 0.5 <= result.simulation.outcome.partial_success_score < 1.0
     assert result.simulation.outcome.failure_mode == "contact_without_completion"
     assert result.simulation.actual_outcome == "partial_success"
+
+    records = (
+        _episode_record(
+            result.simulation,
+            item.case.case_index,
+            "a" * 40,
+            result.as_renderer_payload(),
+        ),
+        _smoke_episode_record(result.simulation, item.case.case_index, "a" * 40),
+    )
+    for record in records:
+        record.validate()
+        persisted = record.to_dict()
+        assert persisted["actual_outcome"] == "partial_success"
+        assert persisted["actual_outcome_class"] == "partial_success"
+        assert persisted["primary_failure_code"] == "contact_without_completion"
 
 
 @pytest.mark.parametrize(

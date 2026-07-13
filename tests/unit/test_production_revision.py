@@ -26,6 +26,7 @@ from dynamic_robot_dataset.common.readiness import load_gate_config
 from dynamic_robot_dataset.common.qc import (
     _ballistic_evidence_mode,
     _event_aware_free_fall_mask,
+    _ordered_contact_sequence,
 )
 from dynamic_robot_dataset.families.base import normalize_branch
 from dynamic_robot_dataset.families import get_family
@@ -36,6 +37,25 @@ from dynamic_robot_dataset.families.deformable.rope.native_contract import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize(
+    ("observed", "expected_result"),
+    [
+        (("table_surface", "native_tool", "table_surface"), (True, False)),
+        (("table_surface", "table_surface", "native_tool"), (True, False)),
+        (("native_tool", "table_surface"), (False, True)),
+        (("table_surface",), (False, False)),
+    ],
+)
+def test_contact_sequence_allows_recontacts_but_rejects_future_first(
+    observed: tuple[str, ...],
+    expected_result: tuple[bool, bool],
+) -> None:
+    assert _ordered_contact_sequence(
+        ("table_surface", "native_tool"),
+        observed,
+    ) == expected_result
 
 
 def test_encoded_gravity_mask_excludes_contact_between_video_frames() -> None:

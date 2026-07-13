@@ -5,12 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .schema import LabelStatus
+from .schema import ActualOutcomeClass, LabelStatus, infer_actual_outcome_class
 
 
 @dataclass(frozen=True, slots=True)
 class CanonicalOutcomeProjection:
     actual_outcome: str
+    actual_outcome_class: ActualOutcomeClass
     task_success: bool
     partial_success_score: float | None
     failure_mode: str
@@ -33,6 +34,13 @@ def project_candidate_outcome(
     if canonical_label_status == LabelStatus.VERIFIED:
         return CanonicalOutcomeProjection(
             actual_outcome=actual_outcome,
+            actual_outcome_class=infer_actual_outcome_class(
+                task_success=task_success,
+                actual_outcome=actual_outcome,
+                failure_code=failure_mode,
+                label_status=canonical_label_status,
+                partial_success_score=partial_success_score,
+            ),
             task_success=task_success,
             partial_success_score=partial_success_score,
             failure_mode=failure_mode,
@@ -50,6 +58,7 @@ def project_candidate_outcome(
     }
     return CanonicalOutcomeProjection(
         actual_outcome="unverified",
+        actual_outcome_class=ActualOutcomeClass.UNVERIFIED,
         task_success=False,
         partial_success_score=None,
         failure_mode=(

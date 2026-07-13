@@ -387,6 +387,7 @@ def _episode_record(
         action_mode=str(result.plan.options.get("action_mode", "family_specific_named_command")),
         intended_branch=result.plan.intended_branch,
         actual_outcome=outcome_projection.actual_outcome,
+        actual_outcome_class=outcome_projection.actual_outcome_class,
         task_success=outcome_projection.task_success,
         partial_success_score=outcome_projection.partial_success_score,
         failure_mode=outcome_projection.failure_mode,

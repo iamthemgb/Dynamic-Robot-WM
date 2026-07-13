@@ -356,6 +356,7 @@ def _record(result: SimulationResult, episode_index: int, git_commit: str) -> Ep
         ),
         intended_branch=result.plan.intended_branch,
         actual_outcome=outcome_projection.actual_outcome,
+        actual_outcome_class=outcome_projection.actual_outcome_class,
         task_success=outcome_projection.task_success,
         partial_success_score=outcome_projection.partial_success_score,
         failure_mode=outcome_projection.failure_mode,
