@@ -1,15 +1,17 @@
-schema_version: dynamic-robot-camera/v1
+schema_version: dynamic-robot-camera/v2
 resolution: [832, 480]
 fps: 30
 pixel_format: yuv420p
 codec: h264
 views:
   main:
+    stream_name: observation.images.main
     role: close_three_quarter_external
     distortion_model: none
     near_m: 0.01
     far_m: 50.0
   secondary:
+    stream_name: observation.images.secondary
     role_by_family:
       falling_catch: side
       rolling_interception: top_oblique
@@ -23,5 +25,18 @@ views:
 qc:
   require_event_visible_in_at_least_one_view: true
   require_target_visible_fraction: 0.90
+  require_tool_visible_at_key_event: true
+  require_fixture_visible_at_key_event: true
+  minimum_crop_margin_px: 8
+  minimum_target_area_px: 64
   reject_black_void_fraction_above: 0.35
-
+  reject_overexposed_fraction_above: 0.30
+calibration:
+  key: calibration_id
+  episode_mapping: camera_streams
+  allow_task_specific_poses: true
+  fixed_within_counterfactual_bundle: true
+  require_pose_hash: true
+observation_latency:
+  synchronized_between_views: true
+  record_offset_from_state_action_clock: true

@@ -1,0 +1,80 @@
+schema_version: dynamic-robot-failure-codes/v2
+compatibility_field: failure_mode
+primary_field: primary_failure_code
+success_code: none
+actual_outcome_classes:
+  - success
+  - partial_success
+  - near_miss
+  - contact_failure
+  - miss
+  - no_op
+  - wrong_action
+  - invalid
+  - unverified
+failure_tags:
+  - outcome_failure
+  - near_miss
+  - contact
+  - no_op
+  - wrong_action
+  - invalid_rollout
+  - unverified_label
+codes:
+  - unexpected_failure
+  - spatial_near_miss
+  - timing_near_miss
+  - no_contact
+  - contact_without_completion
+  - slip
+  - unstable_retention
+  - wrong_action
+  - no_op
+  - bad_rebound_prediction
+  - floor_contact
+  - excessive_penetration
+  - unstable_physics
+  - cropped_event
+  - truncated_outcome
+  - cloth_metric_failed
+  - rope_metric_failed
+  - unintended_snag
+  - ring_not_crossed
+  - soft_body_metric_failed
+  - label_unverified
+  - controller_no_op
+  - receptacle_near_miss
+  - receptacle_missed_object
+  - object_not_retained
+  - tool_near_miss
+  - tool_missed_rolling_object
+  - object_not_retained_in_goal
+  - paddle_missed_projectile
+  - paddle_near_miss
+  - incorrect_rebound_direction
+  - target_region_not_contacted
+  - insufficient_cloth_displacement
+  - corner_not_grasped
+  - insufficient_corner_lift
+  - fold_edge_not_grasped
+  - insufficient_fold_overlap
+  - cloth_not_grasped
+  - cloth_spill_outside_box
+  - coil_geometry_not_formed
+  - endpoint_not_dragged_to_target
+  - rope_not_draped_over_support
+  - wave_amplitude_or_frequency_too_low
+  - insufficient_rope_sweep
+  - rope_did_not_cross_and_remain_beyond_ring
+  - insufficient_tug_displacement
+  - rope_not_twirl_elevated
+  - insufficient_wrap_around_post
+  - insufficient_compression
+  - insufficient_indentation_depth
+  - insufficient_tensile_strain
+  - insufficient_rebound_height
+  - legacy_proxy_quarantined
+rules:
+  failed_outcome_requires_concrete_primary_code: true
+  primary_code_must_equal_compatibility_field: true
+  successful_outcome_forbids_failure_tags: true

@@ -56,6 +56,10 @@ class LegacyProxyQuarantineAdapter(FamilyAdapter):
                 "timestamp": time_s,
                 "legacy.proxy_position": [0.05 * time_s, 0.0, 0.2],
                 "assistance.active": assisted,
+                # Simulator-observed negative-control evidence.  Scripted
+                # controls are scripted for their full interval; assisted
+                # controls instead use the named mechanism mask below.
+                "dynamics.scripted_active": scripted,
                 "legacy.quarantine": True,
             }
             for time_s in times
@@ -86,6 +90,16 @@ class LegacyProxyQuarantineAdapter(FamilyAdapter):
                 latch_active=proxy_type == "assisted_latch",
                 activation_time_s=0.0 if assisted else None,
                 deactivation_time_s=plan.duration_s if assisted else None,
+                mechanism_id=(f"legacy-{proxy_type}" if assisted else None),
+                mechanism_type=(
+                    "latch"
+                    if proxy_type == "assisted_latch"
+                    else "equality_constraint"
+                    if proxy_type == "equality_grasp"
+                    else None
+                ),
+                constraint_ids=(f"legacy_{proxy_type}",) if assisted else (),
+                target_body_ids=("legacy_proxy_object",) if assisted else (),
             ),
             physics_qc=default_physics_qc(source_physics_complete=False, native_contact_dynamics=False),
             simulator={"name": f"legacy_quarantine.{proxy_type}", "version": "unknown", "production_eligible": False},

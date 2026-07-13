@@ -1,0 +1,13 @@
+schema_version: dynamic-robot-readiness-gate/v1
+gate_id: native_1000h_blocked_v1
+minimum_unique_release_hours: 1000.0
+hard_blocked: true
+blocked_reason: A positive scaling curve through the 300-hour stage has not been demonstrated.
+require_native_mujoco: true
+free_contact_only: true
+require_no_sparse_strata: true
+acceptance_suite:
+  suite_name: native_acceptance_160
+  branch_count: 160
+  require_full_native: true
+  require_passed_execution: true

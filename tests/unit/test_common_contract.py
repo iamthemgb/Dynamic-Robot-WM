@@ -118,6 +118,19 @@ def test_unverified_and_assisted_records_are_not_default_release() -> None:
             "latch_active": True,
             "constraint_activation_time": 0.1,
             "constraint_deactivation_time": 0.4,
+            "mechanisms": [
+                {
+                    "mechanism_id": "retention-latch",
+                    "mechanism_type": "latch",
+                    "source": "simulator_observed",
+                    "constraint_ids": ["latch0"],
+                    "target_body_ids": ["object"],
+                    "target_element_ids": [],
+                    "activation_intervals": [
+                        {"start_time_s": 0.1, "end_time_s": 0.4}
+                    ],
+                }
+            ],
         },
     )
     unverified.validate()
@@ -220,6 +233,7 @@ def test_counterfactual_relations_stay_in_one_split() -> None:
     ]
     assignments = SplitAssigner(seed=11).assign(records)
     assert len({assignment.split for assignment in assignments}) == 1
+    assert {assignment.split_group_id for assignment in assignments} == {"scene-family"}
     assert validate_no_split_leakage(records, assignments) == []
 
 
@@ -242,7 +256,7 @@ def test_identical_state_trajectories_stay_in_one_split() -> None:
         ),
     ]
     assignments = SplitAssigner(seed=17).assign(records)
-    assert len({assignment.split_group_id for assignment in assignments}) == 1
+    assert {assignment.split_group_id for assignment in assignments} == {"scene-a", "scene-b"}
     assert len({assignment.split for assignment in assignments}) == 1
 
 
@@ -281,9 +295,9 @@ def test_finite_split_assignment_rebalances_whole_groups() -> None:
         for split in ("train", "validation", "test")
     }
     assert sum(counts.values()) == len(records)
-    assert abs(counts["train"] - 0.90 * len(records)) <= 5
-    assert abs(counts["validation"] - 0.05 * len(records)) <= 5
-    assert abs(counts["test"] - 0.05 * len(records)) <= 5
+    assert abs(counts["train"] - 0.80 * len(records)) <= 5
+    assert abs(counts["validation"] - 0.10 * len(records)) <= 5
+    assert abs(counts["test"] - 0.10 * len(records)) <= 5
 
 
 def test_split_validator_catches_scene_and_parent_leakage() -> None:

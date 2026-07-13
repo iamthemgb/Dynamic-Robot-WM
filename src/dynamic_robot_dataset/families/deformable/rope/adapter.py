@@ -243,7 +243,8 @@ class RopeAdapter(FamilyAdapter):
             actual_outcome=classify_actual_outcome(
                 success=outcome.task_success, contacted=contacted,
                 near_distance_m=0.0 if contacted else 1.0, near_threshold_m=0.1,
-                bad_action=float(branch["control_magnitude"]) == 0.0,
+                bad_action=float(branch["control_magnitude"]) == 0.0 and plan.intended_branch != "no_op",
+                no_op=plan.intended_branch == "no_op",
             ),
             dynamics_mode="scripted_motion", release_tier="scripted_motion",
             assistance=assistance_record(
@@ -251,6 +252,10 @@ class RopeAdapter(FamilyAdapter):
                 equality_constraint_active=bool(branch["endpoint_attachment"]),
                 activation_time_s=0.0 if branch["endpoint_attachment"] else None,
                 deactivation_time_s=plan.duration_s if branch["endpoint_attachment"] else None,
+                mechanism_id=("diagnostic-rope-endpoint-attachment" if branch["endpoint_attachment"] else None),
+                mechanism_type=("equality_constraint" if branch["endpoint_attachment"] else None),
+                constraint_ids=("diagnostic_rope_endpoint_attachment",) if branch["endpoint_attachment"] else (),
+                target_body_ids=("rope_endpoint",) if branch["endpoint_attachment"] else (),
             ),
             physics_qc=default_physics_qc(
                 finite_state=all(math.isfinite(value) for geometry in geometries for point in geometry for value in point),

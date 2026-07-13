@@ -415,6 +415,18 @@ def _frame_rows(result: SimulationResult, episode_index: int) -> list[dict[str, 
     for frame_index, (timestamp, state) in enumerate(zip(result.frame_times_s, result.states)):
         action = result.actions[min(frame_index, len(result.actions) - 1)] if result.actions else {}
         assistance_active = bool(state.get("assistance.active", False))
+        mechanism_ids = [
+            str(mechanism["mechanism_id"])
+            for mechanism in result.assistance.get("mechanisms", ())
+            if any(
+                float(interval["start_time_s"]) <= float(timestamp)
+                and (
+                    interval.get("end_time_s") is None
+                    or float(timestamp) <= float(interval["end_time_s"])
+                )
+                for interval in mechanism.get("activation_intervals", ())
+            )
+        ]
         row: dict[str, Any] = {
             "episode_index": episode_index,
             "frame_index": frame_index,
@@ -427,6 +439,7 @@ def _frame_rows(result: SimulationResult, episode_index: int) -> list[dict[str, 
             "assistance.assisted_retention": assistance_active and bool(result.assistance.get("assisted_retention", False)),
             "assistance.equality_constraint_active": assistance_active and bool(result.assistance.get("equality_constraint_active", False)),
             "assistance.latch_active": assistance_active and bool(result.assistance.get("latch_active", False)),
+            "assistance.mechanism_ids": mechanism_ids,
         }
         row.update({key: value for key, value in state.items() if key != "timestamp"})
         row.update({f"action.{key}": value for key, value in action.items() if key != "timestamp"})

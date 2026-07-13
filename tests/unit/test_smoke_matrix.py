@@ -28,7 +28,8 @@ def test_smoke_counterfactual_invariants_and_grouping() -> None:
     by_physics_family: dict[str, list] = defaultdict(list)
     by_action_bundle: dict[str, list] = defaultdict(list)
     for plan in plans:
-        by_physics_family[plan.physics_counterfactual_family_id].append(plan)
+        if plan.physics_counterfactual_family_id is not None:
+            by_physics_family[plan.physics_counterfactual_family_id].append(plan)
         by_action_bundle[plan.counterfactual_bundle_id].append(plan)
 
     physics_families = [values for values in by_physics_family.values() if len(values) > 1]
@@ -71,10 +72,36 @@ def test_smoke_objective_outcomes_and_tiers_are_honest() -> None:
     assert all(result.outcome.label_status == "unverified" for result in cloth + rope)
     assert all(result.dynamics_mode == "scripted_motion" for result in cloth + rope)
     assert all(result.release_tier == "scripted_motion" for result in cloth + rope)
+    assisted_results = [
+        result
+        for result in cloth + rope
+        if any(
+            result.assistance.get(name, False)
+            for name in (
+                "assisted_grasp",
+                "assisted_retention",
+                "equality_constraint_active",
+                "latch_active",
+            )
+        )
+    ]
+    assert assisted_results
+    assert all(result.assistance.get("mechanisms") for result in assisted_results)
+    assert all(
+        mechanism.get("target_body_ids") or mechanism.get("target_element_ids")
+        for result in assisted_results
+        for mechanism in result.assistance["mechanisms"]
+    )
 
     legacy = [result for result in results if result.plan.family == "legacy_proxy_quarantine"]
     assert {result.dynamics_mode for result in legacy} == {"assisted_contact", "scripted_motion"}
     assert all(result.outcome.failure_mode == "legacy_proxy_quarantined" for result in legacy)
+    scripted_legacy = [result for result in legacy if result.dynamics_mode == "scripted_motion"]
+    assert scripted_legacy
+    assert all(
+        all(state.get("dynamics.scripted_active") is True for state in result.states)
+        for result in scripted_legacy
+    )
 
 
 def test_every_smoke_failure_has_a_registered_concrete_code() -> None:

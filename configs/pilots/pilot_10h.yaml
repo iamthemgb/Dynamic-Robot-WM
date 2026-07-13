@@ -1,0 +1,21 @@
+schema_version: dynamic-robot-pilot/v1
+pilot_id: repaired_pilot_10_unique_hours
+backend: native_mujoco
+submit: false
+target_unique_release_hours: 10.0
+maximum_planned_raw_hours: 12.0
+views: [main, secondary]
+split_config: configs/splits/default.yaml
+release_gate: configs/release_gates/10h.yaml
+allocations:
+  - {id: falling_retention, unique_hours: 2.5, families: [falling_catch]}
+  - {id: rolling_sliding, unique_hours: 3.5, families: [rolling_interception]}
+  - {id: projectile_rebound, unique_hours: 2.5, families: [projectile_rebound]}
+  - {id: free_contact_deformable, unique_hours: 1.5, families: [soft_body, cloth, rope], release_tiers: [free_contact]}
+policy:
+  count_camera_views_once: true
+  count_wan_padding: false
+  retry_on_outcome_mismatch: false
+  replace_qc_failure_with_new_seed_only: true
+  reallocate_blocked_family_quota: false
+  require_committed_generator: true

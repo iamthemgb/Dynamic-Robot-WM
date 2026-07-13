@@ -1,4 +1,4 @@
-schema_version: dynamic-robot-randomization/v1
+schema_version: dynamic-robot-randomization/v2
 background_mix:
   clean_franka_lab: 0.60
   robocasa_kitchen_tabletop: 0.25
@@ -14,4 +14,33 @@ rules:
   independent_of_intended_branch: true
   independent_of_actual_outcome: true
   physics_family_visuals_fixed: true
-
+  action_bundle_physics_fixed: true
+  color_background_camera_independent_of_branch: true
+  outcome_conditioned_resampling_forbidden: true
+levels:
+  R0:
+    description: deterministic calibration scene
+    vary: []
+  R1:
+    description: moderate in-distribution production randomization
+    vary: [object_appearance, lighting, background_style, robot_initial_configuration]
+  R2:
+    description: broad validated in-distribution randomization
+    vary: [object_asset, tool_geometry, camera_pose, controller_delay, controller_noise]
+  OOD:
+    description: separately manifested held-out evaluation values
+    training_eligible: false
+physics_axes:
+  persistent: [gravity, density, mass, size, friction, effective_restitution]
+  transient_state: [initial_position, initial_velocity, initial_spin]
+  controller: [initial_joint_configuration, maximum_velocity, maximum_acceleration, control_delay, action_noise, tool_mount_error]
+  observation: [camera_delay, camera_pose, exposure]
+correlation_policy:
+  derive_mass_from_geometry_and_density: true
+  never_sample_mass_size_density_inconsistently: true
+  vary_one_declared_field_per_physics_counterfactual: true
+asset_admission:
+  require_scale_validation: true
+  require_collision_validation: true
+  require_render_validation: true
+  require_license_notice: true

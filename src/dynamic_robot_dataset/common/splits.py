@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, MutableMapping, Sequence
 
 from .hashing import sha256_json, stable_uint64
@@ -55,13 +55,27 @@ class SplitAssignment:
 
 
 @dataclass(slots=True)
-class SplitAssigner:
-    """Assign connected leakage groups to stable 90/5/5 splits."""
+class SplitDiagnostics:
+    """Coverage diagnostics emitted without weakening leakage grouping."""
 
-    seed: int = 0
-    train_fraction: float = 0.90
-    validation_fraction: float = 0.05
-    test_fraction: float = 0.05
+    requested_fractions: dict[str, float]
+    actual_counts: dict[str, int]
+    stratum_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    sparse_strata: list[str] = field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        return not self.sparse_strata
+
+
+@dataclass(slots=True)
+class SplitAssigner:
+    """Assign connected leakage groups to stable, stratified 80/10/10 splits."""
+
+    seed: int | str = 0
+    train_fraction: float = 0.80
+    validation_fraction: float = 0.10
+    test_fraction: float = 0.10
 
     def __post_init__(self) -> None:
         fractions = self.train_fraction + self.validation_fraction + self.test_fraction
@@ -117,21 +131,85 @@ class SplitAssigner:
             return Split.VALIDATION
         return Split.TEST
 
-    def assign(self, records: Iterable[EpisodeRecord | Mapping[str, Any]]) -> list[SplitAssignment]:
-        """Return assignments without mutating input records."""
+    @staticmethod
+    def _stratum(record: Mapping[str, Any]) -> tuple[str, ...]:
+        """Return the release-balancing signature for one logical episode."""
+
+        randomization = record.get("randomization")
+        randomization = randomization if isinstance(randomization, Mapping) else {}
+        extras = record.get("extras")
+        extras = extras if isinstance(extras, Mapping) else {}
+        physics = record.get("physics")
+        physics = physics if isinstance(physics, Mapping) else {}
+        range_provenance = physics.get("parameter_range_provenance")
+        range_provenance = (
+            range_provenance if isinstance(range_provenance, Mapping) else {}
+        )
+        physics_bin = (
+            extras.get("physics_bin")
+            or extras.get("parameter_bin")
+            or range_provenance.get("partition")
+            or "<missing>"
+        )
+        return (
+            str(record.get("family", "<missing>")),
+            str(record.get("subfamily", "<missing>")),
+            str(
+                record.get("actual_outcome_class")
+                or record.get("actual_outcome", "<missing>")
+            ),
+            str(randomization.get("background_style") or randomization.get("scene_style") or "<missing>"),
+            str(randomization.get("object_asset_id") or "<missing>"),
+            str(record.get("tool_type") or "<missing>"),
+            str(physics_bin),
+        )
+
+    @staticmethod
+    def _stratum_name(stratum: tuple[str, ...]) -> str:
+        return " | ".join(stratum)
+
+    def assign_with_diagnostics(
+        self, records: Iterable[EpisodeRecord | Mapping[str, Any]]
+    ) -> tuple[list[SplitAssignment], SplitDiagnostics]:
+        """Return assignments and coverage diagnostics without splitting siblings."""
 
         values = [_as_mapping(record) for record in records]
         if not values:
-            return []
+            return [], SplitDiagnostics(
+                {
+                    "train": self.train_fraction,
+                    "validation": self.validation_fraction,
+                    "test": self.test_fraction,
+                },
+                {"train": 0, "validation": 0, "test": 0},
+            )
         assignments: list[SplitAssignment | None] = [None] * len(values)
         components = self._components(values)
-        groups: list[tuple[str, list[int]]] = []
+        groups: list[tuple[str, list[int], Counter[tuple[str, ...]]]] = []
         for indices in components:
             episode_ids = sorted(str(values[index]["episode_uuid"]) for index in indices)
-            group_id = "split-group-" + sha256_json(episode_ids)[:20]
-            groups.append((group_id, indices))
+            declared_group_ids = {
+                str(_value(values[index], "split_group_id"))
+                for index in indices
+                if _value(values[index], "split_group_id") not in {None, ""}
+            }
+            # Preserve a generator-declared leakage identity. Replacing it
+            # would make finalized episode rows disagree with the immutable
+            # pre-simulation counterfactual declaration table.
+            group_id = (
+                next(iter(declared_group_ids))
+                if len(declared_group_ids) == 1
+                else "connected-split-group-" + sha256_json(episode_ids)[:20]
+            )
+            groups.append(
+                (
+                    group_id,
+                    indices,
+                    Counter(self._stratum(values[index]) for index in indices),
+                )
+            )
         # Stable hash ordering randomizes semantic groups, while remaining-capacity
-        # assignment keeps finite datasets near the requested 90/5/5 proportions.
+        # assignment keeps finite datasets near the requested 80/10/10 proportions.
         groups.sort(key=lambda item: stable_uint64(item[0], namespace=f"dataset-split-order:{self.seed}"))
         targets = {
             Split.TRAIN: len(values) * self.train_fraction,
@@ -139,32 +217,65 @@ class SplitAssigner:
             Split.TEST: len(values) * self.test_fraction,
         }
         counts: dict[Split, int] = {split: 0 for split in targets}
+        total_strata = Counter(self._stratum(record) for record in values)
+        stratum_targets = {
+            stratum: {split: count * fraction for split, fraction in (
+                (Split.TRAIN, self.train_fraction),
+                (Split.VALIDATION, self.validation_fraction),
+                (Split.TEST, self.test_fraction),
+            )}
+            for stratum, count in total_strata.items()
+        }
+        stratum_counts: dict[tuple[str, ...], dict[Split, int]] = {
+            stratum: {Split.TRAIN: 0, Split.VALIDATION: 0, Split.TEST: 0}
+            for stratum in total_strata
+        }
         tie_order = {Split.TRAIN: 0, Split.VALIDATION: 1, Split.TEST: 2}
         group_splits: dict[str, Split] = {}
-        for group_id, indices in groups:
-            split = max(
-                targets,
-                key=lambda candidate: (targets[candidate] - counts[candidate], -tie_order[candidate]),
+        def allocation_error(
+            candidate_counts: Mapping[Split, int],
+            candidate_strata: Mapping[tuple[str, ...], Mapping[Split, int]],
+        ) -> float:
+            overall = sum(
+                ((candidate_counts[split] - target) / max(target, 1.0)) ** 2
+                for split, target in targets.items()
             )
+            stratified = 0.0
+            for stratum, per_split in candidate_strata.items():
+                for split, target in stratum_targets[stratum].items():
+                    stratified += ((per_split[split] - target) / max(target, 1.0)) ** 2
+            return overall + stratified
+
+        for group_id, indices, histogram in groups:
+            candidates: list[tuple[float, int, Split]] = []
+            for candidate in targets:
+                candidate_counts = dict(counts)
+                candidate_counts[candidate] += len(indices)
+                candidate_strata = {
+                    stratum: dict(per_split) for stratum, per_split in stratum_counts.items()
+                }
+                for stratum, amount in histogram.items():
+                    candidate_strata[stratum][candidate] += amount
+                candidates.append(
+                    (allocation_error(candidate_counts, candidate_strata), tie_order[candidate], candidate)
+                )
+            split = min(candidates)[2]
             group_splits[group_id] = split
             counts[split] += len(indices)
+            for stratum, amount in histogram.items():
+                stratum_counts[stratum][split] += amount
 
         # A large connected component encountered near a capacity boundary can
         # overshoot one bucket even when later small groups could repair the
         # ratio.  Deterministic single-group moves minimize total squared count
         # error without ever breaking a leakage component.
-        def allocation_error(candidate_counts: Mapping[Split, int]) -> float:
-            return sum(
-                (candidate_counts[split] - target) ** 2
-                for split, target in targets.items()
-            )
-
         while True:
-            current_error = allocation_error(counts)
+            current_error = allocation_error(counts, stratum_counts)
             best_move: tuple[
-                tuple[float, int, int], str, Split, Split, dict[Split, int]
+                tuple[float, int, int], str, Split, Split, dict[Split, int],
+                dict[tuple[str, ...], dict[Split, int]],
             ] | None = None
-            for group_index, (group_id, indices) in enumerate(groups):
+            for group_index, (group_id, indices, histogram) in enumerate(groups):
                 source = group_splits[group_id]
                 size = len(indices)
                 for destination in targets:
@@ -173,26 +284,90 @@ class SplitAssigner:
                     candidate_counts = dict(counts)
                     candidate_counts[source] -= size
                     candidate_counts[destination] += size
-                    error = allocation_error(candidate_counts)
+                    candidate_strata = {
+                        stratum: dict(per_split) for stratum, per_split in stratum_counts.items()
+                    }
+                    for stratum, amount in histogram.items():
+                        candidate_strata[stratum][source] -= amount
+                        candidate_strata[stratum][destination] += amount
+                    error = allocation_error(candidate_counts, candidate_strata)
                     key = (error, group_index, tie_order[destination])
                     if error < current_error and (best_move is None or key < best_move[0]):
-                        best_move = (key, group_id, source, destination, candidate_counts)
+                        best_move = (
+                            key,
+                            group_id,
+                            source,
+                            destination,
+                            candidate_counts,
+                            candidate_strata,
+                        )
             if best_move is None:
                 break
-            _, group_id, _, destination, counts = best_move
+            _, group_id, _, destination, counts, stratum_counts = best_move
             group_splits[group_id] = destination
 
-        for group_id, indices in groups:
+        for group_id, indices, _ in groups:
             split = group_splits[group_id]
             for index in indices:
                 record = values[index]
                 assignments[index] = SplitAssignment(
                     episode_uuid=str(record["episode_uuid"]),
                     episode_index=int(record["episode_index"]),
-                    split_group_id=group_id,
+                    # Preserve the declared group identity in metadata. Extra
+                    # duplicate/lineage edges can join several declared groups
+                    # for assignment without rewriting their counterfactual
+                    # contracts; the whole connected component still receives
+                    # the same split.
+                    split_group_id=str(
+                        _value(record, "split_group_id") or group_id
+                    ),
                     split=split.value,
                 )
-        return [assignment for assignment in assignments if assignment is not None]
+        result = [assignment for assignment in assignments if assignment is not None]
+        component_sets: dict[tuple[str, ...], set[str]] = defaultdict(set)
+        for group_id, _, histogram in groups:
+            for stratum in histogram:
+                component_sets[stratum].add(group_id)
+        nonzero_split_count = sum(
+            fraction > 0
+            for fraction in (self.train_fraction, self.validation_fraction, self.test_fraction)
+        )
+        sparse = sorted(
+            self._stratum_name(stratum)
+            for stratum, group_ids in component_sets.items()
+            if len(group_ids) < nonzero_split_count
+            or any(
+                stratum_counts[stratum][split] == 0
+                for split, fraction in (
+                    (Split.TRAIN, self.train_fraction),
+                    (Split.VALIDATION, self.validation_fraction),
+                    (Split.TEST, self.test_fraction),
+                )
+                if fraction > 0
+            )
+        )
+        diagnostics = SplitDiagnostics(
+            requested_fractions={
+                "train": self.train_fraction,
+                "validation": self.validation_fraction,
+                "test": self.test_fraction,
+            },
+            actual_counts={split.value: counts[split] for split in counts},
+            stratum_counts={
+                self._stratum_name(stratum): {
+                    split.value: count for split, count in per_split.items()
+                }
+                for stratum, per_split in sorted(stratum_counts.items())
+            },
+            sparse_strata=sparse,
+        )
+        return result, diagnostics
+
+    def assign(self, records: Iterable[EpisodeRecord | Mapping[str, Any]]) -> list[SplitAssignment]:
+        """Return assignments without mutating input records."""
+
+        assignments, _ = self.assign_with_diagnostics(records)
+        return assignments
 
     def assignment_map(self, records: Iterable[EpisodeRecord | Mapping[str, Any]]) -> dict[str, str]:
         """Return ``episode_uuid -> split`` for convenience."""

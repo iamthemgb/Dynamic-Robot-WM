@@ -23,16 +23,41 @@ from ..solver import moving_target_position
 
 class RollingInterceptionAdapter(FamilyAdapter):
     family = "rolling_interception"
-    supported_subfamilies = ("default", "rolling_island", "rolling_ball_interception")
+    supported_subfamilies = (
+        "default",
+        "rolling_island",
+        "rolling_ball_interception",
+        "straight_ball_left_to_right",
+        "straight_ball_right_to_left",
+        "rolling_sliding_transition",
+        "sliding_puck",
+        "sliding_cube",
+        "small_slope",
+        "ramp_to_table",
+        "table_edge_fall",
+        "friction_sweep",
+        "temporary_occlusion",
+        "container_receive",
+        "paddle_stop",
+        "paddle_redirect",
+        "redirect_to_target",
+    )
     default_duration_s = 4.5
 
     def scene_parameters(
         self, request: GenerationRequest, scene_seed: int, scene_index: int
     ) -> Mapping[str, Any]:
         rng = random.Random(scene_seed)
+        reverse = request.subfamily == "straight_ball_right_to_left"
+        direction = -1.0 if reverse else 1.0
+        object_shape = (
+            "cylinder" if request.subfamily == "sliding_puck" else
+            "box" if request.subfamily == "sliding_cube" else
+            "sphere"
+        )
         return {
-            "initial_position_m": [-0.62, rng.uniform(-0.02, 0.02), 0.04],
-            "initial_velocity_mps": [rng.uniform(0.70, 0.82), rng.uniform(-0.015, 0.015), 0.0],
+            "initial_position_m": [direction * -0.62, rng.uniform(-0.02, 0.02), 0.04],
+            "initial_velocity_mps": [direction * rng.uniform(0.70, 0.82), rng.uniform(-0.015, 0.015), 0.0],
             "tool_start_m": [0.08, -0.36, 0.04],
             "tool_radius_m": 0.075,
             "goal_center_m": [-0.02, 0.0, 0.04],
@@ -40,6 +65,9 @@ class RollingInterceptionAdapter(FamilyAdapter):
             "table_bounds_m": [-0.8, 0.8, -0.55, 0.55],
             "visual_seed": scene_seed,
             "background_style": request.scene_style,
+            "native_scenario_profile": request.subfamily,
+            "object_shape": object_shape,
+            "table_slope_deg": 3.0 if request.subfamily == "small_slope" else 0.0,
         }
 
     def branch_parameters(
@@ -238,7 +266,8 @@ class RollingInterceptionAdapter(FamilyAdapter):
                 contacted=contacted,
                 near_distance_m=min_tool_distance,
                 near_threshold_m=radius + tool_radius + 0.05,
-                bad_action=not branch["controller_enabled"],
+                bad_action=not branch["controller_enabled"] and plan.intended_branch != "no_op",
+                no_op=plan.intended_branch == "no_op",
             ),
             dynamics_mode="free_contact",
             release_tier="free_contact",

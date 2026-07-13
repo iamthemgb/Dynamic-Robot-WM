@@ -1,0 +1,18 @@
+schema_version: dynamic-robot-pilot/v1
+pilot_id: first_serious_100_unique_hours
+backend: native_mujoco
+submit: false
+target_unique_release_hours: 100.0
+prerequisite_gate: configs/release_gates/10h.yaml
+release_gate: configs/release_gates/100h.yaml
+allocations:
+  - {id: rolling_sliding, unique_hours: 35.0, families: [rolling_interception]}
+  - {id: falling_retention, unique_hours: 25.0, families: [falling_catch]}
+  - {id: projectile_rebound, unique_hours: 25.0, families: [projectile_rebound]}
+  - {id: deformable, unique_hours: 10.0, families: [soft_body, cloth, rope]}
+  - {id: handoff_recovery, unique_hours: 5.0, families: [dynamic_handoff], blocked_until_generator_registered: true}
+policy:
+  count_camera_views_once: true
+  retry_on_outcome_mismatch: false
+  reallocate_blocked_family_quota: false
+  require_external_model_evaluation: true

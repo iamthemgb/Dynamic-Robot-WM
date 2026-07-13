@@ -1,9 +1,12 @@
-schema_version: dynamic-robot-splits/v1
-seed: dynamic-robot-split-v1
+schema_version: dynamic-robot-splits/v2
+# Finalization materializes the canonical assignment with seed 0.  Keeping the
+# public split config identical makes a subsequent build-splits invocation an
+# idempotent verification instead of a conflicting reassignment.
+seed: 0
 fractions:
-  train: 0.90
-  validation: 0.05
-  test: 0.05
+  train: 0.80
+  validation: 0.10
+  test: 0.10
 group_keys:
   - split_group_id
   - counterfactual_bundle_id
@@ -11,10 +14,18 @@ group_keys:
   - scene_seed
   - parent_episode_uuid
 prevent_near_duplicate_leakage: true
+stratify_by:
+  - family
+  - subfamily
+  - actual_outcome_class
+  - background_style
+  - object_asset_id
+  - tool_type
+  - physics_bin
+fail_readiness_on_sparse_strata: true
 ood_manifests:
   - unseen_object_assets
   - unseen_backgrounds
   - unseen_physics_ranges
   - unseen_camera_poses
   - unseen_tool_geometries
-

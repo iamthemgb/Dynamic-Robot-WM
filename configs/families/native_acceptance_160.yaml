@@ -1,0 +1,120 @@
+schema_version: dynamic-robot-suite/v1
+name: native_acceptance_160
+backend: native_mujoco
+robot_model: franka_emika_panda
+views: [main, secondary]
+immutable_after_generation: true
+expected_branch_count: 160
+background_styles: &styles
+  - clean_franka_lab
+  - robocasa_kitchen_tabletop
+  - robotwin_cluttered_tabletop
+requirements:
+  exact_branch_count: 160
+  minimum_background_styles: 3
+  require_both_views: true
+  require_measured_success_and_failure: [falling_catch, rolling_interception, projectile_rebound]
+  require_measured_physics_sweeps:
+    gravity_sweep:
+      exact_member_count: 5
+      requested_field: gravity
+      response_metric: measured_gravity_magnitude_m_s2
+      sample_count_metric: free_flight_pair_count
+      minimum_samples: 5
+      direction: increasing
+      minimum_endpoint_effect: 8.0
+      maximum_absolute_target_error: 0.20
+    friction_sweep:
+      exact_member_count: 5
+      requested_field: surface_dynamic_friction
+      response_metric: measured_effective_dynamic_friction
+      sample_count_metric: friction_response_sample_count
+      minimum_samples: 5
+      direction: increasing
+      minimum_endpoint_effect: 0.75
+      maximum_absolute_target_error: 0.15
+    restitution_sweep:
+      exact_member_count: 5
+      requested_field: effective_restitution_target
+      response_metric: measured_effective_restitution
+      sample_count_metric: rebound_measurement_count
+      minimum_samples: 1
+      direction: increasing
+      minimum_endpoint_effect: 0.10
+      maximum_absolute_target_error: 0.25
+  retry_on_outcome_mismatch: false
+categories:
+  - id: falling_catch_retention
+    expected_branches: 40
+    requests:
+      - {family: falling_catch, subfamily: centered_vertical_drop, branches: &four [success_seeking, near_miss, contact_failure, no_op], scene_style: clean_franka_lab}
+      - {family: falling_catch, subfamily: off_center_drop, branches: *four, scene_style: robocasa_kitchen_tabletop}
+      - {family: falling_catch, subfamily: drifted_drop, branches: *four, scene_style: robotwin_cluttered_tabletop}
+      - {family: falling_catch, subfamily: catch_retain, branches: *four, scene_style: clean_franka_lab}
+      - {family: falling_catch, subfamily: catch_transport, branches: *four, scene_style: robocasa_kitchen_tabletop}
+      - {family: falling_catch, subfamily: catch_brake, branches: *four, scene_style: robotwin_cluttered_tabletop}
+      - {family: falling_catch, subfamily: catch_tilt, branches: *four, scene_style: clean_franka_lab}
+      - {family: falling_catch, subfamily: catch_recovery, branches: *four, scene_style: robocasa_kitchen_tabletop}
+      - {family: falling_catch, subfamily: shallow_tray, branches: *four, scene_style: robotwin_cluttered_tabletop}
+      - {family: falling_catch, subfamily: deep_tray, branches: *four, scene_style: clean_franka_lab}
+  - id: rolling_sliding_transitions
+    expected_branches: 48
+    requests:
+      # Passive calibration/transition scenes have one measured rollout. They
+      # must never be duplicated under different action labels.
+      - {family: rolling_interception, subfamily: straight_ball_left_to_right, branches: &one [success_seeking], scene_style: clean_franka_lab}
+      - {family: rolling_interception, subfamily: straight_ball_right_to_left, branches: *one, scene_style: robocasa_kitchen_tabletop}
+      - {family: rolling_interception, subfamily: rolling_sliding_transition, branches: *one, scene_style: robotwin_cluttered_tabletop}
+      - {family: rolling_interception, subfamily: sliding_puck, branches: *one, scene_style: clean_franka_lab}
+      - {family: rolling_interception, subfamily: sliding_cube, branches: *one, scene_style: robocasa_kitchen_tabletop}
+      - {family: rolling_interception, subfamily: small_slope, branches: *one, scene_style: robotwin_cluttered_tabletop}
+      - {family: rolling_interception, subfamily: ramp_to_table, branches: *one, scene_style: clean_franka_lab}
+      - {family: rolling_interception, subfamily: table_edge_fall, branches: *one, scene_style: robocasa_kitchen_tabletop}
+      - family: rolling_interception
+        subfamily: friction_sweep
+        branches: *one
+        physics_variants: [friction_0, friction_1, friction_2, friction_3, friction_4]
+        scene_style: robotwin_cluttered_tabletop
+      # Reallocate the branch budget to real actuator-conditioned scenes.
+      - {family: rolling_interception, subfamily: temporary_occlusion, branches: *four, repeats: 2, scene_style: clean_franka_lab}
+      - {family: rolling_interception, subfamily: container_receive, branches: *four, repeats: 2, scene_style: robocasa_kitchen_tabletop}
+      - {family: rolling_interception, subfamily: paddle_redirect, branches: *four, repeats: 2, scene_style: robotwin_cluttered_tabletop}
+      - {family: rolling_interception, subfamily: paddle_block, branches: *four, repeats: 2, scene_style: clean_franka_lab}
+      - {family: rolling_interception, subfamily: paddle_redirect, branches: [success_seeking, near_miss, no_op], scene_style: robocasa_kitchen_tabletop}
+  - id: projectile_rebound_deflection
+    expected_branches: 40
+    requests:
+      - {family: projectile_rebound, subfamily: direct_interception, branches: *four, repeats: 2, scene_style: clean_franka_lab}
+      - {family: projectile_rebound, subfamily: table_bounce, branches: *one, scene_style: robocasa_kitchen_tabletop}
+      - {family: projectile_rebound, subfamily: wall_rebound, branches: *one, scene_style: robotwin_cluttered_tabletop}
+      - {family: projectile_rebound, subfamily: angled_barrier_rebound, branches: *one, scene_style: clean_franka_lab}
+      - {family: projectile_rebound, subfamily: paddle_deflection, branches: *four, repeats: 2, scene_style: robocasa_kitchen_tabletop}
+      - {family: projectile_rebound, subfamily: gravity_sweep, branches: [success_seeking], physics_variants: [gravity_0, gravity_1, gravity_2, gravity_3, gravity_4], scene_style: robotwin_cluttered_tabletop}
+      - {family: projectile_rebound, subfamily: restitution_sweep, branches: [success_seeking], physics_variants: [restitution_0, restitution_1, restitution_2, restitution_3, restitution_4], scene_style: clean_franka_lab}
+      - {family: projectile_rebound, subfamily: ramp_launch, branches: *one, scene_style: robocasa_kitchen_tabletop}
+      - {family: projectile_rebound, subfamily: roll_off_edge, branches: *one, scene_style: robotwin_cluttered_tabletop}
+      - {family: projectile_rebound, subfamily: floor_to_wall, branches: *one, scene_style: clean_franka_lab}
+      - {family: projectile_rebound, subfamily: flight_to_table_bounce, branches: *one, scene_style: robocasa_kitchen_tabletop}
+      - {family: projectile_rebound, subfamily: bounce_to_robot_interception, branches: [success_seeking, no_op], scene_style: robotwin_cluttered_tabletop}
+      - {family: projectile_rebound, subfamily: bounce_to_robot_interception, branches: [success_seeking, near_miss, contact_failure, no_op, wrong_action], scene_style: clean_franka_lab}
+  - id: cloth_tiering
+    expected_branches: 12
+    requests:
+      - {family: cloth, subfamily: poke_cloth, branches: *four, scene_style: clean_franka_lab}
+      - {family: cloth, subfamily: lift_corner_release, branches: *four, scene_style: robocasa_kitchen_tabletop}
+      - {family: cloth, subfamily: fold_edge_fixed_line, branches: *four, scene_style: robotwin_cluttered_tabletop}
+  - id: rope_repairs
+    expected_branches: 16
+    requests:
+      - {family: rope, subfamily: drag_endpoint, branches: *four, scene_style: clean_franka_lab}
+      - {family: rope, subfamily: tug, branches: *four, scene_style: robocasa_kitchen_tabletop}
+      - {family: rope, subfamily: lift_and_drape, branches: [success_seeking, contact_failure], scene_style: robotwin_cluttered_tabletop}
+      - {family: rope, subfamily: wrap_around_post, branches: [success_seeking, contact_failure], scene_style: clean_franka_lab}
+      - {family: rope, subfamily: thread_through_ring, branches: *four, scene_style: robocasa_kitchen_tabletop}
+  - id: negative_controls
+    expected_branches: 4
+    requests:
+      - {family: legacy_proxy_quarantine, subfamily: scripted_bounce, branches: *one, scene_style: clean_franka_lab}
+      - {family: legacy_proxy_quarantine, subfamily: legacy_motion_proxy, branches: *one, scene_style: robocasa_kitchen_tabletop}
+      - {family: legacy_proxy_quarantine, subfamily: assisted_latch, branches: *one, scene_style: robotwin_cluttered_tabletop}
+      - {family: legacy_proxy_quarantine, subfamily: equality_grasp, branches: *one, scene_style: clean_franka_lab}

@@ -19,6 +19,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import uuid
 
 from ..common.schema import validate_failure_mode
+from ..common.randomization import RandomizationCatalog, RandomizationPlanner
 
 
 SCHEMA_VERSION = "dynamic-robot-family/v1"
@@ -28,7 +29,7 @@ STANDARD_BRANCHES = (
     "success_seeking",
     "near_miss",
     "contact_failure",
-    "bad_action",
+    "no_op",
 )
 
 _BRANCH_ALIASES = {
@@ -38,9 +39,9 @@ _BRANCH_ALIASES = {
     "near-miss": "near_miss",
     "contact-failure": "contact_failure",
     "bad-action": "bad_action",
-    "noop": "bad_action",
-    "no-op": "bad_action",
-    "no_op": "bad_action",
+    "noop": "no_op",
+    "no-op": "no_op",
+    "no_op": "no_op",
 }
 
 
@@ -198,7 +199,7 @@ class EpisodePlan:
     tool_type: str
     episode_uuid: str
     counterfactual_bundle_id: str
-    physics_counterfactual_family_id: str
+    physics_counterfactual_family_id: str | None
     split_group_id: str
     scene_seed: int
     branch_seed: int
@@ -328,9 +329,12 @@ def classify_actual_outcome(
     near_distance_m: float,
     near_threshold_m: float,
     bad_action: bool,
+    no_op: bool = False,
 ) -> str:
     if success:
         return "success"
+    if no_op:
+        return "no_op"
     if bad_action:
         return "bad_action"
     if contacted:
@@ -363,7 +367,6 @@ class FamilyAdapter(ABC):
         plans: list[EpisodePlan] = []
         for scene_index in range(request.num_bundles):
             scene_seed = deterministic_seed(request.seed, self.family, scene_index)
-            scene = self.scene_parameters(request, scene_seed, scene_index)
             split_group_id = deterministic_uuid(
                 SCHEMA_VERSION,
                 self.family,
@@ -372,6 +375,26 @@ class FamilyAdapter(ABC):
                 request.seed,
                 scene_index,
             )
+            raw_scene = dict(self.scene_parameters(request, scene_seed, scene_index))
+            catalog_value = request.options.get("randomization_catalog")
+            catalog_mapping = catalog_value if isinstance(catalog_value, Mapping) else {}
+            catalog = RandomizationCatalog(
+                scene_asset_ids=tuple(str(value) for value in catalog_mapping.get("scene_asset_ids", ())),
+                lighting_ids=tuple(str(value) for value in catalog_mapping.get("lighting_ids", ("neutral",))),
+                object_asset_ids=tuple(str(value) for value in catalog_mapping.get("object_asset_ids", ())),
+                object_color_ids=tuple(str(value) for value in catalog_mapping.get("object_color_ids", ("default",))),
+                tool_asset_ids=tuple(str(value) for value in catalog_mapping.get("tool_asset_ids", ())),
+                camera_preset_ids=tuple(str(value) for value in catalog_mapping.get("camera_preset_ids", ("main_secondary_v1",))),
+            )
+            randomization = RandomizationPlanner(catalog=catalog, seed=request.seed).plan(
+                split_group_id,
+                randomization_level=request.randomization_level,
+            ).to_dict()
+            if request.scene_style not in {"auto", "mixed", "catalog"}:
+                randomization["background_style"] = request.scene_style
+            raw_scene["background_style"] = randomization["background_style"]
+            raw_scene["randomization"] = randomization
+            scene: Mapping[str, Any] = raw_scene
             for physics_variant, physics in physics_variants:
                 bundle_id = deterministic_uuid(split_group_id, physics_variant, "actions")
                 for raw_branch in request.branches:
@@ -393,8 +416,12 @@ class FamilyAdapter(ABC):
                     }
                     invariant_hash = stable_hash(invariant_payload)
                     physics_hash = stable_hash(physics)
-                    physics_cf_id = deterministic_uuid(
-                        split_group_id, branch, action_hash, "physics"
+                    physics_cf_id = (
+                        deterministic_uuid(
+                            split_group_id, branch, action_hash, "physics"
+                        )
+                        if len(physics_variants) > 1
+                        else None
                     )
                     episode_uuid = deterministic_uuid(
                         bundle_id, physics_cf_id, physics_hash, branch_seed
@@ -486,7 +513,39 @@ def assistance_record(
     latch_active: bool = False,
     activation_time_s: float | None = None,
     deactivation_time_s: float | None = None,
+    mechanism_id: str | None = None,
+    mechanism_type: str | None = None,
+    constraint_ids: Sequence[str] = (),
+    target_body_ids: Sequence[str] = (),
+    target_element_ids: Sequence[str] = (),
 ) -> dict[str, Any]:
+    active = any(
+        (assisted_grasp, assisted_retention, equality_constraint_active, latch_active)
+    )
+    mechanisms: list[dict[str, Any]] = []
+    if active:
+        if not mechanism_id or not mechanism_type:
+            raise ValueError("Active assistance requires a mechanism ID and type")
+        if activation_time_s is None:
+            raise ValueError("Active assistance requires an activation time")
+        if not target_body_ids and not target_element_ids:
+            raise ValueError("Active assistance requires a named target body or element")
+        mechanisms.append(
+            {
+                "mechanism_id": mechanism_id,
+                "mechanism_type": mechanism_type,
+                "source": "simulator_observed",
+                "constraint_ids": list(constraint_ids),
+                "target_body_ids": list(target_body_ids),
+                "target_element_ids": list(target_element_ids),
+                "activation_intervals": [
+                    {
+                        "start_time_s": activation_time_s,
+                        "end_time_s": deactivation_time_s,
+                    }
+                ],
+            }
+        )
     return {
         "assisted_grasp": assisted_grasp,
         "assisted_retention": assisted_retention,
@@ -494,6 +553,7 @@ def assistance_record(
         "latch_active": latch_active,
         "constraint_activation_time_s": activation_time_s,
         "constraint_deactivation_time_s": deactivation_time_s,
+        "mechanisms": mechanisms,
     }
 
 

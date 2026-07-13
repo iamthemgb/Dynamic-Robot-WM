@@ -50,6 +50,18 @@ class ProjectileReboundAdapter(FamilyAdapter):
         "free_contact_rebound",
         "projectile_interception",
         "bounce_sweep",
+        "direct_interception",
+        "table_bounce",
+        "wall_rebound",
+        "angled_barrier_rebound",
+        "paddle_deflection",
+        "gravity_sweep",
+        "restitution_sweep",
+        "ramp_launch",
+        "roll_off_edge",
+        "floor_to_wall",
+        "flight_to_table_bounce",
+        "bounce_to_robot_interception",
     )
     default_duration_s = 3.8
 
@@ -68,6 +80,7 @@ class ProjectileReboundAdapter(FamilyAdapter):
             "goal_direction": [-1.0, 0.0, 0.0],
             "visual_seed": scene_seed,
             "background_style": request.scene_style,
+            "native_scenario_profile": request.subfamily,
         }
 
     @staticmethod
@@ -325,7 +338,8 @@ class ProjectileReboundAdapter(FamilyAdapter):
                 contacted=contacted,
                 near_distance_m=min_distance,
                 near_threshold_m=float(scene["paddle_radius_m"]) + 2.0 * radius,
-                bad_action=not branch["controller_enabled"],
+                bad_action=not branch["controller_enabled"] and plan.intended_branch != "no_op",
+                no_op=plan.intended_branch == "no_op",
             ),
             dynamics_mode="free_contact",
             release_tier="free_contact",

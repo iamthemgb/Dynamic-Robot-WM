@@ -41,10 +41,24 @@ class WanExportSummary:
     episode_count: int
     video_count: int
     excluded_count: int
+    unique_source_episode_seconds: float
+    encoded_source_stream_seconds: float
+    unique_derived_clip_seconds: float
+    encoded_derived_stream_seconds: float
+    endpoint_padding_seconds: float
     total_duration_s: float
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        value.update(
+            unique_source_episode_hours=self.unique_source_episode_seconds / 3600.0,
+            encoded_source_stream_hours=self.encoded_source_stream_seconds / 3600.0,
+            unique_derived_clip_hours=self.unique_derived_clip_seconds / 3600.0,
+            encoded_derived_stream_hours=self.encoded_derived_stream_seconds / 3600.0,
+            endpoint_padding_hours=self.endpoint_padding_seconds / 3600.0,
+            total_duration_semantics="deprecated_alias_of_unique_derived_clip_seconds",
+        )
+        return value
 
 
 def _nearest_indices(source_timestamps: Sequence[float], target_timestamps: Sequence[float]) -> list[int]:
@@ -329,6 +343,7 @@ def export_wan(
     excluded_count = len(records) - len(selected)
     requested_cameras = {canonical_camera_name(name) for name in camera_names} if camera_names else None
     video_count = 0
+    endpoint_padding_seconds = 0.0
     manifest_rows: list[dict[str, Any]] = []
     checksums: dict[str, str] = {}
 
@@ -356,6 +371,7 @@ def export_wan(
                     "endpoint_padding_start_frames": start_padding,
                     "endpoint_padding_end_frames": end_padding,
                 }
+                endpoint_padding_seconds += (start_padding + end_padding) / 24.0
                 checksums[relative_destination] = sha256_file(output_video)
                 video_count += 1
             if not exported_videos:
@@ -384,7 +400,15 @@ def export_wan(
                     "width": 832,
                     "height": 480,
                     "event_time_s_in_source": event_time,
+                    "key_event_name": record.key_event_name,
+                    "key_event_time_s_in_source": record.key_event_time_s,
                     "sampling": sampling,
+                    "camera_stream_calibration_ids": dict(
+                        record.camera_stream_calibration_ids
+                    ),
+                    "coordinate_convention": dict(
+                        dataset_info.get("coordinate_convention") or {}
+                    ),
                     **modalities,
                     "physics_schema_version": WAN_PHYSICS_FIELDS_VERSION,
                     "physics": physics,
@@ -392,11 +416,29 @@ def export_wan(
                     "physics_metadata": physics_metadata,
                     "physics_source_mapping": source_mapping,
                     "raw_source_physics": raw_physics,
+                    "parameter_range_provenance": dict(
+                        record.physics.parameter_range_provenance
+                    ),
+                    "solver_settings": dict(record.physics.solver_settings),
+                    "controller_profile": dict(record.controller_profile),
+                    "robot_start_provenance": dict(record.robot_start_provenance),
+                    "tool_calibration_provenance": dict(
+                        record.tool_calibration_provenance
+                    ),
+                    "assistance": dict(record.assistance),
                     "intended_branch": record.intended_branch,
                     "actual_outcome": record.actual_outcome,
+                    "actual_outcome_class": record.actual_outcome_class.value,
                     "task_success": record.task_success,
                     "failure_mode": record.failure_mode,
+                    "primary_failure_code": record.primary_failure_code,
+                    "failure_tags": list(record.failure_tags),
+                    "failure_taxonomy_version": record.failure_taxonomy_version,
                     "label_status": record.label_status.value,
+                    "objective_evaluator_id": record.objective_evaluator_id,
+                    "objective_evaluator_version": record.objective_evaluator_version,
+                    "objective_threshold_set_hash": record.objective_threshold_set_hash,
+                    "objective_evidence": record.objective_evidence,
                     "dynamics_mode": record.dynamics_mode.value,
                     "release_tier": record.release_tier.value,
                     "physics_qc_pass": record.physics_qc_pass,
@@ -405,6 +447,7 @@ def export_wan(
                     "source_generator_version": record.source_generator_version,
                     "generator_git_commit": record.generator_git_commit,
                     "config_hash": record.config_hash,
+                    "source_content_hashes": dict(record.content_hashes),
                 }
             )
         manifest_relative = "manifest.jsonl"
@@ -415,8 +458,9 @@ def export_wan(
         atomic_write_bytes(temporary / manifest_relative, payload)
         checksums[manifest_relative] = sha256_file(temporary / manifest_relative)
         source_episodes = source_root / "meta" / "episodes.parquet"
+        source_root_path = temporary / "source_root.json"
         atomic_write_json(
-            temporary / "source_root.json",
+            source_root_path,
             {
                 "schema_version": WAN_MANIFEST_VERSION,
                 "source_root_at_export": str(source_root),
@@ -426,7 +470,9 @@ def export_wan(
                 "modality_sidecars_are_referenced_not_copied": True,
             },
         )
+        checksums["source_root.json"] = sha256_file(source_root_path)
         atomic_write_json(temporary / "checksums.json", dict(sorted(checksums.items())))
+        unique_derived = len(manifest_rows) * WAN_FRAME_COUNT / 24
         summary = WanExportSummary(
             source_root=str(source_root),
             output_root=str(destination),
@@ -434,7 +480,22 @@ def export_wan(
             episode_count=len(manifest_rows),
             video_count=video_count,
             excluded_count=excluded_count,
-            total_duration_s=len(manifest_rows) * WAN_FRAME_COUNT / 24,
+            unique_source_episode_seconds=sum(float(record.duration_s or 0.0) for record in selected),
+            encoded_source_stream_seconds=sum(
+                float(record.duration_s or 0.0)
+                * len(
+                    [
+                        camera
+                        for camera in record.video_paths
+                        if requested_cameras is None or camera in requested_cameras
+                    ]
+                )
+                for record in selected
+            ),
+            unique_derived_clip_seconds=unique_derived,
+            encoded_derived_stream_seconds=video_count * WAN_FRAME_COUNT / 24,
+            endpoint_padding_seconds=endpoint_padding_seconds,
+            total_duration_s=unique_derived,
         )
         atomic_write_json(temporary / "export_summary.json", summary.to_dict())
     return summary

@@ -1,0 +1,21 @@
+schema_version: dynamic-robot-soft-object-gates/v1
+production_generation_enabled: false
+rigid_gate:
+  required_gate_id: native_rigid_contact_acceptance_v1
+  require_passed: true
+scenarios:
+  foam_ball_catch:
+    priority: first
+    requires: [rigid_contact_validation]
+  foam_ball_paddle_deflection:
+    priority: first
+    requires: [rigid_contact_validation]
+  beanbag_drop_catch:
+    priority: deferred
+    requires: [rigid_contact_validation, shell_model_validation, self_contact_validation]
+  soft_pouch_sliding_scoop:
+    priority: deferred
+    requires: [rigid_contact_validation, shell_model_validation, self_contact_validation]
+policy:
+  config_flag_cannot_override_missing_evidence: true
+  proxy_or_scripted_motion_never_satisfies_gate: true

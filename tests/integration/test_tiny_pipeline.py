@@ -133,6 +133,11 @@ def test_tiny_pipeline_and_finalize_crash_resume(tmp_path: Path, monkeypatch: py
     assert manifest["action"]["available"] is True
     assert manifest["trajectory"]["available"] is True
     assert manifest["contact"]["available"] is True
+    assert manifest["coordinate_convention"]["quaternion_order"] == "WXYZ"
+    assert "controller_profile" in manifest
+    assert "camera_stream_calibration_ids" in manifest
+    assert "assistance" in manifest
+    assert manifest["source_content_hashes"]
     derived = probe_video(wan_root / manifest["video"])
     assert (derived.width, derived.height, derived.frame_count) == (832, 480, 121)
     assert derived.fps == pytest.approx(24.0)

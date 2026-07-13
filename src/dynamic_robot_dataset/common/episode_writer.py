@@ -90,10 +90,15 @@ _FLEXIBLE_EPISODE_FIELDS = (
     "physics",
     "assistance",
     "objective_metrics",
+    "objective_evidence",
     "randomization",
     "content_hashes",
     "video_paths",
     "asset_hashes",
+    "camera_stream_calibration_ids",
+    "controller_profile",
+    "robot_start_provenance",
+    "tool_calibration_provenance",
     "extras",
 )
 
@@ -179,6 +184,17 @@ def _empty_sidecar_schema(kind: str) -> Any:
         return pa.schema(
             [("episode_index", pa.int64()), ("timestamp", pa.float64()), ("object_id", pa.string())]
         )
+    if kind == "transitions":
+        return pa.schema(
+            [
+                ("episode_index", pa.int64()),
+                ("timestamp", pa.float64()),
+                ("event_type", pa.string()),
+                ("from", pa.string()),
+                ("to", pa.string()),
+                ("active_surface", pa.string()),
+            ]
+        )
     raise ValueError(f"Unknown sidecar schema kind: {kind}")
 
 
@@ -235,6 +251,9 @@ class DatasetLayout:
 
     def events(self, episode_index: int) -> str:
         return f"events/{self.chunk_name(episode_index)}/{self.file_name(episode_index, 'parquet')}"
+
+    def transitions(self, episode_index: int) -> str:
+        return f"transitions/{self.chunk_name(episode_index)}/{self.file_name(episode_index, 'parquet')}"
 
     def object_states(self, episode_index: int) -> str:
         return f"object_states/{self.chunk_name(episode_index)}/{self.file_name(episode_index, 'parquet')}"
@@ -373,7 +392,9 @@ class EpisodeWriter:
         videos: Mapping[str, str | Path | Iterable[Any]],
         high_rate_rows: Iterable[Mapping[str, Any]] = (),
         event_rows: Iterable[Mapping[str, Any]] = (),
+        transition_rows: Iterable[Mapping[str, Any]] = (),
         object_state_rows: Iterable[Mapping[str, Any]] = (),
+        camera_calibration_ids: Mapping[str, str] | None = None,
     ) -> EpisodeRecord:
         """Write one episode. Existing committed output is only reused under resume."""
 
@@ -394,6 +415,7 @@ class EpisodeWriter:
             "frame": self.layout.frame_data(index),
             "high_rate": self.layout.high_rate(index),
             "events": self.layout.events(index),
+            "transitions": self.layout.transitions(index),
             "objects": self.layout.object_states(index),
         }
         video_paths = {canonical_camera_name(name): self.layout.video(name, index) for name in videos}
@@ -411,6 +433,7 @@ class EpisodeWriter:
         frames = [dict(row) for row in frame_rows]
         high_rate = [dict(row) for row in high_rate_rows]
         events = [_validated_contact_row(row) for row in event_rows]
+        transitions = [dict(row) for row in transition_rows]
         objects = [dict(row) for row in object_state_rows]
         if not frames:
             raise ValueError("frame_rows cannot be empty")
@@ -447,6 +470,18 @@ class EpisodeWriter:
                 [float(row["timestamp"]) for row in events],
                 strictly=False,
                 name="events.timestamp",
+            )
+        for row in transitions:
+            row.setdefault("episode_index", index)
+            if int(row["episode_index"]) != index:
+                raise ValueError("Transition row episode_index differs from its episode")
+            if "timestamp" not in row or not str(row.get("event_type", "")).strip():
+                raise ValueError("Transition rows require timestamp and event_type")
+        if transitions:
+            validate_monotonic_timestamps(
+                [float(row["timestamp"]) for row in transitions],
+                strictly=False,
+                name="transitions.timestamp",
             )
         for row in objects:
             row.setdefault("episode_index", index)
@@ -497,6 +532,11 @@ class EpisodeWriter:
             schema=None if events else _empty_sidecar_schema("events"),
         )
         write_parquet_atomic(
+            resolve_dataset_path(transaction_dir, paths["transitions"]),
+            transitions,
+            schema=None if transitions else _empty_sidecar_schema("transitions"),
+        )
+        write_parquet_atomic(
             resolve_dataset_path(transaction_dir, paths["objects"]),
             objects,
             schema=None if objects else _empty_sidecar_schema("objects"),
@@ -506,8 +546,23 @@ class EpisodeWriter:
         record.frame_data_path = paths["frame"]
         record.high_rate_path = paths["high_rate"]
         record.events_path = paths["events"]
+        record.transition_events_path = paths["transitions"]
         record.object_states_path = paths["objects"]
-        record.camera_ids = sorted(video_paths)
+        if camera_calibration_ids is None:
+            calibration_mapping = {stream: stream for stream in video_paths}
+        else:
+            calibration_mapping = {
+                canonical_camera_name(stream): str(identifier)
+                for stream, identifier in camera_calibration_ids.items()
+            }
+            if set(calibration_mapping) != set(video_paths):
+                raise ValueError(
+                    "camera_calibration_ids must map every encoded video stream exactly once"
+                )
+            if any(not identifier.strip() for identifier in calibration_mapping.values()):
+                raise ValueError("camera calibration IDs must be non-empty")
+        record.camera_stream_calibration_ids = calibration_mapping
+        record.camera_ids = sorted(set(calibration_mapping.values()))
         record.frame_count = len(frames)
         record.duration_s = float(reference_pts[-1] - reference_pts[0] + self.video_spec.fps_den / self.video_spec.fps_num)
         record.content_hashes = {
@@ -580,6 +635,7 @@ class EpisodeWriter:
         cameras: Iterable[Mapping[str, Any]] = (),
         provenance: Iterable[Mapping[str, Any]] = (),
         splits: Iterable[Mapping[str, Any]] = (),
+        counterfactual_families: Iterable[Mapping[str, Any]] | None = None,
     ) -> list[EpisodeRecord]:
         """Aggregate markers into a resumable, marker-last metadata transaction."""
 
@@ -639,6 +695,18 @@ class EpisodeWriter:
                 )
         camera_rows = list(cameras)
         provenance_rows = list(provenance)
+        counterfactual_rows = (
+            list(counterfactual_families)
+            if counterfactual_families is not None
+            else None
+        )
+        if counterfactual_rows is None:
+            from .contract_v2 import build_counterfactual_family_records
+
+            counterfactual_rows = [
+                declaration.to_table_row()
+                for declaration in build_counterfactual_family_records(records)
+            ]
         expected_names = (
             "info.json",
             "episodes.parquet",
@@ -646,6 +714,7 @@ class EpisodeWriter:
             "cameras.parquet",
             "provenance.parquet",
             "splits.parquet",
+            "counterfactual_families.parquet",
         )
         if completion.is_file():
             marker = json.loads(completion.read_text(encoding="utf-8"))
@@ -691,6 +760,29 @@ class EpisodeWriter:
             staging / "provenance.parquet", flexible_mapping_rows(provenance_rows)
         )
         write_parquet_atomic(staging / "splits.parquet", flexible_mapping_rows(split_rows))
+        if counterfactual_rows:
+            write_parquet_atomic(
+                staging / "counterfactual_families.parquet",
+                counterfactual_rows,
+            )
+        else:
+            pa, _ = _pyarrow()
+            write_parquet_atomic(
+                staging / "counterfactual_families.parquet",
+                [],
+                schema=pa.schema(
+                    [
+                        ("family_id", pa.string()),
+                        ("relation", pa.string()),
+                        ("split_group_id", pa.string()),
+                        ("expected_member_count", pa.int64()),
+                        ("expected_episode_uuids_json", pa.string()),
+                        ("intervention_fields_json", pa.string()),
+                        ("fixed_field_hashes_json", pa.string()),
+                        ("table_version", pa.string()),
+                    ]
+                ),
+            )
         content_hashes = {name: sha256_file(staging / name) for name in expected_names}
         atomic_write_json(
             staging / ".transaction.json",

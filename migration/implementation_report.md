@@ -7,8 +7,10 @@ Date: 2026-07-13
 The read-only source-copy phase is complete. It selected and copied the
 accessible canonical non-fluid generators, retained meaningful version
 differences, and recorded missing, duplicate, scripted, preview, and development
-lineages without modifying any source tree. This is not a declaration that
-native generator integration or end-to-end migration acceptance is complete.
+lineages without modifying any source tree. A subsequent production-oriented
+revision adds a native rigid backend and stricter v2 release contracts. This is
+still not a declaration that the mixed 160-case acceptance suite or a
+production corpus has passed.
 
 - **148** allowlisted files (**1,418,073 bytes**) were copied byte-for-byte:
   59 from mzl7, 29 from zl664, and 60 from zss8.
@@ -23,6 +25,117 @@ native generator integration or end-to-end migration acceptance is complete.
 - Generated videos, trajectories, datasets, logs, caches, environments,
   backups, pilots, debug/smoke outputs, third-party trees, and fluids were not
   copied.
+
+## Production generator revision
+
+The maintained repository now implements the following code-level changes:
+
+- a typed `ScenarioSpec -> EpisodePlan -> NativeMuJoCoBackend.run()` lifecycle
+  for Franka rigid dynamics, with simulation and rendering owned by the same
+  backend;
+- actuator-driven Franka control, native MuJoCo object contacts, explicit
+  initialization-only object state, synchronized main/secondary views, and
+  frame/controller/event/object-state tables;
+- `dynamic-robot-dataset/v2` writes and v1 read compatibility, including closed
+  measured outcomes, versioned failure evidence, objective evaluator
+  provenance, frame semantics, assistance mechanisms, camera mapping,
+  controller/tool provenance, and calibrated-range provenance;
+- symmetric action/physics counterfactual declarations with expected members,
+  intervention fields, fixed-field hashes, and one connected leakage group;
+- deterministic connected-group 80/10/10 stratification, exact logical/stream/
+  derived/padding duration accounting, intended-versus-actual confusion
+  reports, and visual/outcome association warnings;
+- versioned physics calibration, 10-hour and 100-hour readiness gates, and
+  non-submitting pilot plans; and
+- objective/tiering helpers for retained cloth/rope tasks, including a guard
+  that rejects the historical `RB_6` versus `RB_first` rope equality-target
+  mismatch.
+
+The rigid parameter catalog remains `provisional` and `release_eligible: false`.
+Loading plausible candidate bounds is not calibration: free-fall, bounce,
+sliding-deceleration, rolling-slip, and contact-stability observations plus
+explicit release approval are required. The calibrator verifies the observation
+schema and catalog hash, hashes the referenced episode and QC source artifacts,
+recomputes every oracle from raw trials, checks admitted support, and verifies a
+separate reviewer approval bound to that exact evidence. Self-reported pass
+flags are not accepted. Solver settings remain separate from measured effective
+friction and restitution.
+
+The native five-point regression confirms that this gate is non-vacuous.
+Gravity and sliding-friction responses are monotonic. Under the versioned
+`native-restitution-solver-map/v1` controlled impact regime, requested values
+0.05/0.25/0.50/0.75/0.95 measure approximately
+0.103/0.252/0.501/0.753/0.955 from separated pre/post-contact samples and pass
+the local target-error check. This is diagnostic solver-response evidence, not
+range approval: promotion still requires hash-bound multi-condition trials,
+source episode/QC evidence, admitted-support checks, and independent reviewer
+approval.
+
+Two immutable suites now have different meanings:
+
+| Suite | Definition | Status and admissible claim |
+|---|---|---|
+| Diagnostic smoke | `configs/families/smoke_120.yaml`, exactly 120 logical branches | Existing accepted regression artifact; schema/video/QC/Wan pipeline evidence only, never training data |
+| Native acceptance | `configs/families/native_acceptance_160.yaml`, exactly 160 branches | Deterministic definition; executor routes 128 rigid cases to `native_mujoco` and 32 deformable/negative controls to `diagnostic_quarantine`; no full artifact was generated or passed in this revision |
+
+The native acceptance definition contains 40 falling/catch/retention, 48
+rolling/sliding/transition, 40 projectile/rebound/deflection, 12 cloth tiering,
+16 rope repair/tiering, and four assisted/scripted negative controls. It uses
+three visual styles and two synchronized cameras. The 128 rigid cases execute
+through `native_mujoco`; the other 32 are deliberately quarantined diagnostics,
+and their presence makes full-native coverage/readiness fail until native
+deformable backends exist. A generated outcome is never retried or relabelled
+simply because it differs from branch intent. Each rigid outcome class present
+in the immutable branch plan must also be present in the measured labels, or
+the suite version fails.
+
+Native cloth, rope, foam, beanbag, and pouch production models have not been
+accepted. Cloth/rope objective code and the rope constraint repair do not prove
+native deformable topology, self-contact, tunnelling, strain, settling, or
+visibility quality. Consequently the mixed 160-case definition cannot be
+described as a passed native suite based on rigid-backend tests alone.
+The installed MuJoCo 3.10 build compiles the retained cable rope models but
+lacks the `mujoco.elasticity.shell` plug-in required by the legacy shell-cloth
+model. A downgraded edge-only grid is explicitly not accepted as equivalent
+cloth physics.
+
+The staged pilot configurations are plans, not launchers. Both set
+`submit: false`; no 10-hour or 100-hour corpus was generated or submitted by
+this revision. All targets mean QC-passed unique logical episode-hours. The
+10-hour deformable quota is not reallocated if blocked, and the 100-hour gate
+also requires an accepted 10-hour readiness report and an external
+model-evaluation artifact. Both gates require an exact
+`dynamic-robot-qc-report/v2` and the canonical report for a passed, fully native
+160-branch acceptance suite. The current mixed suite cannot satisfy that
+condition. See
+`docs/production_revision.md` for the complete release boundary.
+
+### Code-level verification
+
+The frozen current test command in `reproduction_commands.md` is the
+authoritative verification command for the checked-out revision; its result
+must be recorded when that revision is accepted rather than copied from the
+historical diagnostic run. The current suite includes v1/v2 schema and failure
+contracts, exact
+160-case/128-native/32-quarantine planning, symmetric counterfactual invariants,
+immutable pre-simulation membership and no-retry resume behavior, 80/10/10
+connected splits, calibration/readiness/statistics contracts, and the existing
+MP4/Parquet/Wan round trip. The final local verification for this implementation
+reported **116 passing tests**.
+
+A native MuJoCo integration test also executes a centered Franka drop without
+rendering at reduced dimensions. It verifies exactly one initial object-state
+write, zero object or robot state rewrites after initialization, actuator
+updates, no equality/latch assistance, physics QC, event-adaptive termination,
+v2 frame semantics, and label equivalence with the persisted-state/event
+evaluator. A separate local no-render audit executed all 128 rigid acceptance
+branches: all 128 passed native physics QC, the maximum measured joint
+acceleration was 72.714 rad/s^2 against the unchanged 80 rad/s^2 gate, and every
+required measured rigid outcome class was present. This is useful native
+lifecycle and scenario-balance evidence, but it is **not** a finalized 832x480
+rendered acceptance artifact, a fully native 160-case suite, or physics-range
+calibration. The 32 deformable/negative-control cases remain quarantined and no
+full acceptance artifact was generated.
 
 ## Canonical decisions
 
@@ -82,16 +195,27 @@ in one case, the missing historical module name.
 
 ## Maintained implementation boundary
 
-The current refactored family layer implements the common planning, identity,
-state/action/physics separation, objective evaluators, failure codes, physics
-checks, and exact smoke interface. Its rigid families use named abstract
-free-contact solvers (`native_mujoco=false`), while cloth, rope, soft-body, and
-legacy cases use explicitly quarantined scripted geometry/response proxies.
-These are useful for deterministic schema and pipeline validation, but they are
-not native replacements for the copied Franka, Robotiq, MuJoCo-flex, or rope
-generators. All diagnostic-renderer/proxy records carry exclusion flags and do
-not enter the default training manifest. Native embodiment and renderer
-integration remains a production scale-up blocker.
+The family adapters still implement common planning and deterministic
+diagnostic solvers. Their analytical rigid trajectories and scripted
+cloth/rope/soft-body geometry remain non-production fixtures; rendering one of
+those trajectories with an external plug-in does not make it native. All such
+records carry exclusion flags and stay out of the default training manifest.
+
+The new `native_mujoco` path is separate. It compiles a typed native rigid
+scenario around the MuJoCo Menagerie Franka, advances the robot through actuator
+commands, lets MuJoCo advance object state and contacts, and returns synchronized
+state/action/contact/camera/video sidecars to the same atomic writer. Object
+pose or velocity is initialized at episode start and is not an allowed
+post-release control mechanism. Production eligibility remains conditional on
+the backend provenance, objective recomputation, calibrated parameter support,
+physics/visual QC, complete counterfactual declarations, and hard dataset QC.
+
+This native implementation is Franka-first and rigid-first. It is not claimed
+as feature parity with every copied Franka/Robotiq controller or every legacy
+camera/task variant. Cloth and rope currently have maintained native-objective
+and tiering contracts, not an accepted general native deformable backend.
+Soft-body generation remains gated, and dual-Franka box folding, shake-wave,
+complex bags, knots, fluids, and chaotic scenes remain suspended or deferred.
 
 In `source_mapping.yaml`, `new_refactored_path` names the maintained adapter or
 evaluator target and `major_changes` records the required treatment. Neither
@@ -106,6 +230,9 @@ is `d68ecfb3adbd54470f07f9c8d9aed10678cbd10ca5ec433c732ef45a8a0e159f` and
 includes installed Python distributions plus the `uv.lock` digest. The
 corresponding shell invocation is recorded in `reproduction_commands.md`; the
 finalized provenance Parquet records its script argv and resolved identities.
+The counts below describe that preserved historical diagnostic artifact. The
+production revision changes the default splitter to connected-group 80/10/10;
+it does not rewrite the artifact's existing 108/6/6 split table.
 
 | Family | Branches | Frames/episode | Duration (s) | Objective outcomes | Physics-QC pass |
 |---|---:|---:|---:|---|---:|
@@ -193,9 +320,16 @@ whole-workspace before/after hash equality.
 
 ## Acceptance boundary
 
-The schema, atomic/resumable writer, splits, validators, migration ledgers,
-diagnostic smoke suite, and Wan-format round trip are implemented and accepted.
-Native Franka/Robotiq MuJoCo rendering and native cloth/rope/soft-body backends
-are not bundled. Consequently the repository must not be used to generate a
-production Wan training manifest until those native integrations pass the same
-gates; the present default manifest correctly contains zero episodes.
+The migration ledgers and preserved diagnostic smoke/Wan round trip are
+accepted as pipeline evidence. The v2 schema, atomic/resumable writer,
+counterfactual declarations, connected splits, statistics, calibration and
+readiness evaluators, and Franka-first native rigid path are implemented code.
+They have not converted the historical diagnostic artifact into training data,
+and they do not establish production-corpus acceptance.
+
+The repository must not be used to advertise a production Wan training corpus
+until native physics calibration, the complete 160-case suite, objective and
+visual QC, counterfactual/leakage checks, and the relevant stage gate all pass.
+Native deformable/soft-object acceptance is still missing. The preserved
+diagnostic default manifest correctly contains zero episodes, and no pilot or
+training job was launched by this revision.

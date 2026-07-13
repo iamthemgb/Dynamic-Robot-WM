@@ -132,7 +132,9 @@ class SoftBodyAdapter(FamilyAdapter):
             actual_outcome=classify_actual_outcome(
                 success=outcome.task_success, contacted=bool(plan.branch_parameters["tool_contact"]),
                 near_distance_m=0.0 if plan.branch_parameters["tool_contact"] else 1.0,
-                near_threshold_m=0.1, bad_action=magnitude == 0.0,
+                near_threshold_m=0.1,
+                bad_action=magnitude == 0.0 and plan.intended_branch != "no_op",
+                no_op=plan.intended_branch == "no_op",
             ),
             dynamics_mode="scripted_motion", release_tier="scripted_motion",
             assistance=assistance_record(
@@ -140,9 +142,11 @@ class SoftBodyAdapter(FamilyAdapter):
                 equality_constraint_active=False,
                 activation_time_s=0.0 if plan.branch_parameters["tool_contact"] else None,
                 deactivation_time_s=plan.duration_s if plan.branch_parameters["tool_contact"] else None,
+                mechanism_id=("diagnostic-soft-body-tool-contact" if plan.branch_parameters["tool_contact"] else None),
+                mechanism_type=("assisted_grasp" if plan.branch_parameters["tool_contact"] else None),
+                target_body_ids=("soft_body_proxy",) if plan.branch_parameters["tool_contact"] else (),
             ),
             physics_qc=default_physics_qc(finite_state=True, native_deformable_physics=False),
             simulator={"name": "dynamic_robot_dataset.quarantined_soft_body_response_proxy", "version": "1", "native_flex": False, "production_eligible": False},
             notes=("Scalar response curves test material conditioning and schemas only; they are not soft-body training data.",),
         )
-

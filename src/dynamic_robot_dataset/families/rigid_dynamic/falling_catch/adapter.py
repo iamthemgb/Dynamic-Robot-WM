@@ -42,6 +42,13 @@ class FallingCatchAdapter(FamilyAdapter):
         "off_center_drop",
         "drifted_drop",
         "direct_projectile",
+        "catch_retain",
+        "catch_transport",
+        "catch_brake",
+        "catch_tilt",
+        "catch_recovery",
+        "shallow_tray",
+        "deep_tray",
     )
     default_duration_s = 3.2
 
@@ -60,6 +67,12 @@ class FallingCatchAdapter(FamilyAdapter):
             "receptacle_surface_z_m": 0.40,
             "background_style": request.scene_style,
             "visual_seed": scene_seed,
+            "native_scenario_profile": request.subfamily,
+            "tool_geometry": (
+                "deep_tray" if request.subfamily == "deep_tray" else
+                "shallow_tray" if request.subfamily == "shallow_tray" else
+                request.tool_type
+            ),
         }
 
     def branch_parameters(
@@ -253,7 +266,8 @@ class FallingCatchAdapter(FamilyAdapter):
                 contacted=contacted,
                 near_distance_m=min_distance,
                 near_threshold_m=1.5 * float(scene["receptacle_radius_m"]),
-                bad_action=not branch["controller_enabled"],
+                bad_action=not branch["controller_enabled"] and plan.intended_branch != "no_op",
+                no_op=plan.intended_branch == "no_op",
             ),
             dynamics_mode="free_contact",
             release_tier="free_contact",

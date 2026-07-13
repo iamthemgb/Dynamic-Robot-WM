@@ -13,6 +13,18 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .contacts import ContactEvent, normalize_contact_row, select_task_event_time
+from .contract_v2 import (
+    DEFAULT_OBJECTIVE_EVALUATORS,
+    CounterfactualFamilyRecord,
+    ObjectiveEvaluatorRegistry,
+    ObjectiveRecomputeInput,
+    compare_recomputed_objective,
+    derived_action_hash_from_rows,
+    derived_initial_state_hash_from_rows,
+    validate_assistance_observations,
+    validate_counterfactual_family_records,
+    validate_v2_frame_semantics,
+)
 from .cameras import CameraCalibration
 from .episode_writer import load_episode_records, read_parquet_rows, write_parquet_atomic
 from .hashing import hamming_distance_hex, sha256_file, sha256_json
@@ -21,6 +33,7 @@ from .schema import DynamicsMode, EpisodeRecord, ReleaseTier, SchemaValidationEr
 from .splits import validate_no_split_leakage
 from .synchronization import SynchronizationError, validate_monotonic_timestamps, validate_synchronized_streams
 from .video_writer import VideoProbe, VideoSpec, iter_rgb_frames, probe_frame_timestamps, probe_video, validate_video_probe
+from .visual_qc import NATIVE_VISUAL_QC_SCHEMA, NATIVE_VISUAL_THRESHOLDS
 
 
 @dataclass(slots=True, frozen=True)
@@ -126,6 +139,55 @@ def gravity_consistency_check(
         {"acceleration_rmse_m_s2": rmse, "tolerance_m_s2": tolerance_m_s2, "sample_count": float(len(errors))},
         "" if rmse <= tolerance_m_s2 else "Free-flight acceleration is inconsistent with gravity",
     )
+
+
+def _event_aware_free_fall_mask(
+    rows: Sequence[Mapping[str, Any]],
+    event_rows: Sequence[Mapping[str, Any]],
+    free_fall_field: str,
+) -> list[bool]:
+    """Exclude contact-adjacent samples from encoded-rate gravity checks.
+
+    A short impact can occur entirely between adjacent 30 Hz samples, leaving
+    both endpoint rows classified as free flight.  Mask the frame nearest each
+    persisted contact plus one-half neighboring frame so its impulse is not
+    divided by the encoded frame interval and mistaken for acceleration.
+    """
+
+    timestamps = [float(row["timestamp"]) for row in rows]
+    intervals = [right - left for left, right in zip(timestamps, timestamps[1:])]
+    positive_intervals = sorted(value for value in intervals if value > 0.0)
+    median_interval = (
+        positive_intervals[len(positive_intervals) // 2]
+        if positive_intervals
+        else 1.0 / 30.0
+    )
+    exclusion_radius_s = 1.5 * median_interval + 1e-9
+    contact_times = [
+        float(event["timestamp"])
+        for event in event_rows
+        if event.get("timestamp") is not None
+    ]
+    first_contact_time = min(contact_times, default=math.inf)
+    mask: list[bool] = []
+    for row, timestamp in zip(rows, timestamps):
+        motion_mode = str(
+            row.get("object.motion_mode", row.get("motion_mode", ""))
+        )
+        contact_role = str(
+            row.get("contact.role", row.get("contact_role", "none"))
+        )
+        mask.append(
+            bool(row[free_fall_field])
+            and motion_mode in {"", "free_flight"}
+            and contact_role in {"", "none"}
+            and timestamp < first_contact_time
+            and all(
+                abs(timestamp - event_time) > exclusion_radius_s
+                for event_time in contact_times
+            )
+        )
+    return mask
 
 
 def bounce_restitution_check(
@@ -335,13 +397,31 @@ def video_perceptual_hash(
 class QCValidator:
     """Validate canonical metadata, files, encoded clocks, hashes, labels, and splits."""
 
-    def __init__(self, dataset_root: str | Path, *, deep_video_checks: bool = True):
+    def __init__(
+        self,
+        dataset_root: str | Path,
+        *,
+        deep_video_checks: bool = True,
+        objective_evaluators: ObjectiveEvaluatorRegistry | None = None,
+    ):
         self.root = Path(dataset_root).resolve(strict=True)
         self.deep_video_checks = deep_video_checks
+        self.objective_evaluators = objective_evaluators or DEFAULT_OBJECTIVE_EVALUATORS
 
     def _validate_episode(self, record: EpisodeRecord) -> tuple[EpisodeQC, dict[str, str]]:
         result = EpisodeQC(record.episode_uuid, record.episode_index, record.release_eligible)
         video_hashes: dict[str, str] = {}
+        frame_rows: list[dict[str, Any]] = []
+        high_rate_rows: list[dict[str, Any]] = []
+        transition_rows: list[dict[str, Any]] = []
+        object_state_rows: list[dict[str, Any]] = []
+        release_claimed = (
+            record.label_status.value == "verified_objective"
+            and record.release_tier == ReleaseTier.FREE_CONTACT
+            and record.dynamics_mode == DynamicsMode.FREE_CONTACT
+            and record.physics_qc_pass
+            and not record.quality_flags
+        )
         try:
             record.validate()
         except (SchemaValidationError, ValueError) as error:
@@ -353,8 +433,9 @@ class QCValidator:
         missing_cameras = sorted(required_cameras - set(record.video_paths))
         if missing_cameras:
             result.fail(f"missing required synchronized camera streams: {missing_cameras}")
-        if set(record.camera_ids) != set(record.video_paths):
-            result.fail("camera_ids disagree with video_paths")
+        expected_calibration_ids = set(record.camera_stream_calibration_ids.values())
+        if set(record.camera_ids) != expected_calibration_ids:
+            result.fail("camera_ids disagree with camera_stream_calibration_ids")
         pts: dict[str, Sequence[float]] = {}
         perceptual: dict[str, str] = {}
         for camera, relative in record.video_paths.items():
@@ -421,6 +502,7 @@ class QCValidator:
                 elif sha256_file(frame_path) != expected_frame_hash:
                     result.fail(f"content hash mismatch: {record.frame_data_path}")
                 rows = read_parquet_rows(frame_path)
+                frame_rows = rows
                 timestamps = [float(row["timestamp"]) for row in rows]
                 validate_monotonic_timestamps(timestamps)
                 if record.frame_count is None:
@@ -442,27 +524,9 @@ class QCValidator:
                     result.fail("task_index is required")
                 elif any(int(row.get("task_index", -1)) != record.task_index for row in rows):
                     result.fail("frame-table task_index disagrees with episode metadata")
-                action_fields = sorted(
-                    name for name in (rows[0] if rows else {}) if name.startswith("action.")
-                )
-                result.metrics["derived_action_hash"] = sha256_json(
-                    [[row.get(name) for name in action_fields] for row in rows]
-                )
-                excluded_initial_prefixes = ("action.", "contact.", "event.", "assistance.")
-                initial_fields = sorted(
-                    name
-                    for name in (rows[0] if rows else {})
-                    if name not in {
-                        "episode_index",
-                        "frame_index",
-                        "video_frame_index",
-                        "task_index",
-                        "timestamp",
-                    }
-                    and not name.startswith(excluded_initial_prefixes)
-                )
-                result.metrics["derived_initial_state_hash"] = sha256_json(
-                    {name: rows[0].get(name) for name in initial_fields} if rows else {}
+                result.metrics["derived_action_hash"] = derived_action_hash_from_rows(rows)
+                result.metrics["derived_initial_state_hash"] = (
+                    derived_initial_state_hash_from_rows(rows)
                 )
                 position_field = next(
                     (name for name in ("object.position", "object.position_world_m", "primary_target.position_world_m") if rows and name in rows[0]),
@@ -529,22 +593,17 @@ class QCValidator:
                     for row in rows
                 ):
                     result.fail("assistance.active is set without a named assistance mechanism")
-                free_fall_field = next(
-                    (name for name in ("free_fall", "event.free_fall", "object.free_fall") if rows and name in rows[0]),
-                    None,
-                )
-                if velocity_field and free_fall_field:
-                    check = gravity_consistency_check(
-                        timestamps,
-                        [row[velocity_field] for row in rows],
-                        record.physics.gravity_world_m_s2,
-                        free_fall_mask=[bool(row[free_fall_field]) for row in rows],
-                    )
-                    result.metrics[f"physics.{check.name}"] = check.metrics
-                    if not check.passed:
-                        result.fail(f"physics {check.name}: {check.message}")
-                elif record.family in {"falling_catch", "projectile_rebound"}:
-                    result.warnings.append("gravity consistency not independently evaluated: no free-fall mask")
+                for problem in validate_v2_frame_semantics(rows, strict=release_claimed):
+                    if release_claimed:
+                        result.fail(f"frame semantics: {problem}")
+                    else:
+                        result.warnings.append(f"frame semantics: {problem}")
+                control_hz = float(record.extras.get("control_hz", 0.0) or 0.0)
+                assistance_tolerance = 1.0 / control_hz if control_hz > 0 else 1.0 / 60.0
+                for problem in validate_assistance_observations(
+                    record, rows, tolerance_s=assistance_tolerance
+                ):
+                    result.fail(f"assistance observations: {problem}")
             except Exception as error:
                 result.fail(f"frame parquet: {error}")
         else:
@@ -553,10 +612,14 @@ class QCValidator:
         for label, relative in (
             ("high-rate", record.high_rate_path),
             ("events", record.events_path),
+            ("transitions", record.transition_events_path),
             ("object states", record.object_states_path),
         ):
             if relative is None:
-                result.fail(f"missing {label} path")
+                if label == "transitions" and not release_claimed:
+                    result.warnings.append("missing transition-events path")
+                else:
+                    result.fail(f"missing {label} path")
                 continue
             path = resolve_dataset_path(self.root, relative)
             if not path.is_file():
@@ -570,11 +633,40 @@ class QCValidator:
                 try:
                     rows = read_parquet_rows(path)
                     if label == "high-rate" and rows:
+                        high_rate_rows = rows
                         validate_monotonic_timestamps(
                             [float(row["timestamp"]) for row in rows],
                             name="high-rate timestamps",
                         )
+                        result.metrics["derived_action_hash"] = (
+                            derived_action_hash_from_rows(rows)
+                        )
+                    elif label == "transitions" and rows:
+                        transition_rows = rows
+                        validate_monotonic_timestamps(
+                            [float(row["timestamp"]) for row in rows],
+                            strictly=False,
+                            name="transition timestamps",
+                        )
+                        if any(not str(row.get("event_type", "")).strip() for row in rows):
+                            result.fail("transition rows require event_type")
+                        chains: dict[str, str] = {}
+                        for row in rows:
+                            event_type = str(row["event_type"])
+                            source = str(row.get("from", ""))
+                            destination = str(row.get("to", ""))
+                            if not source or not destination or source == destination:
+                                result.fail(
+                                    "transition rows require distinct non-empty from/to states"
+                                )
+                                continue
+                            if event_type in chains and source != chains[event_type]:
+                                result.fail(
+                                    f"transition chain is discontinuous for {event_type}"
+                                )
+                            chains[event_type] = destination
                     elif label == "object states" and rows:
+                        object_state_rows = rows
                         validate_monotonic_timestamps(
                             [float(row["timestamp"]) for row in rows],
                             strictly=False,
@@ -640,6 +732,43 @@ class QCValidator:
                         result.fail("event_time_s disagrees with the first non-fixture task contact")
             except Exception as error:
                 result.fail(f"contact events: {error}")
+        if frame_rows:
+            velocity_field = next(
+                (
+                    name
+                    for name in (
+                        "object.linear_velocity",
+                        "object.linear_velocity_world_m_s",
+                        "primary_target.linear_velocity_world_m_s",
+                    )
+                    if name in frame_rows[0]
+                ),
+                None,
+            )
+            free_fall_field = next(
+                (
+                    name
+                    for name in ("free_fall", "event.free_fall", "object.free_fall")
+                    if name in frame_rows[0]
+                ),
+                None,
+            )
+            if velocity_field and free_fall_field:
+                check = gravity_consistency_check(
+                    [float(row["timestamp"]) for row in frame_rows],
+                    [row[velocity_field] for row in frame_rows],
+                    record.physics.gravity_world_m_s2,
+                    free_fall_mask=_event_aware_free_fall_mask(
+                        frame_rows, event_rows, free_fall_field
+                    ),
+                )
+                result.metrics[f"physics.{check.name}"] = check.metrics
+                if not check.passed:
+                    result.fail(f"physics {check.name}: {check.message}")
+            elif record.family in {"falling_catch", "projectile_rebound"}:
+                result.warnings.append(
+                    "gravity consistency not independently evaluated: no free-fall mask"
+                )
         measured_contact = record.objective_metrics.get("object_contacted_tool")
         if measured_contact is True and not event_rows:
             result.fail("objective metrics report contact but contact-event table is empty")
@@ -664,14 +793,84 @@ class QCValidator:
             result.fail("task_success disagrees with objective evaluator metric")
         elif metric_success is None:
             result.warnings.append("label/metric agreement not independently evaluated: no objective_success metric")
+        evaluator = self.objective_evaluators.get(
+            record.objective_evaluator_id, record.objective_evaluator_version
+        )
+        if evaluator is None:
+            message = (
+                "no persisted-artifact objective evaluator registered for "
+                f"{record.objective_evaluator_id}/{record.objective_evaluator_version}"
+            )
+            if release_claimed:
+                result.fail(message)
+            else:
+                result.warnings.append(message)
+        else:
+            try:
+                recomputed = evaluator(
+                    ObjectiveRecomputeInput(
+                        record=record,
+                        frame_rows=frame_rows,
+                        event_rows=event_rows,
+                        object_state_rows=object_state_rows,
+                    )
+                )
+                for problem in compare_recomputed_objective(record, recomputed):
+                    result.fail(problem)
+                result.metrics["objective_recompute"] = {
+                    "evidence_version": recomputed.evidence_version,
+                    "evidence_hash": sha256_json(recomputed.evidence),
+                    "task_success": recomputed.task_success,
+                    "actual_outcome_class": recomputed.actual_outcome_class.value,
+                    "primary_failure_code": recomputed.primary_failure_code,
+                }
+                if record.objective_evidence.get("independently_recomputed") is not True:
+                    result.fail(
+                        "objective evaluator ran but metadata does not attest independent recomputation"
+                    )
+                stored_evidence_hash = record.objective_evidence.get("evidence_hash")
+                if stored_evidence_hash and stored_evidence_hash != sha256_json(recomputed.evidence):
+                    result.fail("stored objective evidence hash disagrees with recomputation")
+            except Exception as error:
+                result.fail(f"objective recomputation: {error}")
         visibility = record.extras.get("visibility_qc")
         if isinstance(visibility, Mapping):
+            if visibility.get("schema_version") != NATIVE_VISUAL_QC_SCHEMA:
+                result.fail(f"visibility QC does not use {NATIVE_VISUAL_QC_SCHEMA}")
+            if visibility.get("evaluated") is not True:
+                result.fail("visibility QC was not evaluated from rendered streams")
+            if visibility.get("key_event_visible_in_any_view") is not True:
+                result.fail("key event is not visible in either view")
             if visibility.get("critically_cropped") is True:
                 result.fail("target critically cropped during key event")
             if visibility.get("contact_occluded_both_views") is True:
                 result.fail("critical contact occluded in both views")
-            if float(visibility.get("minimum_visible_fraction", 1.0)) < 0.25:
-                result.fail("target visibility is insufficient")
+            if float(visibility.get("target_visible_frame_fraction", 0.0)) < float(
+                NATIVE_VISUAL_THRESHOLDS["minimum_target_visible_frame_fraction"]
+            ):
+                result.fail("target is not visible in at least 90% of episode frames")
+            if float(visibility.get("minimum_bbox_margin_px", 0.0)) < float(
+                NATIVE_VISUAL_THRESHOLDS["minimum_bbox_margin_px"]
+            ):
+                result.fail("target crop margin is below 8 pixels at the key event")
+            if int(visibility.get("key_event_object_area_px", 0)) < int(
+                NATIVE_VISUAL_THRESHOLDS["minimum_key_event_object_area_px"]
+            ):
+                result.fail("target key-event footprint is below 64 pixels")
+            if visibility.get("tool_visible_at_key_event") is not True:
+                result.fail("tool is not visible at the key event")
+            if visibility.get("fixture_visible_at_key_event") is not True:
+                result.fail("fixture is not visible at the key event")
+            if visibility.get("camera_roles_correct") is not True:
+                result.fail("camera roles do not match the task family")
+            if float(visibility.get("maximum_underexposed_fraction", 1.0)) > float(
+                NATIVE_VISUAL_THRESHOLDS["maximum_underexposed_fraction"]
+            ):
+                result.fail("underexposed/black image fraction exceeds 0.35")
+            if float(visibility.get("maximum_overexposed_fraction", 1.0)) > float(
+                NATIVE_VISUAL_THRESHOLDS["maximum_overexposed_fraction"]
+            ):
+                result.fail("overexposed image fraction exceeds 0.30")
         else:
             result.warnings.extend(
                 [
@@ -679,6 +878,238 @@ class QCValidator:
                     "critical-contact occlusion not evaluated: no visibility_qc metadata",
                 ]
             )
+        backend_provenance = record.extras.get("backend_provenance")
+        native_backend = (
+            isinstance(backend_provenance, Mapping)
+            and backend_provenance.get("backend") == "native_mujoco"
+            and record.simulator_name.lower() == "mujoco"
+        )
+        if native_backend:
+            def verify_external_artifact(
+                *, label: str, path_value: Any, expected_value: Any
+            ) -> None:
+                expected = str(expected_value or "")
+                try:
+                    path = Path(str(path_value)).resolve(strict=True)
+                except (FileNotFoundError, OSError):
+                    result.fail(f"{label} artifact path is unavailable")
+                    return
+                if (
+                    not path.is_file()
+                    or len(expected) != 64
+                    or any(character not in "0123456789abcdef" for character in expected)
+                    or sha256_file(path) != expected
+                ):
+                    result.fail(f"{label} artifact is not content-bound")
+
+            audit = backend_provenance.get("runtime_audit")
+            if not isinstance(audit, Mapping):
+                result.fail("native backend provenance lacks runtime_audit")
+            else:
+                for field_name in (
+                    "object_state_writes_after_initialization",
+                    "direct_robot_state_writes_after_initialization",
+                    "equality_constraint_count",
+                ):
+                    if int(audit.get(field_name, -1)) != 0:
+                        result.fail(f"native runtime audit has nonzero {field_name}")
+                if int(audit.get("initial_object_state_writes", 0)) != 1:
+                    result.fail("native runtime audit must record exactly one initial object-state write")
+                if int(audit.get("initial_robot_state_writes", 0)) != 1:
+                    result.fail("native runtime audit must record exactly one initial robot-state write")
+                if int(audit.get("simulation_steps", 0)) <= 0:
+                    result.fail("native runtime audit has no simulation steps")
+                if int(audit.get("control_updates", 0)) <= 0:
+                    result.fail("native runtime audit has no actuator control updates")
+            if backend_provenance.get("visual_style_validated") is True:
+                verify_external_artifact(
+                    label="visual-style validation",
+                    path_value=backend_provenance.get(
+                        "visual_style_validation_artifact_path"
+                    ),
+                    expected_value=backend_provenance.get(
+                        "visual_style_validation_artifact_hash"
+                    ),
+                )
+            if backend_provenance.get("tool_calibrated") is True:
+                verify_external_artifact(
+                    label="tool calibration",
+                    path_value=backend_provenance.get(
+                        "tool_calibration_artifact_path"
+                    ),
+                    expected_value=backend_provenance.get(
+                        "tool_calibration_artifact_sha256"
+                    ),
+                )
+            physics_range = backend_provenance.get("physics_range_provenance")
+            if isinstance(physics_range, Mapping) and physics_range.get("calibrated") is True:
+                verify_external_artifact(
+                    label="physics-range calibration",
+                    path_value=physics_range.get("resolved_artifact_path"),
+                    expected_value=physics_range.get("calibration_artifact"),
+                )
+            persisted_qc = record.extras.get("physics_qc")
+            persisted_checks = (
+                persisted_qc.get("checks")
+                if isinstance(persisted_qc, Mapping)
+                else None
+            )
+            required_native_checks = (
+                "finite_state",
+                "no_post_initialization_object_state_writes",
+                "no_direct_robot_state_writes_after_initialization",
+                "no_equality_or_latch_assistance",
+                "contact_penetration_bounded",
+                "control_within_declared_ranges",
+                "free_flight_acceleration_consistent",
+                "gravity_sweep_measurement_available",
+                "position_velocity_consistent",
+                "free_flight_energy_consistent",
+                "joint_velocity_bounded",
+                "joint_acceleration_bounded",
+                "joint_positions_within_limits",
+                "actuator_forces_within_limits",
+                "contact_forces_finite",
+                "momentum_impulse_accounting_consistent",
+                "task_contact_count_bounded",
+                "distinct_contact_count_bounded",
+                "no_measured_contact_energy_gain",
+                "measured_restitution_matches_target",
+                "restitution_sweep_measurement_available",
+                "friction_sweep_measurement_available",
+                "rolling_slip_bounded",
+            )
+            if not isinstance(persisted_checks, Mapping):
+                result.fail("native episode lacks persisted physics-QC checks")
+            else:
+                missing_checks = sorted(set(required_native_checks) - set(persisted_checks))
+                if missing_checks:
+                    result.fail(f"native physics-QC checks are missing: {missing_checks}")
+                failed_checks = sorted(
+                    name for name in required_native_checks if persisted_checks.get(name) is not True
+                )
+                if record.physics_qc_pass and failed_checks:
+                    result.fail(
+                        f"physics_qc_pass=true despite failed native checks: {failed_checks}"
+                    )
+
+            if high_rate_rows:
+                joint_rows = [
+                    row
+                    for row in high_rate_rows
+                    if isinstance(row.get("robot.joint_velocity"), Sequence)
+                ]
+                if joint_rows:
+                    maximum_velocity = max(
+                        abs(float(value))
+                        for row in joint_rows
+                        for value in row["robot.joint_velocity"]
+                    )
+                    maximum_acceleration = 0.0
+                    for left, right in zip(joint_rows, joint_rows[1:]):
+                        dt = float(right["timestamp"]) - float(left["timestamp"])
+                        if dt <= 0:
+                            continue
+                        maximum_acceleration = max(
+                            maximum_acceleration,
+                            max(
+                                abs(float(b) - float(a)) / dt
+                                for a, b in zip(
+                                    left["robot.joint_velocity"],
+                                    right["robot.joint_velocity"],
+                                )
+                            ),
+                        )
+                    result.metrics["native_recomputed_maximum_joint_velocity_rad_s"] = maximum_velocity
+                    result.metrics["native_recomputed_maximum_joint_acceleration_rad_s2"] = maximum_acceleration
+                    if maximum_velocity > 3.5 + 1e-9:
+                        result.fail("recomputed native joint velocity exceeds limit")
+                    if maximum_acceleration > 80.0 + 1e-9:
+                        result.fail("recomputed native joint acceleration exceeds limit")
+
+                first_contact = min(
+                    (float(row["timestamp"]) for row in event_rows), default=math.inf
+                )
+                free_flight = [
+                    row
+                    for row in high_rate_rows
+                    if str(row.get("object.motion_mode")) == "free_flight"
+                    and float(row["timestamp"]) < first_contact
+                    and isinstance(row.get("object.linear_velocity"), Sequence)
+                ]
+                if len(free_flight) >= 2:
+                    check = gravity_consistency_check(
+                        [float(row["timestamp"]) for row in free_flight],
+                        [row["object.linear_velocity"] for row in free_flight],
+                        record.physics.gravity_world_m_s2,
+                        tolerance_m_s2=1.2,
+                    )
+                    result.metrics["physics.native_recomputed_gravity"] = check.metrics
+                    if not check.passed:
+                        result.fail(f"physics {check.name}: {check.message}")
+
+                radius = record.physics.parameters.get("radius")
+                rolling_rows = [
+                    row
+                    for row in high_rate_rows
+                    if str(row.get("object.motion_mode")) == "rolling"
+                    and isinstance(row.get("object.linear_velocity"), Sequence)
+                    and isinstance(row.get("object.angular_velocity"), Sequence)
+                ]
+                if rolling_rows and radius is not None and radius.valid and radius.implemented:
+                    radius_m = float(radius.value)
+                    slip_speeds = []
+                    for row in rolling_rows:
+                        vx, vy, _ = (float(value) for value in row["object.linear_velocity"])
+                        wx, wy, _ = (float(value) for value in row["object.angular_velocity"])
+                        slip_speeds.append(
+                            math.hypot(vx - wy * radius_m, vy + wx * radius_m)
+                        )
+                    maximum_slip = max(slip_speeds)
+                    result.metrics["physics.native_recomputed_maximum_rolling_slip_m_s"] = maximum_slip
+                    if maximum_slip > 0.12 + 1e-9:
+                        result.fail("recomputed native rolling slip exceeds limit")
+
+            raw_spec = record.extras.get("native_scenario_spec")
+            if isinstance(raw_spec, Mapping):
+                expected = [str(value) for value in raw_spec.get("expected_contact_sequence", ())]
+                if expected:
+                    chronological = [
+                        *[
+                            (float(row["timestamp"]), str(row.get("object_b")))
+                            for row in event_rows
+                        ],
+                        *[
+                            (float(row["timestamp"]), str(row.get("motion_mode")))
+                            for row in frame_rows
+                        ],
+                    ]
+                    observed = [value for _, value in sorted(chronological)]
+                    cursor = iter(observed)
+                    ordered = all(any(value == target for value in cursor) for target in expected)
+                    observed_expected = [value for value in observed if value in expected]
+                    expected_index = {value: index for index, value in enumerate(expected)}
+                    malformed_prefix = any(
+                        expected_index[right] < expected_index[left]
+                        for left, right in zip(
+                            observed_expected, observed_expected[1:]
+                        )
+                    ) or any(
+                        target in observed_expected
+                        and any(
+                            predecessor not in observed_expected
+                            for predecessor in expected[:index]
+                        )
+                        for index, target in enumerate(expected)
+                    )
+                    if malformed_prefix:
+                        result.fail(
+                            "native episode violates declared contact/transition order"
+                        )
+                    elif record.task_success and not ordered:
+                        result.fail(
+                            "successful native episode violates declared contact/transition order"
+                        )
         if not record.physics_qc_pass:
             if record.dynamics_mode == DynamicsMode.FREE_CONTACT:
                 result.fail("physics_qc_pass=false")
@@ -686,6 +1117,19 @@ class QCValidator:
                 result.warnings.append(
                     f"physics_qc_pass=false for quarantined {record.dynamics_mode.value} episode"
                 )
+        range_provenance = record.physics.parameter_range_provenance
+        result.metrics["parameter_range_partition"] = range_provenance.get("partition")
+        result.metrics["parameter_range_calibrated"] = range_provenance.get("calibrated")
+        if release_claimed and range_provenance.get("calibrated") is not True:
+            result.fail("release candidate uses an uncalibrated parameter-range profile")
+        if release_claimed and (
+            record.controller_profile.get("profile_id") == "legacy_unspecified"
+            or not record.robot_start_provenance
+            or not record.tool_calibration_provenance
+        ):
+            result.fail(
+                "release candidate lacks controller, robot-start, or tool-calibration provenance"
+            )
         bounce_keys = (
             "preimpact_normal_velocity_m_s",
             "postimpact_normal_velocity_m_s",
@@ -804,6 +1248,69 @@ class QCValidator:
                 global_failures.append(f"physics family {family_id} changes camera streams")
             if len(appearance_signatures) > 1:
                 global_failures.append(f"physics family {family_id} changes assets or appearance")
+        claimed_release_uuids = {
+            record.episode_uuid
+            for record in records
+            if record.label_status.value == "verified_objective"
+            and record.release_tier == ReleaseTier.FREE_CONTACT
+            and record.dynamics_mode == DynamicsMode.FREE_CONTACT
+            and record.physics_qc_pass
+            and not record.quality_flags
+        }
+        counterfactual_table = self.root / "meta" / "counterfactual_families.parquet"
+        declarations: list[CounterfactualFamilyRecord] = []
+        if counterfactual_table.is_file():
+            try:
+                declarations = [
+                    CounterfactualFamilyRecord.from_dict(row)
+                    for row in read_parquet_rows(counterfactual_table)
+                ]
+                derived_by_uuid = {
+                    result.episode_uuid: {
+                        "derived_action_hash": result.metrics.get("derived_action_hash"),
+                        "derived_initial_state_hash": result.metrics.get(
+                            "derived_initial_state_hash"
+                        ),
+                    }
+                    for result in results
+                }
+                global_failures.extend(
+                    f"counterfactual: {problem}"
+                    for problem in validate_counterfactual_family_records(
+                        declarations, records, derived_by_uuid=derived_by_uuid
+                    )
+                )
+                declared_action_ids = {
+                    declaration.family_id
+                    for declaration in declarations
+                    if declaration.relation.value == "action"
+                }
+                declared_physics_ids = {
+                    declaration.family_id
+                    for declaration in declarations
+                    if declaration.relation.value == "physics"
+                }
+                for record in records:
+                    if record.episode_uuid not in claimed_release_uuids:
+                        continue
+                    if record.counterfactual_bundle_id not in declared_action_ids:
+                        global_failures.append(
+                            f"release episode {record.episode_uuid} lacks action-family declaration"
+                        )
+                    if (
+                        record.physics_counterfactual_family_id is not None
+                        and record.physics_counterfactual_family_id
+                        not in declared_physics_ids
+                    ):
+                        global_failures.append(
+                            f"release episode {record.episode_uuid} lacks physics-family declaration"
+                        )
+            except Exception as error:
+                global_failures.append(f"invalid counterfactual family table: {error}")
+        elif claimed_release_uuids:
+            global_failures.append(
+                "release candidates have no meta/counterfactual_families.parquet declaration table"
+            )
         camera_table = self.root / "meta" / "cameras.parquet"
         camera_rows = read_parquet_rows(camera_table) if camera_table.is_file() else []
         if not camera_rows:
@@ -813,31 +1320,47 @@ class QCValidator:
                 global_warnings.append("camera-calibration table is empty")
         else:
             camera_ids: set[str] = set()
+            camera_stream_by_id: dict[str, str] = {}
             for row in camera_rows:
                 identifier = str(row.get("camera_id") or row.get("camera_name") or "")
                 try:
+                    if not identifier or identifier in camera_ids:
+                        raise SchemaValidationError(
+                            "camera_id must be non-empty and unique"
+                        )
                     calibration_value = dict(row)
                     calibration_value.pop("camera_id", None)
                     calibration = CameraCalibration.from_dict(calibration_value)
-                    if identifier != calibration.camera_name:
-                        raise SchemaValidationError(
-                            f"camera_id {identifier!r} differs from camera_name {calibration.camera_name!r}"
-                        )
                     if (calibration.width, calibration.height, calibration.fps) != (832, 480, 30.0):
                         raise SchemaValidationError(
                             f"camera {identifier} is not canonical 832x480 at 30 FPS"
                         )
                     camera_ids.add(identifier)
+                    camera_stream_by_id[identifier] = calibration.camera_name
                 except Exception as error:
                     global_failures.append(f"invalid camera calibration {identifier or '<unnamed>'}: {error}")
             for record in records:
-                missing = sorted(set(record.camera_ids) - camera_ids)
+                calibration_mapping = record.camera_stream_calibration_ids or {
+                    stream: stream for stream in record.video_paths
+                }
+                missing = sorted(set(calibration_mapping.values()) - camera_ids)
                 if missing:
                     message = f"episode {record.episode_uuid} lacks calibration rows for {missing}"
                     if record.release_eligible:
                         global_failures.append(message)
                     else:
                         global_warnings.append(message)
+                for stream, calibration_id in calibration_mapping.items():
+                    calibrated_stream = camera_stream_by_id.get(calibration_id)
+                    if calibrated_stream is not None and calibrated_stream != stream:
+                        message = (
+                            f"episode {record.episode_uuid} maps stream {stream} to calibration "
+                            f"{calibration_id} for {calibrated_stream}"
+                        )
+                        if record.episode_uuid in claimed_release_uuids:
+                            global_failures.append(message)
+                        else:
+                            global_warnings.append(message)
         return DatasetQCReport(
             str(self.root),
             results,
@@ -854,10 +1377,15 @@ def validate_dataset(
     deep_video_checks: bool = True,
     write_reports: bool = False,
     report_dir: str | Path | None = None,
+    objective_evaluators: ObjectiveEvaluatorRegistry | None = None,
 ) -> DatasetQCReport:
     """Stable public validator API used by tests, CLI, and smoke orchestration."""
 
-    report = QCValidator(dataset_root, deep_video_checks=deep_video_checks).validate()
+    report = QCValidator(
+        dataset_root,
+        deep_video_checks=deep_video_checks,
+        objective_evaluators=objective_evaluators,
+    ).validate()
     if write_reports:
         write_qc_reports(report, report_dir or (Path(dataset_root) / "qc"))
     return report
@@ -876,7 +1404,22 @@ def write_qc_reports(report: DatasetQCReport, directory: str | Path) -> None:
 
     root = ensure_not_source_path(directory)
     root.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(root / "dataset_report.json", report.to_dict())
+    dataset_root = Path(report.dataset_root)
+    completion_path = dataset_root / "meta" / ".complete.json"
+    if not completion_path.is_file():
+        raise RuntimeError(
+            "QC reports may only be published for an atomically finalized dataset"
+        )
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    metadata_content_hashes = dict(completion.get("content_hashes") or {})
+    report_payload = report.to_dict()
+    report_payload.update(
+        schema_version="dynamic-robot-qc-report/v2",
+        dataset_episodes_sha256=sha256_file(dataset_root / "meta" / "episodes.parquet"),
+        metadata_complete_manifest_sha256=sha256_file(completion_path),
+        metadata_content_hashes=metadata_content_hashes,
+    )
+    atomic_write_json(root / "dataset_report.json", report_payload)
     write_parquet_atomic(root / "episode_qc.parquet", [episode.to_dict() for episode in report.episodes])
     failure_counter: Counter[str] = Counter(
         failure for episode in report.episodes for failure in episode.hard_failures
@@ -888,15 +1431,39 @@ def write_qc_reports(report: DatasetQCReport, directory: str | Path) -> None:
     records = load_episode_records(report.dataset_root)
     qc_by_uuid = {episode.episode_uuid: episode for episode in report.episodes}
     outcome_counter: Counter[tuple[str, str, str]] = Counter(
-        (record.family, record.subfamily, record.actual_outcome) for record in records
+        (record.family, record.subfamily, record.actual_outcome_class.value)
+        for record in records
     )
     atomic_write_bytes(
         root / "outcome_distribution.csv",
         _csv_bytes(
-            ("family", "subfamily", "actual_outcome", "count"),
+            ("family", "subfamily", "actual_outcome_class", "count"),
             (
-                {"family": key[0], "subfamily": key[1], "actual_outcome": key[2], "count": value}
+                {
+                    "family": key[0],
+                    "subfamily": key[1],
+                    "actual_outcome_class": key[2],
+                    "count": value,
+                }
                 for key, value in sorted(outcome_counter.items())
+            ),
+        ),
+    )
+    confusion_counter: Counter[tuple[str, str]] = Counter(
+        (record.intended_branch, record.actual_outcome_class.value)
+        for record in records
+    )
+    atomic_write_bytes(
+        root / "intended_actual_confusion.csv",
+        _csv_bytes(
+            ("intended_branch", "actual_outcome_class", "count"),
+            (
+                {
+                    "intended_branch": key[0],
+                    "actual_outcome_class": key[1],
+                    "count": value,
+                }
+                for key, value in sorted(confusion_counter.items())
             ),
         ),
     )
