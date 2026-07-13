@@ -162,4 +162,6 @@ plan defines no versioned Cosmos video or manifest contract; Wan is the only
 model-specific export implemented here.
 
 See `migration/implementation_report.md` for verified source lineage, copied
-files, exclusions, smoke results, and remaining scale-up blockers.
+files, exclusions, smoke results, and remaining scale-up blockers. Exact shell
+invocations and accepted artifact paths are in
+`migration/reproduction_commands.md`.

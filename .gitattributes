@@ -1,0 +1,2 @@
+# Keep generated machine-readable CSV reports reviewable and platform-neutral.
+outputs/smoke_tests/**/*.csv text eol=lf

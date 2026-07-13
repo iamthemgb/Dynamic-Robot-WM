@@ -97,3 +97,105 @@ In `source_mapping.yaml`, `new_refactored_path` names the maintained adapter or
 evaluator target and `major_changes` records the required treatment. Neither
 field claims that every legacy controller, camera, robot state, or task variant
 has already reached native feature parity.
+
+## Canonical smoke acceptance
+
+The committed diagnostic pipeline was exercised end to end from generator
+commit `ef1b3c927dce4297441a268ba2cd7e7a97dfb4dc`. Its environment fingerprint
+is `d68ecfb3adbd54470f07f9c8d9aed10678cbd10ca5ec433c732ef45a8a0e159f` and
+includes installed Python distributions plus the `uv.lock` digest. The
+corresponding shell invocation is recorded in `reproduction_commands.md`; the
+finalized provenance Parquet records its script argv and resolved identities.
+
+| Family | Branches | Frames/episode | Duration (s) | Objective outcomes | Physics-QC pass |
+|---|---:|---:|---:|---|---:|
+| Falling catch | 24 | 97 | 3.2333 | 6 success, 18 measured failures | 24 |
+| Rolling interception | 16 | 136 | 4.5333 | 5 success, 11 measured failures | 16 |
+| Projectile/rebound and sweeps | 30 | 115 | 3.8333 | 14 success, 16 measured failures | 30 |
+| Cloth | 16 | 151 | 5.0333 | 4 success, 12 measured failures | 0 (proxy) |
+| Rope | 18 | 151 | 5.0333 | 9 success, 9 measured failures | 0 (proxy) |
+| Soft body | 12 | 136 | 4.5333 | 12 proxy outcomes, unverified for release | 0 (proxy) |
+| Legacy proxy quarantine | 4 | 76 | 2.5333 | 4 quarantined | 0 (proxy) |
+
+Acceptance facts:
+
+- Exactly 120 unique episodes and 240 synchronized source videos were written.
+  Every source video independently decoded as H.264/yuv420p, 832×480, 30 FPS,
+  with uniform PTS and the declared 76–151 frame count.
+- Source duration is 500.8 episode-seconds, or 1,001.6 seconds counting both
+  views. The source tree occupies 14,035,437 bytes.
+- The derived Wan export contains 120 manifest rows and 240 H.264/yuv420p
+  videos at 832×480, 24 FPS, exactly 121 frames/5.0417 seconds each. That is
+  605 episode-seconds or 1,210 view-seconds; the export occupies 5,928,633
+  bytes. All 241 export checksums and referenced source hashes match.
+- The three five-point gravity, friction, and effective-restitution sweeps are
+  configurations and smoke episodes only. No production 10,000-video sweep was
+  generated.
+- Split counts are exactly 108 train, 6 validation, and 6 test. No action
+  bundle, physics family, scene seed, initial-state identity, trajectory
+  identity, parent lineage, or exact-media duplicate group crosses splits.
+- Deep dataset QC and the independent physics validator report zero hard or
+  global failures. The full frozen test suite reports 34 passing tests.
+- Publication tiers contain 70 free-contact, 48 scripted-motion, and 2
+  assisted-contact records. The overlapping unverified manifest contains 50.
+  All 120 records carry `smoke_diagnostic_renderer`, all are quarantined, and
+  `default_training.jsonl` is intentionally empty.
+
+Duplicate validation found 18 exact nonrelease groups and 8,336 perceptual
+similarity candidates. All exact groups are now confined to one split; exact
+groups crossing splits are a hard validator failure. These duplicates and the
+8,354 resulting global warnings are expected evidence of the schematic smoke
+renderer, not production diversity. Per-episode QC also retains 650 warnings,
+primarily because generic visual visibility/occlusion and independent label
+agreement cannot be established from schematic frames.
+
+## Visual review
+
+All seven family contact sheets were inspected. The exact UUIDs, outcomes,
+camera names, frame indices, and relative MP4 paths are retained in
+`outputs/smoke_tests/canonical_smoke_120/qc/contact_sheets/samples.json`.
+
+- Both cameras are synchronized, in frame, and complete from initial context
+  through the terminal state. No sampled video is corrupt, truncated, frozen,
+  or missing its second view.
+- The rigid diagnostic trajectories visibly distinguish success, miss,
+  near-miss, contact failure, and bad-action cases, and the rebound sweep shows
+  changing motion. This is useful for checking labels and timing only.
+- The renderer is deliberately schematic: it does not show a robot body,
+  articulated gripper, realistic contact geometry, occlusion, materials, or
+  penetration detail. The three “background styles” are palette/table changes,
+  not production scene diversity.
+- Cloth and rope proxies have low pixel footprint and repeated no-action
+  trajectories. Soft-body deformation is represented by an exaggerated glyph
+  radius. These are format/QC fixtures, not qualitative evidence for training.
+- Style coverage is confounded by family: falling catch is clean-lab only and
+  rolling is RoboCasa-style only; projectile outcomes are not style-balanced.
+  Production jobs must balance style independently within family and outcome.
+
+The reviewed contact sheets therefore support pipeline acceptance but not
+native simulator, physics, rendering, or Wan-training acceptance.
+
+## Immutability recheck
+
+A post-commit read-only audit verified all 148 allowlisted original files and
+all 148 `legacy_sources` copies against the ledgers, with zero content, size,
+ownership, or Git differences. All 17 recorded source component trees matched,
+covering 193 inventoried files. Ten literal mtime comparisons differed by one
+microsecond because nanosecond timestamps were serialized through floating
+point; their hashes and other stat evidence match.
+
+The separate Wan workspace has no before-hash ledger and was changing during
+this audit because pre-existing Slurm job `2108566` (`wan_setup`) was compiling
+FlashAttention. No dataset-generation path appeared there, and runtime write
+guards rejected all source, `legacy_sources`, and Wan-workspace probes. This
+report therefore claims no writes by this implementation, not an unverifiable
+whole-workspace before/after hash equality.
+
+## Acceptance boundary
+
+The schema, atomic/resumable writer, splits, validators, migration ledgers,
+diagnostic smoke suite, and Wan-format round trip are implemented and accepted.
+Native Franka/Robotiq MuJoCo rendering and native cloth/rope/soft-body backends
+are not bundled. Consequently the repository must not be used to generate a
+production Wan training manifest until those native integrations pass the same
+gates; the present default manifest correctly contains zero episodes.

@@ -1,0 +1,993 @@
+{
+  "dataset_root": "/gpfs/radev/project/sous/zl664/dataset_generation/outputs/smoke_tests/canonical_smoke_120",
+  "families": {
+    "cloth": {
+      "contact_sheet": "qc/contact_sheets/cloth.png",
+      "samples": [
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.main",
+          "episode_index": 77,
+          "episode_uuid": "651c8916-b389-53ff-bae4-a3409bb16ad8",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000077.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.secondary",
+          "episode_index": 77,
+          "episode_uuid": "651c8916-b389-53ff-bae4-a3409bb16ad8",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000077.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.main",
+          "episode_index": 81,
+          "episode_uuid": "6792c049-3e70-5a48-8bc7-eb1d24d85593",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000081.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.secondary",
+          "episode_index": 81,
+          "episode_uuid": "6792c049-3e70-5a48-8bc7-eb1d24d85593",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000081.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.main",
+          "episode_index": 85,
+          "episode_uuid": "5efe4fd7-c1b3-512d-a5d7-32b6ee298490",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000085.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.secondary",
+          "episode_index": 85,
+          "episode_uuid": "5efe4fd7-c1b3-512d-a5d7-32b6ee298490",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000085.mp4"
+        },
+        {
+          "actual_outcome": "contact_failure",
+          "camera": "observation.images.main",
+          "episode_index": 76,
+          "episode_uuid": "761e7fd6-7884-507a-b38a-236db9a75fd4",
+          "intended_branch": "contact_failure",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000076.mp4"
+        },
+        {
+          "actual_outcome": "contact_failure",
+          "camera": "observation.images.secondary",
+          "episode_index": 76,
+          "episode_uuid": "761e7fd6-7884-507a-b38a-236db9a75fd4",
+          "intended_branch": "contact_failure",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000076.mp4"
+        }
+      ]
+    },
+    "falling_catch": {
+      "contact_sheet": "qc/contact_sheets/falling_catch.png",
+      "samples": [
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.main",
+          "episode_index": 11,
+          "episode_uuid": "41c6719c-4d86-5639-844c-b7f5a2cc2b84",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            19,
+            38,
+            58,
+            77,
+            96
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000011.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.secondary",
+          "episode_index": 11,
+          "episode_uuid": "41c6719c-4d86-5639-844c-b7f5a2cc2b84",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            19,
+            38,
+            58,
+            77,
+            96
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000011.mp4"
+        },
+        {
+          "actual_outcome": "contact_failure",
+          "camera": "observation.images.main",
+          "episode_index": 10,
+          "episode_uuid": "baa53621-425b-56c3-b34f-2ad4f4101799",
+          "intended_branch": "contact_failure",
+          "sampled_frame_indices": [
+            0,
+            19,
+            38,
+            58,
+            77,
+            96
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000010.mp4"
+        },
+        {
+          "actual_outcome": "contact_failure",
+          "camera": "observation.images.secondary",
+          "episode_index": 10,
+          "episode_uuid": "baa53621-425b-56c3-b34f-2ad4f4101799",
+          "intended_branch": "contact_failure",
+          "sampled_frame_indices": [
+            0,
+            19,
+            38,
+            58,
+            77,
+            96
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000010.mp4"
+        },
+        {
+          "actual_outcome": "near_miss",
+          "camera": "observation.images.main",
+          "episode_index": 9,
+          "episode_uuid": "2d66a81a-070e-5278-a797-9585861002ce",
+          "intended_branch": "near_miss",
+          "sampled_frame_indices": [
+            0,
+            19,
+            38,
+            58,
+            77,
+            96
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000009.mp4"
+        },
+        {
+          "actual_outcome": "near_miss",
+          "camera": "observation.images.secondary",
+          "episode_index": 9,
+          "episode_uuid": "2d66a81a-070e-5278-a797-9585861002ce",
+          "intended_branch": "near_miss",
+          "sampled_frame_indices": [
+            0,
+            19,
+            38,
+            58,
+            77,
+            96
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000009.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.main",
+          "episode_index": 8,
+          "episode_uuid": "e9afbbb4-cadf-5012-9a71-378b0a14b6d9",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            19,
+            38,
+            58,
+            77,
+            96
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000008.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.secondary",
+          "episode_index": 8,
+          "episode_uuid": "e9afbbb4-cadf-5012-9a71-378b0a14b6d9",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            19,
+            38,
+            58,
+            77,
+            96
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000008.mp4"
+        }
+      ]
+    },
+    "legacy_proxy_quarantine": {
+      "contact_sheet": "qc/contact_sheets/legacy_proxy_quarantine.png",
+      "samples": [
+        {
+          "actual_outcome": "quarantined",
+          "camera": "observation.images.main",
+          "episode_index": 118,
+          "episode_uuid": "6a0746ab-6231-51b8-a861-782ab690f91c",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            15,
+            30,
+            45,
+            60,
+            75
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000118.mp4"
+        },
+        {
+          "actual_outcome": "quarantined",
+          "camera": "observation.images.secondary",
+          "episode_index": 118,
+          "episode_uuid": "6a0746ab-6231-51b8-a861-782ab690f91c",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            15,
+            30,
+            45,
+            60,
+            75
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000118.mp4"
+        },
+        {
+          "actual_outcome": "quarantined",
+          "camera": "observation.images.main",
+          "episode_index": 119,
+          "episode_uuid": "c9c5f0e7-9a0b-57a7-9bbf-7c3bb21bcd86",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            15,
+            30,
+            45,
+            60,
+            75
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000119.mp4"
+        },
+        {
+          "actual_outcome": "quarantined",
+          "camera": "observation.images.secondary",
+          "episode_index": 119,
+          "episode_uuid": "c9c5f0e7-9a0b-57a7-9bbf-7c3bb21bcd86",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            15,
+            30,
+            45,
+            60,
+            75
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000119.mp4"
+        },
+        {
+          "actual_outcome": "quarantined",
+          "camera": "observation.images.main",
+          "episode_index": 117,
+          "episode_uuid": "bd0150bd-5bdc-592c-b4cd-243fa6779346",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            15,
+            30,
+            45,
+            60,
+            75
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000117.mp4"
+        },
+        {
+          "actual_outcome": "quarantined",
+          "camera": "observation.images.secondary",
+          "episode_index": 117,
+          "episode_uuid": "bd0150bd-5bdc-592c-b4cd-243fa6779346",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            15,
+            30,
+            45,
+            60,
+            75
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000117.mp4"
+        },
+        {
+          "actual_outcome": "quarantined",
+          "camera": "observation.images.main",
+          "episode_index": 116,
+          "episode_uuid": "6453c100-035f-5952-b6b5-a003ae8c9a5b",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            15,
+            30,
+            45,
+            60,
+            75
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000116.mp4"
+        },
+        {
+          "actual_outcome": "quarantined",
+          "camera": "observation.images.secondary",
+          "episode_index": 116,
+          "episode_uuid": "6453c100-035f-5952-b6b5-a003ae8c9a5b",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            15,
+            30,
+            45,
+            60,
+            75
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000116.mp4"
+        }
+      ]
+    },
+    "projectile_rebound": {
+      "contact_sheet": "qc/contact_sheets/projectile_rebound.png",
+      "samples": [
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.main",
+          "episode_index": 62,
+          "episode_uuid": "c05c6f91-09e0-5d0e-83d9-79115c46f8cb",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            23,
+            46,
+            68,
+            91,
+            114
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000062.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.secondary",
+          "episode_index": 62,
+          "episode_uuid": "c05c6f91-09e0-5d0e-83d9-79115c46f8cb",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            23,
+            46,
+            68,
+            91,
+            114
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000062.mp4"
+        },
+        {
+          "actual_outcome": "contact_failure",
+          "camera": "observation.images.main",
+          "episode_index": 47,
+          "episode_uuid": "6e8cabf4-c78d-5fb1-8e34-8c987970bd4a",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            23,
+            46,
+            68,
+            91,
+            114
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000047.mp4"
+        },
+        {
+          "actual_outcome": "contact_failure",
+          "camera": "observation.images.secondary",
+          "episode_index": 47,
+          "episode_uuid": "6e8cabf4-c78d-5fb1-8e34-8c987970bd4a",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            23,
+            46,
+            68,
+            91,
+            114
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000047.mp4"
+        },
+        {
+          "actual_outcome": "miss",
+          "camera": "observation.images.main",
+          "episode_index": 48,
+          "episode_uuid": "78687c2b-16ff-5ef2-baf3-1c2ca90b881e",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            23,
+            46,
+            68,
+            91,
+            114
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000048.mp4"
+        },
+        {
+          "actual_outcome": "miss",
+          "camera": "observation.images.secondary",
+          "episode_index": 48,
+          "episode_uuid": "78687c2b-16ff-5ef2-baf3-1c2ca90b881e",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            23,
+            46,
+            68,
+            91,
+            114
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000048.mp4"
+        },
+        {
+          "actual_outcome": "near_miss",
+          "camera": "observation.images.main",
+          "episode_index": 40,
+          "episode_uuid": "6973ab30-587f-50c3-a062-b446e654c71d",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            23,
+            46,
+            68,
+            91,
+            114
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000040.mp4"
+        },
+        {
+          "actual_outcome": "near_miss",
+          "camera": "observation.images.secondary",
+          "episode_index": 40,
+          "episode_uuid": "6973ab30-587f-50c3-a062-b446e654c71d",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            23,
+            46,
+            68,
+            91,
+            114
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000040.mp4"
+        }
+      ]
+    },
+    "rolling_interception": {
+      "contact_sheet": "qc/contact_sheets/rolling_interception.png",
+      "samples": [
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.main",
+          "episode_index": 35,
+          "episode_uuid": "b5cb1e3a-cbc5-5469-aa47-18e0542251e6",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000035.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.secondary",
+          "episode_index": 35,
+          "episode_uuid": "b5cb1e3a-cbc5-5469-aa47-18e0542251e6",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000035.mp4"
+        },
+        {
+          "actual_outcome": "contact_failure",
+          "camera": "observation.images.main",
+          "episode_index": 34,
+          "episode_uuid": "7ca18575-01f8-5a97-90b1-4d78ff7d581d",
+          "intended_branch": "contact_failure",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000034.mp4"
+        },
+        {
+          "actual_outcome": "contact_failure",
+          "camera": "observation.images.secondary",
+          "episode_index": 34,
+          "episode_uuid": "7ca18575-01f8-5a97-90b1-4d78ff7d581d",
+          "intended_branch": "contact_failure",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000034.mp4"
+        },
+        {
+          "actual_outcome": "miss",
+          "camera": "observation.images.main",
+          "episode_index": 29,
+          "episode_uuid": "811a5e00-0da8-57e4-bec0-08dfb7b2b089",
+          "intended_branch": "near_miss",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000029.mp4"
+        },
+        {
+          "actual_outcome": "miss",
+          "camera": "observation.images.secondary",
+          "episode_index": 29,
+          "episode_uuid": "811a5e00-0da8-57e4-bec0-08dfb7b2b089",
+          "intended_branch": "near_miss",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000029.mp4"
+        },
+        {
+          "actual_outcome": "near_miss",
+          "camera": "observation.images.main",
+          "episode_index": 33,
+          "episode_uuid": "9c7a5caa-2726-5642-9f3f-1be664a7b936",
+          "intended_branch": "near_miss",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000033.mp4"
+        },
+        {
+          "actual_outcome": "near_miss",
+          "camera": "observation.images.secondary",
+          "episode_index": 33,
+          "episode_uuid": "9c7a5caa-2726-5642-9f3f-1be664a7b936",
+          "intended_branch": "near_miss",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000033.mp4"
+        }
+      ]
+    },
+    "rope": {
+      "contact_sheet": "qc/contact_sheets/rope.png",
+      "samples": [
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.main",
+          "episode_index": 101,
+          "episode_uuid": "5f650aa9-1036-5eb2-9659-e1c6bb5a18b4",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000101.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.secondary",
+          "episode_index": 101,
+          "episode_uuid": "5f650aa9-1036-5eb2-9659-e1c6bb5a18b4",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000101.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.main",
+          "episode_index": 91,
+          "episode_uuid": "91a3d67d-7584-5569-ad28-359f0507c594",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000091.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.secondary",
+          "episode_index": 91,
+          "episode_uuid": "91a3d67d-7584-5569-ad28-359f0507c594",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000091.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.main",
+          "episode_index": 87,
+          "episode_uuid": "d25133c4-57c7-5e41-9664-820398b6741e",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000087.mp4"
+        },
+        {
+          "actual_outcome": "bad_action",
+          "camera": "observation.images.secondary",
+          "episode_index": 87,
+          "episode_uuid": "d25133c4-57c7-5e41-9664-820398b6741e",
+          "intended_branch": "bad_action",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000087.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.main",
+          "episode_index": 100,
+          "episode_uuid": "d0897f45-cce8-5394-b30d-5b4779416cd9",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000100.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.secondary",
+          "episode_index": 100,
+          "episode_uuid": "d0897f45-cce8-5394-b30d-5b4779416cd9",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            30,
+            60,
+            90,
+            120,
+            150
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000100.mp4"
+        }
+      ]
+    },
+    "soft_body": {
+      "contact_sheet": "qc/contact_sheets/soft_body.png",
+      "samples": [
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.main",
+          "episode_index": 113,
+          "episode_uuid": "66254a78-70f2-5aa1-8c63-9b43c716f19d",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000113.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.secondary",
+          "episode_index": 113,
+          "episode_uuid": "66254a78-70f2-5aa1-8c63-9b43c716f19d",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000113.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.main",
+          "episode_index": 107,
+          "episode_uuid": "8adc9afd-4fb6-5876-82b1-1d3e5911d7d7",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.main/chunk-000/file-000107.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.secondary",
+          "episode_index": 107,
+          "episode_uuid": "8adc9afd-4fb6-5876-82b1-1d3e5911d7d7",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "clean_franka_lab",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000107.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.main",
+          "episode_index": 110,
+          "episode_uuid": "95672647-b0c1-59a7-9663-b285b7ba8d50",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000110.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.secondary",
+          "episode_index": 110,
+          "episode_uuid": "95672647-b0c1-59a7-9663-b285b7ba8d50",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robocasa_kitchen_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000110.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.main",
+          "episode_index": 114,
+          "episode_uuid": "4f7653fb-fdf7-56c1-be37-9a6015642870",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.main/chunk-000/file-000114.mp4"
+        },
+        {
+          "actual_outcome": "success",
+          "camera": "observation.images.secondary",
+          "episode_index": 114,
+          "episode_uuid": "4f7653fb-fdf7-56c1-be37-9a6015642870",
+          "intended_branch": "success_seeking",
+          "sampled_frame_indices": [
+            0,
+            27,
+            54,
+            81,
+            108,
+            135
+          ],
+          "scene_style": "robotwin_cluttered_tabletop",
+          "video_path": "videos/observation.images.secondary/chunk-000/file-000114.mp4"
+        }
+      ]
+    }
+  },
+  "schema_version": "dynamic-robot-contact-sheet-samples/v1"
+}
