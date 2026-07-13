@@ -24,9 +24,8 @@ from PIL import Image, ImageDraw
 from .common.cameras import CameraCalibration, invert_rigid_transform
 from .common.contacts import normalize_assistance, select_task_event_time
 from .common.episode_writer import EpisodeWriter
-from .common.hashing import sha256_bytes
 from .common.paths import atomic_write_json
-from .common.provenance import GenerationProvenance, get_git_commit
+from .common.provenance import GenerationProvenance, environment_hash, get_git_commit
 from .common.qc import validate_dataset
 from .common.schema import (
     DatasetInfo,
@@ -538,13 +537,6 @@ def run_smoke_suite(
             "persistent_physics_transient_state_action_separate": True,
         },
     )
-    frozen_environment = subprocess.run(
-        [sys.executable, "-m", "pip", "freeze"],
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    ).stdout
     provenance = GenerationProvenance(
         source_generator="dynamic_robot_dataset.smoke_runner",
         source_generator_version="0.1.0",
@@ -554,7 +546,7 @@ def run_smoke_suite(
         simulator_version="family_specific",
         renderer=SMOKE_RENDERER,
         command=sys.argv,
-        environment_hash=sha256_bytes(frozen_environment.encode("utf-8")),
+        environment_hash=environment_hash(lockfiles=[repo_root / "uv.lock"]),
     )
     camera_rows = [
         {"camera_id": name, **calibration.to_dict()}

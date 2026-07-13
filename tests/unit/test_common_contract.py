@@ -20,6 +20,7 @@ from dynamic_robot_dataset.common.paths import (
     ensure_not_source_path,
     portable_relative_path,
 )
+from dynamic_robot_dataset.common.provenance import environment_hash
 from dynamic_robot_dataset.common.schema import (
     DynamicsMode,
     EpisodeRecord,
@@ -60,6 +61,17 @@ def _episode(index: int, **updates: object) -> EpisodeRecord:
     }
     values.update(updates)
     return EpisodeRecord(**values)  # type: ignore[arg-type]
+
+
+def test_environment_hash_does_not_require_pip_and_tracks_lockfile(tmp_path: Path) -> None:
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    first = environment_hash(lockfiles=[lockfile])
+    assert len(first) == 64
+    assert first != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+    lockfile.write_text("version = 2\n", encoding="utf-8")
+    assert environment_hash(lockfiles=[lockfile]) != first
 
 
 def test_failed_outcome_needs_concrete_failure_code() -> None:

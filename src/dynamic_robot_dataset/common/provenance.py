@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import os
+import sys
 import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from importlib.metadata import distributions
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .hashing import combined_manifest_hash, hash_manifest, sha256_file
+from .hashing import combined_manifest_hash, hash_manifest, sha256_file, sha256_json
 
 INVENTORY_SUFFIXES = {
     ".py",
@@ -175,6 +177,46 @@ def get_git_commit(path: str | Path) -> str:
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
     return process.stdout.strip() or "unknown"
+
+
+def environment_hash(*, lockfiles: Iterable[str | Path] = ()) -> str:
+    """Fingerprint the active Python environment without depending on ``pip``.
+
+    Environments created by uv need not install the ``pip`` module, so invoking
+    ``python -m pip freeze`` can silently produce an empty snapshot.  Package
+    metadata is part of the Python standard library and is available for both
+    editable and wheel installs.  Lockfile content is included so the digest
+    also identifies the fully resolved environment specification.
+    """
+
+    packages: set[tuple[str, str]] = set()
+    for distribution in distributions():
+        name = distribution.metadata.get("Name")
+        if not name:
+            continue
+        normalized_name = name.strip().lower().replace("_", "-")
+        packages.add((normalized_name, distribution.version))
+
+    resolved_lockfiles: dict[str, str] = {}
+    for raw_path in lockfiles:
+        path = Path(raw_path).resolve(strict=True)
+        if not path.is_file():
+            raise ValueError(f"Environment lockfile is not a regular file: {path}")
+        resolved_lockfiles[path.name] = sha256_file(path)
+
+    payload = {
+        "schema_version": "dynamic-robot-python-environment/v1",
+        "python": {
+            "implementation": sys.implementation.name,
+            "version": list(sys.version_info[:3]),
+        },
+        "packages": [
+            {"name": name, "version": version}
+            for name, version in sorted(packages)
+        ],
+        "lockfiles": dict(sorted(resolved_lockfiles.items())),
+    }
+    return sha256_json(payload)
 
 
 @dataclass(slots=True)
