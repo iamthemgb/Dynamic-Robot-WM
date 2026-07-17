@@ -23,6 +23,7 @@ from dynamic_robot_dataset.common.run_orchestration import (
 from dynamic_robot_dataset.common.schema import DatasetInfo
 from dynamic_robot_dataset.common.source_execution import (
     SourceExecutionBindingError,
+    _semantic_fields,
     execute_source_mujoco_episode,
     materialize_source_mujoco_result,
     prepare_source_review_declaration,
@@ -46,6 +47,22 @@ def _entry(declaration: dict) -> RunPlanEpisode:
             "source_scenario_spec_sha256"
         ],
     )
+
+
+def test_frame_interval_contact_does_not_claim_sampled_active_contact() -> None:
+    scenario = SourceMujocoBackend().compile_case(_case("P0c-review-03"))
+    semantics = _semantic_fields(
+        {
+            "timestamp": scenario.key_event_time_s,
+            "object.motion_mode": "free_flight",
+            "contact.count": 0,
+        },
+        scenario=scenario,
+        contacts=(),
+        interval_contact=True,
+    )
+    assert semantics["contact.active"] is False
+    assert semantics["event.contact"] is True
 
 
 def test_declaration_remaps_only_local_index_and_matches_strict_request_identity() -> None:

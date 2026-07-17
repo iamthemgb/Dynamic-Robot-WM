@@ -47,13 +47,13 @@ def test_rigid_profiles_are_exact_600_and_1200_hz_candidates() -> None:
     evidence = _mapping(EVIDENCE_PATH)
     profiles = evidence["profiles"]
     assert set(profiles) == {
-        "rigid_600hz_candidate_v3",
-        "rigid_1200hz_reference_v3",
+        "rigid_600hz_candidate_v4",
+        "rigid_1200hz_reference_v4",
     }
 
     for name, expected_hz in (
-        ("rigid_600hz_candidate_v3", 600),
-        ("rigid_1200hz_reference_v3", 1200),
+        ("rigid_600hz_candidate_v4", 600),
+        ("rigid_1200hz_reference_v4", 1200),
     ):
         profile = profiles[name]
         assert profile["simulation_hz"] == expected_hz
@@ -76,8 +76,8 @@ def test_wall_rebound_measurements_are_physical_without_invented_fields() -> Non
     ]
     trials = evidence["measurements"]["wall_rebound"]["trials"]
     by_profile = {trial["profile"]: trial for trial in trials}
-    low = by_profile["rigid_600hz_candidate_v3"]
-    reference = by_profile["rigid_1200hz_reference_v3"]
+    low = by_profile["rigid_600hz_candidate_v4"]
+    reference = by_profile["rigid_1200hz_reference_v4"]
 
     assert low["incoming_normal_velocity_m_s"] < 0.0
     assert low["outgoing_normal_velocity_m_s"] > 0.0
@@ -100,7 +100,7 @@ def test_robotiq_halving_evidence_meets_local_thresholds_but_not_admission() -> 
     measurement = evidence["measurements"]["robotiq_free_contact_catch"]
     assert measurement["review_case_id"] == "F1a-review-01"
     assert measurement["fixed_master_seed"] == 20260717
-    assert measurement["controller_profile"].endswith("-v3")
+    assert measurement["controller_profile"].endswith("-v4")
     trials = measurement["trials"]
     comparison = measurement["timestep_halving_comparison"]
 
@@ -140,7 +140,7 @@ def test_robotiq_halving_evidence_meets_local_thresholds_but_not_admission() -> 
 def test_reference_rate_exceptions_preserve_strict_thresholds() -> None:
     evidence = _mapping(EVIDENCE_PATH)
     measurement = evidence["measurements"]["reference_rate_required_cases"]
-    assert measurement["policy"].endswith("rigid_1200hz_reference_v3")
+    assert measurement["policy"].endswith("rigid_1200hz_reference_v4")
     cases = {value["review_case_id"]: value for value in measurement["cases"]}
     assert set(cases) == {
         "P0c-review-01",
@@ -154,6 +154,21 @@ def test_reference_rate_exceptions_preserve_strict_thresholds() -> None:
         assert case["rigid_1200hz_observation"] <= case["threshold"]
     assert cases["P0c-review-02"]["rigid_600hz_observation"] is False
     assert cases["P0c-review-02"]["rigid_1200hz_observation"] is True
+
+
+def test_persisted_artifact_repair_keeps_the_failed_seed() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"]["persisted_artifact_repairs"]
+    assert evidence["review_case_id"] == "P0c-review-03"
+    assert evidence["fixed_seed_preserved"] is True
+    assert evidence["failed_profile"].endswith("-v3")
+    assert evidence["repaired_profile"].endswith("-v4")
+    assert evidence["failure_evidence"]["main_frozen_transition_fraction"] == 1.0
+    repaired = evidence["repaired_evidence"]
+    assert repaired["main_frozen_transition_fraction"] == 0.0
+    assert repaired["finite_difference_velocity_rmse_m_s"] < repaired[
+        "finite_difference_velocity_tolerance_m_s"
+    ]
+    assert repaired["strict_persisted_artifact_qc_pass"] is True
 
 
 def test_operator_guide_names_the_canonical_lifecycle_and_scale_gates() -> None:

@@ -17,7 +17,7 @@ from .profiles import RIGID_REVIEW_PROFILE
 
 
 SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v1"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.3.0-review"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.4.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):

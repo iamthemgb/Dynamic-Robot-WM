@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 
 SOURCE_MUJOCO_PROFILE_SCHEMA = "dynamic-robot-source-mujoco-profile/v1"
-SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v3"
+SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v4"
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,5 +1,5 @@
 schema_version: dynamic-robot-rigid-profile-calibration/v1
-calibration_id: source_mujoco_rigid_600_1200_candidate_v3
+calibration_id: source_mujoco_rigid_600_1200_candidate_v4
 contract_version: dynamic-robot-dataset/v2
 
 # This file records exploratory measurements made while repairing the owned
@@ -35,7 +35,7 @@ acceptance_thresholds:
   timestep_halving_maximum_key_position_shift_m: 0.01
 
 profiles:
-  rigid_600hz_candidate_v3:
+  rigid_600hz_candidate_v4:
     simulation_hz: 600
     timestep_s: 0.0016666666666666668
     control_hz: 60
@@ -51,7 +51,7 @@ profiles:
       closure_start_before_ballistic_event_s: 0.16
       closure_duration_s: 0.10
 
-  rigid_1200hz_reference_v3:
+  rigid_1200hz_reference_v4:
     simulation_hz: 1200
     timestep_s: 0.0008333333333333334
     control_hz: 60
@@ -72,14 +72,14 @@ measurements:
     description: repaired ballistic wall contact, measured from separated pre/post-contact samples
     review_case_id: P0c-review-01
     trials:
-      - profile: rigid_600hz_candidate_v3
+      - profile: rigid_600hz_candidate_v4
         first_wall_contact_time_s: 0.6866666666680415
         incoming_normal_velocity_m_s: -1.1
         outgoing_normal_velocity_m_s: 0.2065546584452154
         measured_effective_restitution: 0.18777696222292306
         maximum_object_task_surface_penetration_m: 0.0012532183338868248
         observation: stable_rebound
-      - profile: rigid_1200hz_reference_v3
+      - profile: rigid_1200hz_reference_v4
         first_wall_contact_time_s: 0.6866666666664013
         incoming_normal_velocity_m_s: -1.1
         outgoing_normal_velocity_m_s: 0.2663860524704877
@@ -98,12 +98,12 @@ measurements:
     fixed_master_seed: 20260717
     review_case_sha256: f0906f9350aaf20dfd114f733862f25ba2edb89ba4d02d57d14ed821a11dfb70
     controller_rng_subseed: 12099713734891440590
-    controller_profile: source-mujoco-rigid-review-2026-07-v3
+    controller_profile: source-mujoco-rigid-review-2026-07-v4
     trials:
-      - profile: rigid_600hz_candidate_v3
+      - profile: rigid_600hz_candidate_v4
         first_bilateral_contact_time_s: 0.43666666666753823
         maximum_object_gripper_penetration_m: 0.0013733292870516597
-      - profile: rigid_1200hz_reference_v3
+      - profile: rigid_1200hz_reference_v4
         first_bilateral_contact_time_s: 0.4366666666664955
         maximum_object_gripper_penetration_m: 0.001547687056695994
     timestep_halving_comparison:
@@ -137,7 +137,26 @@ measurements:
         rigid_600hz_observation: 0.00400255110098318
         rigid_1200hz_observation: 0.0
         threshold: 0.003
-    policy: compile_matching_case_classes_at_rigid_1200hz_reference_v3
+    policy: compile_matching_case_classes_at_rigid_1200hz_reference_v4
+
+  persisted_artifact_repairs:
+    review_case_id: P0c-review-03
+    fixed_seed_preserved: true
+    failed_profile: source-mujoco-rigid-review-2026-07-v3
+    repaired_profile: source-mujoco-rigid-review-2026-07-v4
+    failure_evidence:
+      main_frozen_transition_fraction: 1.0
+      finite_difference_velocity_rmse_m_s: 0.4758812170981563
+      finite_difference_velocity_tolerance_m_s: 0.436733208093685
+    repaired_evidence:
+      main_frozen_transition_fraction: 0.0
+      secondary_frozen_transition_fraction: 0.18421052631578946
+      finite_difference_velocity_rmse_m_s: 0.00817499999986745
+      finite_difference_velocity_tolerance_m_s: 0.40924221809143563
+      strict_persisted_artifact_qc_pass: true
+    repair:
+      - move_main_camera_to_incoming_side_of_supported_wall
+      - persist_interval_contact_event_without_claiming_sampled_active_contact
 
 required_before_admission:
   - persist_exact_source_scenario_specs

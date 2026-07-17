@@ -430,6 +430,55 @@ def _add_secondary_camera(root: ET.Element, height_offset: float) -> None:
     )
 
 
+def _set_camera_look_at(
+    camera: ET.Element,
+    *,
+    position_m: tuple[float, float, float],
+    target_m: tuple[float, float, float],
+    fovy_deg: float,
+) -> None:
+    """Set a fixed MuJoCo camera from a world-space position and target."""
+
+    position = np.asarray(position_m, dtype=np.float64)
+    target = np.asarray(target_m, dtype=np.float64)
+    direction = target - position
+    direction /= np.linalg.norm(direction)
+    camera_z = -direction
+    camera_x = np.cross(np.asarray((0.0, 0.0, 1.0)), camera_z)
+    camera_x /= np.linalg.norm(camera_x)
+    camera_y = np.cross(camera_z, camera_x)
+    camera.set("pos", " ".join(f"{value:.9g}" for value in position))
+    camera.set(
+        "xyaxes",
+        " ".join(f"{value:.9g}" for value in (*camera_x, *camera_y)),
+    )
+    camera.set("fovy", f"{fovy_deg:.9g}")
+
+
+def _repair_task_camera(
+    root: ET.Element,
+    scenario: SourceMujocoCompiledScenario,
+    height_offset: float,
+) -> None:
+    """Keep owned physical fixtures from hiding the task in the main view."""
+
+    if scenario.motion_kind != "passive_wall_rebound":
+        return
+    main = root.find(".//camera[@name='main_camera']")
+    if main is None:
+        raise RuntimeError("external scene lacks main_camera")
+    # The external main camera sits on the far side of supported_wall, making
+    # the complete rebound trajectory invisible and producing a genuinely
+    # frozen canonical stream.  Move only the camera before initialization to
+    # the incoming side at a complementary angle to the secondary view.
+    _set_camera_look_at(
+        main,
+        position_m=(-0.90, 0.95, height_offset + 1.05),
+        target_m=(-0.02, 0.0, height_offset + 0.72),
+        fovy_deg=48.0,
+    )
+
+
 def _restore_collision_geometries(root: ET.Element) -> None:
     """Undo the source demo's broad robot-collision suppression."""
 
@@ -571,6 +620,7 @@ def _patch_calibrated_model(
         actuator.set("ctrllimited", "true")
 
     height_offset = 0.74 if scenario.requires_real_robocasa else 0.0
+    _repair_task_camera(root, scenario, height_offset)
     _add_secondary_camera(root, height_offset)
     # Visual background geometry must never participate in contact.
     # RoboCasa's imported geoms are commonly unnamed, so the owning body

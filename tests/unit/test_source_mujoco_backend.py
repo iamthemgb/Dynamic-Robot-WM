@@ -48,7 +48,7 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
         "823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99"
     )
     assert RIGID_REVIEW_PROFILE.simulation_hz == 600
-    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v3")
+    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v4")
     assert RIGID_REVIEW_PROFILE.wall_solref == (0.012, 0.7)
     assert RIGID_REVIEW_PROFILE.robotiq_pad_friction == (0.9, 0.005, 0.0001)
     assert RIGID_REVIEW_PROFILE.robotiq_tendon_target == 115.0
@@ -121,6 +121,13 @@ def test_wall_rebound_recipe_completes_an_airborne_arc_at_the_wall() -> None:
     )
     assert math.isclose(apex_time, scenario.key_event_time_s / 2.0)
     assert scenario.surfaces[-1].role == "wall"
+
+
+def test_wall_rebound_main_camera_stays_on_visible_incoming_side() -> None:
+    spec = prepare_review_case(_case("P0c", rollout=3))
+    main = next(camera for camera in spec.cameras if camera.name == "main")
+    assert main.pose.position_m == pytest.approx((-0.90, 0.95, 1.79))
+    assert main.pose.position_m[0] < spec.initial_state["object_position_m"][0] + 0.1
 
 
 def test_negative_initial_state_does_not_retarget_velocity_to_the_gripper() -> None:

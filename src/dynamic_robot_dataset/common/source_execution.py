@@ -391,6 +391,7 @@ def _semantic_fields(
     *,
     scenario: SourceMujocoCompiledScenario,
     contacts: Sequence[Mapping[str, Any]],
+    interval_contact: bool = False,
 ) -> dict[str, Any]:
     raw_mode = str(row.get("object.motion_mode") or "")
     bilateral = row.get("contact.bilateral") is True
@@ -436,7 +437,16 @@ def _semantic_fields(
         "active_surface": active_surface,
         "contact_role": contact_role.value,
         "contact.active": bool(contacts) or int(row.get("contact.count", 0)) > 0,
-        "event.contact": bool(contacts) or int(row.get("contact.count", 0)) > 0,
+        # A contact impulse can occur between adjacent 30 Hz frame samples.
+        # ``contact.active`` remains the exact sampled state; ``event.contact``
+        # marks an impulse inside this frame's exposure bin so persisted
+        # finite-difference QC does not mistake a rebound discontinuity for
+        # corrupt velocity data.
+        "event.contact": (
+            bool(contacts)
+            or int(row.get("contact.count", 0)) > 0
+            or interval_contact
+        ),
         "free_fall": motion_mode is MotionMode.FREE_FLIGHT,
         "assistance.active": False,
         "assistance.assisted_grasp": False,
@@ -519,6 +529,11 @@ def _normalize_rows(
     for frame_index, source in enumerate(source_frames):
         timestamp = float(source["timestamp"])
         contacts = event_map.get(round(timestamp, 12), ())
+        interval_contact = any(
+            abs(float(event["timestamp"]) - timestamp)
+            <= 0.5 / result.scenario.video_hz + 1e-12
+            for event in source_events
+        )
         frames.append(
             {
                 "episode_index": entry.episode_index,
@@ -529,7 +544,12 @@ def _normalize_rows(
                 "simulation_timestamp": float(source["simulation_timestamp"]),
                 "synchronization_error_s": float(source["synchronization_error_s"]),
                 **_state_payload(source),
-                **_semantic_fields(source, scenario=result.scenario, contacts=contacts),
+                **_semantic_fields(
+                    source,
+                    scenario=result.scenario,
+                    contacts=contacts,
+                    interval_contact=interval_contact,
+                ),
             }
         )
     high_rate: list[dict[str, Any]] = []
