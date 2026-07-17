@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import shutil
 import tempfile
 import uuid
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
-from .hashing import sha256_file
+import fcntl
+
+from .hashing import sha256_file, sha256_json
+from .arrow_schema import (
+    ARROW_SIDECAR_SCHEMA_VERSION,
+    arrow_schema_identity,
+    canonical_sidecar_table,
+    normalize_extra_field_declarations,
+)
 from .contacts import ContactEvent, normalize_contact_row
 from .paths import (
     ExistingOutputError,
@@ -25,12 +36,42 @@ from .paths import (
     resolve_dataset_path,
 )
 from .schema import DatasetInfo, EpisodeRecord, Split, validate_episode_records
-from .synchronization import validate_monotonic_timestamps, validate_synchronized_streams
+from .synchronization import (
+    validate_monotonic_timestamps,
+    validate_persisted_render_schedule,
+    validate_synchronized_streams,
+)
 from .video_writer import VideoProbe, VideoSpec, encode_video, probe_frame_timestamps, probe_video, validate_video_probe
 
 
 class MissingParquetDependency(RuntimeError):
     """Canonical Parquet I/O requires the optional PyArrow dependency."""
+
+
+class DatasetSealedError(ExistingOutputError):
+    """The generation root has entered its irreversible finalization phase."""
+
+
+WRITER_LAYOUT_VERSION = "dynamic-robot-writer-layout/v2"
+DEFAULT_SPLIT_SETTINGS: dict[str, Any] = {
+    "strategy": "leakage_aware_stratified",
+    "seed": 0,
+    "train_fraction": 0.80,
+    "validation_fraction": 0.10,
+    "test_fraction": 0.10,
+}
+_WORKER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+FINALIZED_METADATA_ARTIFACTS = frozenset(
+    {
+        "info.json",
+        "episodes.parquet",
+        "tasks.parquet",
+        "cameras.parquet",
+        "provenance.parquet",
+        "splits.parquet",
+        "counterfactual_families.parquet",
+    }
+)
 
 
 def _pyarrow() -> tuple[Any, Any]:
@@ -163,6 +204,113 @@ _FLEXIBLE_EPISODE_FIELDS = (
     "tool_calibration_provenance",
     "extras",
 )
+
+
+def _episode_metadata_schema() -> Any:
+    """Return the explicit, versioned Arrow schema for episode metadata."""
+
+    pa, _ = _pyarrow()
+    strings = {
+        "episode_uuid",
+        "counterfactual_bundle_id",
+        "family",
+        "subfamily",
+        "intended_branch",
+        "actual_outcome",
+        "failure_mode",
+        "schema_version",
+        "actual_outcome_class",
+        "primary_failure_code",
+        "failure_taxonomy_version",
+        "variant",
+        "robot_model",
+        "tool_type",
+        "action_mode",
+        "label_status",
+        "dynamics_mode",
+        "release_tier",
+        "split",
+        "physics_counterfactual_family_id",
+        "split_group_id",
+        "parent_episode_uuid",
+        "source_generator",
+        "source_generator_version",
+        "generator_git_commit",
+        "config_hash",
+        "simulator_name",
+        "simulator_version",
+        "renderer",
+        "creation_timestamp",
+        "frame_data_path",
+        "high_rate_path",
+        "events_path",
+        "transition_events_path",
+        "object_states_path",
+        "key_event_name",
+        "objective_evaluator_id",
+        "objective_evaluator_version",
+        "objective_threshold_set_hash",
+    }
+    integers = {"episode_index", "scene_seed", "branch_seed", "task_index", "frame_count"}
+    floats = {
+        "partial_success_score",
+        "label_confidence",
+        "duration_s",
+        "event_time_s",
+        "key_event_time_s",
+    }
+    booleans = {"task_success", "physics_qc_pass", "release_eligible"}
+    string_lists = {"failure_tags", "asset_ids", "camera_ids", "quality_flags"}
+    json_fields = {f"{name}_json" for name in _FLEXIBLE_EPISODE_FIELDS}
+    fields = []
+    # The order is deliberately fixed rather than inherited from dataclass
+    # construction or the first episode in a shard.
+    for name in (
+        "episode_uuid", "episode_index", "counterfactual_bundle_id", "scene_seed",
+        "branch_seed", "family", "subfamily", "intended_branch", "actual_outcome",
+        "task_success", "failure_mode", "schema_version", "actual_outcome_class",
+        "primary_failure_code", "failure_tags", "failure_taxonomy_version", "variant",
+        "robot_model", "tool_type", "action_mode", "partial_success_score",
+        "label_confidence", "label_status", "dynamics_mode", "release_tier",
+        "physics_qc_pass", "split", "physics_counterfactual_family_id",
+        "split_group_id", "parent_episode_uuid", "source_generator",
+        "source_generator_version", "generator_git_commit", "config_hash", "asset_ids",
+        "simulator_name", "simulator_version", "renderer", "creation_timestamp",
+        "frame_data_path", "high_rate_path", "events_path", "transition_events_path",
+        "object_states_path", "camera_ids", "task_index", "frame_count", "duration_s",
+        "event_time_s", "key_event_name", "key_event_time_s", "objective_evaluator_id",
+        "objective_evaluator_version", "objective_threshold_set_hash", "quality_flags",
+        "release_eligible",
+        *(f"{name}_json" for name in _FLEXIBLE_EPISODE_FIELDS),
+    ):
+        if name in strings or name in json_fields:
+            data_type = pa.string()
+        elif name in integers:
+            data_type = pa.int64()
+        elif name in floats:
+            data_type = pa.float64()
+        elif name in booleans:
+            data_type = pa.bool_()
+        elif name in string_lists:
+            data_type = pa.list_(pa.string())
+        else:  # pragma: no cover - protects edits to the explicit field order
+            raise RuntimeError(f"Episode Arrow field has no declared type: {name}")
+        fields.append(pa.field(name, data_type))
+    return pa.schema(fields, metadata={b"contract": b"dynamic-robot-episodes/v2"})
+
+
+def _episode_metadata_table(records: Iterable[EpisodeRecord]) -> Any:
+    pa, _ = _pyarrow()
+    rows = [episode_record_to_table_row(record) for record in records]
+    schema = _episode_metadata_schema()
+    expected = set(schema.names)
+    for row in rows:
+        if set(row) != expected:
+            raise ValueError(
+                "Episode metadata row differs from the explicit Arrow contract: "
+                f"missing={sorted(expected - set(row))}, extra={sorted(set(row) - expected)}"
+            )
+    return pa.Table.from_pylist(rows, schema=schema)
 
 
 def episode_record_to_table_row(record: EpisodeRecord) -> dict[str, Any]:
@@ -346,17 +494,132 @@ class EpisodeWriter:
         resolved_config: Mapping[str, Any],
         *,
         resume: bool = False,
-        chunk_size: int = 1000,
-        video_spec: VideoSpec = VideoSpec(),
+        chunk_size: int | None = None,
+        video_spec: VideoSpec | None = None,
+        split_settings: Mapping[str, Any] | None = None,
+        arrow_extra_fields: Mapping[str, Mapping[str, str]] | None = None,
+        layout_version: str | None = None,
+        worker_id: str = "single",
     ):
         self.root = ensure_not_source_path(dataset_root)
         self.config = dict(resolved_config)
-        self.config_hash = ResumeGuard(self.root, self.config, resume=resume).initialize()
+        if not _WORKER_ID.fullmatch(worker_id) or worker_id in {".", ".."}:
+            raise ValueError(
+                "worker_id must be 1-128 portable alphanumeric/dot/underscore/hyphen characters"
+            )
+        self.worker_id = worker_id
+
+        marker_path = self.root / ResumeGuard.FILE_NAME
+        marker_value: Mapping[str, Any] = {}
+        if resume and marker_path.is_file():
+            marker_value = json.loads(marker_path.read_text(encoding="utf-8"))
+        stored_settings = marker_value.get("identity_settings")
+        if stored_settings is not None and not isinstance(stored_settings, Mapping):
+            raise ResumeMismatchError("Generation marker identity_settings is not a mapping")
+
+        stored_video = (
+            stored_settings.get("video") if isinstance(stored_settings, Mapping) else None
+        )
+        if video_spec is None:
+            video_spec = VideoSpec(**dict(stored_video)) if isinstance(stored_video, Mapping) else VideoSpec()
+        video_spec.validate()
+        if chunk_size is None:
+            chunk_size = int(stored_settings.get("chunk_size", 1000)) if stored_settings else 1000
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        if split_settings is None:
+            split_settings = (
+                dict(stored_settings.get("split_settings") or {})
+                if stored_settings
+                else dict(DEFAULT_SPLIT_SETTINGS)
+            )
+        normalized_split_settings = {**DEFAULT_SPLIT_SETTINGS, **dict(split_settings)}
+        if normalized_split_settings["strategy"] != "leakage_aware_stratified":
+            raise ValueError("Unsupported split strategy")
+        fractions = sum(
+            float(normalized_split_settings[name])
+            for name in ("train_fraction", "validation_fraction", "test_fraction")
+        )
+        if abs(fractions - 1.0) > 1e-9:
+            raise ValueError("Split fractions must sum to one")
+        normalized_split_settings["seed"] = int(normalized_split_settings["seed"])
+        for name in ("train_fraction", "validation_fraction", "test_fraction"):
+            normalized_split_settings[name] = float(normalized_split_settings[name])
+        if layout_version is None:
+            layout_version = (
+                str(stored_settings.get("layout_version"))
+                if stored_settings and stored_settings.get("layout_version")
+                else WRITER_LAYOUT_VERSION
+            )
+        if layout_version != WRITER_LAYOUT_VERSION:
+            raise ValueError(f"Unsupported writer layout version: {layout_version}")
+
+        stored_arrow = (
+            stored_settings.get("arrow_schema")
+            if isinstance(stored_settings, Mapping)
+            else None
+        )
+        configured_arrow_extras = self.config.get("arrow_extra_fields")
+        if arrow_extra_fields is None:
+            if configured_arrow_extras is not None:
+                arrow_extra_fields = configured_arrow_extras
+            elif isinstance(stored_arrow, Mapping):
+                arrow_extra_fields = stored_arrow.get("extra_fields")
+        self.arrow_extra_fields = normalize_extra_field_declarations(arrow_extra_fields)
+        arrow_identity = arrow_schema_identity(self.arrow_extra_fields)
+
+        self.writer_settings = {
+            "layout_version": layout_version,
+            "chunk_size": chunk_size,
+            "video": asdict(video_spec),
+            "split_settings": normalized_split_settings,
+            "required_camera_streams": [
+                "observation.images.main",
+                "observation.images.secondary",
+            ],
+            "arrow_schema": {
+                "version": ARROW_SIDECAR_SCHEMA_VERSION,
+                "identity_sha256": arrow_identity,
+                "extra_fields": self.arrow_extra_fields,
+            },
+        }
+        # A legacy run has no recorded storage identity.  It remains readable
+        # and finalizable under the historical config hash, but all newly
+        # created runs bind the full writer settings into resume identity.
+        guard_identity = None if resume and marker_path.is_file() and stored_settings is None else self.writer_settings
+        self.config_hash = ResumeGuard(
+            self.root,
+            self.config,
+            resume=resume,
+            identity_settings=guard_identity,
+        ).initialize()
         self.resume = resume
         self.layout = DatasetLayout(self.root, chunk_size)
         self.video_spec = video_spec
         (self.root / ".records").mkdir(parents=True, exist_ok=True)
-        (self.root / ".staging").mkdir(parents=True, exist_ok=True)
+        self._worker_staging_root = self.root / ".staging" / "workers" / worker_id
+        self._worker_staging_root.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def seal_path(self) -> Path:
+        return self.root / ".seal.json"
+
+    @contextmanager
+    def _dataset_lock(self, *, exclusive: bool) -> Iterator[None]:
+        """Coordinate episode publication with the irreversible seal."""
+
+        lock_path = self.root / ".dataset.lock"
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+    def _assert_not_sealed(self) -> None:
+        if self.seal_path.is_file() or (self.root / "meta" / ".complete.json").is_file():
+            raise DatasetSealedError(f"Dataset is sealed; episode commits are forbidden: {self.root}")
 
     def _marker(self, episode_uuid: str) -> Path:
         safe = self._episode_storage_key(episode_uuid)
@@ -364,7 +627,7 @@ class EpisodeWriter:
 
     def _transaction_dir(self, episode_uuid: str) -> Path:
         safe = self._episode_storage_key(episode_uuid)
-        staging_root = (self.root / ".staging").resolve()
+        staging_root = self._worker_staging_root.resolve()
         candidate = (staging_root / safe).resolve()
         if candidate.parent != staging_root:
             raise ValueError("Episode staging path escaped its private root")
@@ -458,6 +721,33 @@ class EpisodeWriter:
         object_state_rows: Iterable[Mapping[str, Any]] = (),
         camera_calibration_ids: Mapping[str, str] | None = None,
     ) -> EpisodeRecord:
+        """Write one episode while holding the shared publication lock."""
+
+        with self._dataset_lock(exclusive=False):
+            self._assert_not_sealed()
+            return self._write_episode_unlocked(
+                record,
+                frame_rows=frame_rows,
+                videos=videos,
+                high_rate_rows=high_rate_rows,
+                event_rows=event_rows,
+                transition_rows=transition_rows,
+                object_state_rows=object_state_rows,
+                camera_calibration_ids=camera_calibration_ids,
+            )
+
+    def _write_episode_unlocked(
+        self,
+        record: EpisodeRecord,
+        *,
+        frame_rows: Iterable[Mapping[str, Any]],
+        videos: Mapping[str, str | Path | Iterable[Any]],
+        high_rate_rows: Iterable[Mapping[str, Any]] = (),
+        event_rows: Iterable[Mapping[str, Any]] = (),
+        transition_rows: Iterable[Mapping[str, Any]] = (),
+        object_state_rows: Iterable[Mapping[str, Any]] = (),
+        camera_calibration_ids: Mapping[str, str] | None = None,
+    ) -> EpisodeRecord:
         """Write one episode. Existing committed output is only reused under resume."""
 
         # Bind the record to this writer configuration and validate identity
@@ -501,6 +791,28 @@ class EpisodeWriter:
             raise ValueError("frame_rows cannot be empty")
         timestamps = [float(row["timestamp"]) for row in frames]
         validate_monotonic_timestamps(timestamps, name="frame_rows.timestamp")
+        source_scenario = record.extras.get("source_scenario_spec")
+        if isinstance(source_scenario, Mapping):
+            physics = source_scenario.get("physics")
+            if not isinstance(physics, Mapping):
+                raise ValueError("Source scenario physics must be persisted with the rollout")
+            simulation_hz_raw = physics.get("simulation_hz", physics.get("sim_hz"))
+            try:
+                simulation_hz = float(simulation_hz_raw)
+                planned_duration_s = float(source_scenario["duration_s"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(
+                    "Source scenario must declare duration_s and simulation_hz"
+                ) from error
+            if not math.isfinite(simulation_hz) or simulation_hz <= 0:
+                raise ValueError("Source scenario simulation_hz must be finite and positive")
+            validate_persisted_render_schedule(
+                frames,
+                duration_s=planned_duration_s,
+                fps_num=self.video_spec.fps_num,
+                fps_den=self.video_spec.fps_den,
+                maximum_sample_error_s=1.0 / simulation_hz + 1e-12,
+            )
         for expected_index, row in enumerate(frames):
             if int(row.get("frame_index", expected_index)) != expected_index:
                 raise ValueError("Frame rows must have contiguous frame_index values")
@@ -582,29 +894,56 @@ class EpisodeWriter:
                 f"Frame timestamps differ from encoded PTS by up to {worst_timestamp_error}s"
             )
 
+        pa, _ = _pyarrow()
         write_parquet_atomic(
             resolve_dataset_path(transaction_dir, paths["frame"]),
-            _canonical_frame_table(frames),
+            canonical_sidecar_table(
+                pa,
+                "frame",
+                frames,
+                declared_extra_fields=self.arrow_extra_fields["frame"],
+                source_scenario=(source_scenario if isinstance(source_scenario, Mapping) else None),
+            ),
         )
         write_parquet_atomic(
             resolve_dataset_path(transaction_dir, paths["high_rate"]),
-            high_rate,
-            schema=None if high_rate else _empty_sidecar_schema("high_rate"),
+            canonical_sidecar_table(
+                pa,
+                "high_rate",
+                high_rate,
+                declared_extra_fields=self.arrow_extra_fields["high_rate"],
+                source_scenario=(source_scenario if isinstance(source_scenario, Mapping) else None),
+            ),
         )
         write_parquet_atomic(
             resolve_dataset_path(transaction_dir, paths["events"]),
-            events,
-            schema=None if events else _empty_sidecar_schema("events"),
+            canonical_sidecar_table(
+                pa,
+                "events",
+                events,
+                declared_extra_fields=self.arrow_extra_fields["events"],
+                source_scenario=(source_scenario if isinstance(source_scenario, Mapping) else None),
+            ),
         )
         write_parquet_atomic(
             resolve_dataset_path(transaction_dir, paths["transitions"]),
-            transitions,
-            schema=None if transitions else _empty_sidecar_schema("transitions"),
+            canonical_sidecar_table(
+                pa,
+                "transitions",
+                transitions,
+                declared_extra_fields=self.arrow_extra_fields["transitions"],
+                source_scenario=(source_scenario if isinstance(source_scenario, Mapping) else None),
+            ),
         )
         write_parquet_atomic(
             resolve_dataset_path(transaction_dir, paths["objects"]),
-            objects,
-            schema=None if objects else _empty_sidecar_schema("objects"),
+            canonical_sidecar_table(
+                pa,
+                "objects",
+                objects,
+                declared_extra_fields=self.arrow_extra_fields["objects"],
+                source_scenario=(source_scenario if isinstance(source_scenario, Mapping) else None),
+            ),
         )
 
         record.video_paths = video_paths
@@ -629,7 +968,30 @@ class EpisodeWriter:
         record.camera_stream_calibration_ids = calibration_mapping
         record.camera_ids = sorted(set(calibration_mapping.values()))
         record.frame_count = len(frames)
-        record.duration_s = float(reference_pts[-1] - reference_pts[0] + self.video_spec.fps_den / self.video_spec.fps_num)
+        encoded_duration_s = float(
+            reference_pts[-1]
+            - reference_pts[0]
+            + self.video_spec.fps_den / self.video_spec.fps_num
+        )
+        if isinstance(source_scenario, Mapping):
+            # The scenario's logical duration is the immutable physics-plan
+            # duration.  A half-open round(duration*fps) video clock can differ
+            # from it by up to half a frame; replacing it with encoded duration
+            # would silently change the planned rollout identity.
+            planned_duration_s = float(source_scenario["duration_s"])
+            if abs(encoded_duration_s - planned_duration_s) > (
+                0.5 * self.video_spec.fps_den / self.video_spec.fps_num + 1e-9
+            ):
+                raise ValueError(
+                    "Encoded frame duration is inconsistent with source scenario duration"
+                )
+            if record.duration_s is not None and abs(
+                float(record.duration_s) - planned_duration_s
+            ) > 1e-9:
+                raise ValueError("Episode duration differs from its source scenario")
+            record.duration_s = planned_duration_s
+        else:
+            record.duration_s = encoded_duration_s
         record.content_hashes = {
             relative: sha256_file(resolve_dataset_path(transaction_dir, relative)) for relative in every_output
         }
@@ -656,8 +1018,8 @@ class EpisodeWriter:
         validate_episode_records(records)
         return records
 
-    def _commit_meta_transaction(self, staging: Path, meta: Path) -> None:
-        """Idempotently publish a fully staged metadata set and mark it last."""
+    def _validate_meta_transaction(self, staging: Path, meta: Path) -> dict[str, str]:
+        """Preflight every staged byte and destination before sealing."""
 
         manifest_path = staging / ".transaction.json"
         if not manifest_path.is_file():
@@ -666,7 +1028,12 @@ class EpisodeWriter:
         if transaction.get("config_hash") != self.config_hash:
             raise ResumeMismatchError("Staged metadata configuration differs from this run")
         content_hashes = dict(transaction.get("content_hashes", {}))
-        meta.mkdir(parents=True, exist_ok=True)
+        if set(content_hashes) != FINALIZED_METADATA_ARTIFACTS:
+            raise RuntimeError(
+                "Metadata transaction must hash every finalized artifact exactly: "
+                f"missing={sorted(FINALIZED_METADATA_ARTIFACTS - set(content_hashes))}, "
+                f"extra={sorted(set(content_hashes) - FINALIZED_METADATA_ARTIFACTS)}"
+            )
         for name, expected_hash in sorted(content_hashes.items()):
             source = staging / name
             if not source.is_file() or sha256_file(source) != expected_hash:
@@ -677,6 +1044,17 @@ class EpisodeWriter:
                     raise ExistingOutputError(
                         f"Conflicting finalized metadata will not be overwritten: {destination}"
                     )
+        return {str(name): str(value) for name, value in content_hashes.items()}
+
+    def _commit_meta_transaction(self, staging: Path, meta: Path) -> None:
+        """Idempotently publish a fully staged metadata set and mark it last."""
+
+        content_hashes = self._validate_meta_transaction(staging, meta)
+        meta.mkdir(parents=True, exist_ok=True)
+        for name, expected_hash in sorted(content_hashes.items()):
+            source = staging / name
+            destination = meta / name
+            if destination.exists():
                 continue
             try:
                 os.link(source, destination)
@@ -684,7 +1062,11 @@ class EpisodeWriter:
                 if sha256_file(destination) != expected_hash:
                     raise ExistingOutputError(f"Concurrent metadata conflict: {destination}")
         completion = meta / ".complete.json"
-        marker_value = {"config_hash": self.config_hash, "content_hashes": content_hashes}
+        marker_value = {
+            "config_hash": self.config_hash,
+            "content_hashes": content_hashes,
+            "seal_sha256": sha256_file(self.seal_path),
+        }
         if completion.exists():
             if json.loads(completion.read_text(encoding="utf-8")) != marker_value:
                 raise ExistingOutputError(f"Conflicting metadata completion marker: {completion}")
@@ -701,6 +1083,126 @@ class EpisodeWriter:
         provenance: Iterable[Mapping[str, Any]] = (),
         splits: Iterable[Mapping[str, Any]] = (),
         counterfactual_families: Iterable[Mapping[str, Any]] | None = None,
+        expected_episode_membership: Mapping[str, int] | None = None,
+        run_plan_sha256: str | None = None,
+    ) -> list[EpisodeRecord]:
+        """Seal and finalize exactly one immutable set of episode markers.
+
+        The exclusive dataset lock closes the race in which a worker could
+        publish a marker after finalization counted episodes.  Once the seal is
+        written, episode publication is permanently rejected; an interrupted
+        metadata transaction may only be resumed with the same semantic
+        finalization context.
+        """
+
+        task_rows = None if tasks is None else [dict(row) for row in tasks]
+        camera_rows = [dict(row) for row in cameras]
+        provenance_rows = [dict(row) for row in provenance]
+        split_rows = [dict(row) for row in splits]
+        counterfactual_rows = (
+            None
+            if counterfactual_families is None
+            else [dict(row) for row in counterfactual_families]
+        )
+        with self._dataset_lock(exclusive=True):
+            records = self.records()
+            actual_membership = {
+                record.episode_uuid: record.episode_index for record in records
+            }
+            expected_membership = (
+                actual_membership
+                if expected_episode_membership is None
+                else {str(key): int(value) for key, value in expected_episode_membership.items()}
+            )
+            for episode_uuid in expected_membership:
+                self._episode_storage_key(episode_uuid)
+            if actual_membership != expected_membership:
+                missing = sorted(set(expected_membership) - set(actual_membership))
+                unexpected = sorted(set(actual_membership) - set(expected_membership))
+                changed = sorted(
+                    episode_uuid
+                    for episode_uuid in set(actual_membership) & set(expected_membership)
+                    if actual_membership[episode_uuid] != expected_membership[episode_uuid]
+                )
+                raise RuntimeError(
+                    "Cannot finalize partial or changed plan membership: "
+                    f"missing={missing}, unexpected={unexpected}, changed_indices={changed}"
+                )
+            if run_plan_sha256 is not None and (
+                len(run_plan_sha256) != 64
+                or any(character not in "0123456789abcdef" for character in run_plan_sha256)
+            ):
+                raise ValueError("run_plan_sha256 must be a lowercase SHA-256 digest")
+
+            completion = self.root / "meta" / ".complete.json"
+            if (self.seal_path.exists() or completion.exists()) and not self.resume:
+                raise ExistingOutputError(f"Dataset is already sealed: {self.root}")
+            info_for_identity = info.to_dict()
+            info_for_identity.pop("dataset_uuid", None)
+            info_for_identity.pop("created_at", None)
+            seal_value = {
+                "schema_version": "dynamic-robot-dataset-seal/v1",
+                "config_hash": self.config_hash,
+                "writer_settings_sha256": sha256_json(self.writer_settings),
+                "run_plan_sha256": run_plan_sha256,
+                "expected_episode_membership": [
+                    {"episode_uuid": episode_uuid, "episode_index": expected_membership[episode_uuid]}
+                    for episode_uuid in sorted(expected_membership)
+                ],
+                "finalization_context_sha256": sha256_json(
+                    {
+                        "info": info_for_identity,
+                        "tasks": task_rows,
+                        "cameras": camera_rows,
+                        "provenance": provenance_rows,
+                        "splits": split_rows,
+                        "counterfactual_families": counterfactual_rows,
+                    }
+                ),
+            }
+            seal_preexisted = self.seal_path.is_file()
+            if seal_preexisted:
+                existing = json.loads(self.seal_path.read_text(encoding="utf-8"))
+                if existing != seal_value:
+                    raise ResumeMismatchError("Dataset seal differs from finalization request")
+                return self._finalize_unlocked(
+                    info,
+                    tasks=task_rows,
+                    cameras=camera_rows,
+                    provenance=provenance_rows,
+                    splits=split_rows,
+                    counterfactual_families=counterfactual_rows,
+                )
+
+            # The irreversible seal is marker-last with respect to validation:
+            # construct all Arrow artifacts, hash them, and verify that their
+            # destinations are conflict-free before publishing the seal.
+            records = self._finalize_unlocked(
+                info,
+                tasks=task_rows,
+                cameras=camera_rows,
+                provenance=provenance_rows,
+                splits=split_rows,
+                counterfactual_families=counterfactual_rows,
+                defer_commit=True,
+            )
+            staging = self.root / ".staging" / "_meta"
+            meta = self.root / "meta"
+            self._validate_meta_transaction(staging, meta)
+            atomic_write_json(self.seal_path, seal_value)
+            self._commit_meta_transaction(staging, meta)
+            return records
+
+    def _finalize_unlocked(
+        self,
+        info: DatasetInfo,
+        *,
+        tasks: Iterable[Mapping[str, Any]] | None = None,
+        cameras: Iterable[Mapping[str, Any]] = (),
+        provenance: Iterable[Mapping[str, Any]] = (),
+        splits: Iterable[Mapping[str, Any]] = (),
+        counterfactual_families: Iterable[Mapping[str, Any]] | None = None,
+        defer_commit: bool = False,
     ) -> list[EpisodeRecord]:
         """Aggregate markers into a resumable, marker-last metadata transaction."""
 
@@ -722,6 +1224,7 @@ class EpisodeWriter:
         if not split_rows:
             from .splits import SplitAssigner
 
+            settings = self.writer_settings["split_settings"]
             split_rows = [
                 {
                     "episode_uuid": assignment.episode_uuid,
@@ -729,14 +1232,26 @@ class EpisodeWriter:
                     "split_group_id": assignment.split_group_id,
                     "split": assignment.split,
                 }
-                for assignment in SplitAssigner(seed=0).assign(records)
+                for assignment in SplitAssigner(
+                    seed=settings["seed"],
+                    train_fraction=settings["train_fraction"],
+                    validation_fraction=settings["validation_fraction"],
+                    test_fraction=settings["test_fraction"],
+                ).assign(records)
             ]
         split_by_uuid = {str(row["episode_uuid"]): row for row in split_rows}
+        if len(split_by_uuid) != len(split_rows):
+            raise ValueError("Split rows contain duplicate episode UUIDs")
+        record_by_uuid = {record.episode_uuid: record for record in records}
+        if set(split_by_uuid) != set(record_by_uuid):
+            raise ValueError("Split rows must match finalized episode membership exactly")
         for record in records:
             assignment = split_by_uuid.get(record.episode_uuid)
-            if assignment is not None:
-                record.split = Split(str(assignment["split"]))
-                record.split_group_id = str(assignment["split_group_id"])
+            assert assignment is not None
+            if int(assignment["episode_index"]) != record.episode_index:
+                raise ValueError(f"Split episode index mismatch: {record.episode_uuid}")
+            record.split = Split(str(assignment["split"]))
+            record.split_group_id = str(assignment["split_group_id"])
         task_rows = list(tasks)
         task_index_by_key: dict[tuple[str, str], int] = {}
         seen_task_indices: set[int] = set()
@@ -772,20 +1287,17 @@ class EpisodeWriter:
                 declaration.to_table_row()
                 for declaration in build_counterfactual_family_records(records)
             ]
-        expected_names = (
-            "info.json",
-            "episodes.parquet",
-            "tasks.parquet",
-            "cameras.parquet",
-            "provenance.parquet",
-            "splits.parquet",
-            "counterfactual_families.parquet",
-        )
+        expected_names = tuple(sorted(FINALIZED_METADATA_ARTIFACTS))
         if completion.is_file():
             marker = json.loads(completion.read_text(encoding="utf-8"))
             if marker.get("config_hash") != self.config_hash:
                 raise ResumeMismatchError("Finalized metadata configuration differs from this run")
-            for name, expected_hash in marker.get("content_hashes", {}).items():
+            marker_hashes = dict(marker.get("content_hashes", {}))
+            if set(marker_hashes) != FINALIZED_METADATA_ARTIFACTS:
+                raise RuntimeError("Finalized completion marker has incomplete artifact membership")
+            if marker.get("seal_sha256") not in {None, sha256_file(self.seal_path)}:
+                raise RuntimeError("Finalized completion marker is bound to a different dataset seal")
+            for name, expected_hash in marker_hashes.items():
                 path = meta / name
                 if not path.is_file() or sha256_file(path) != expected_hash:
                     raise RuntimeError(f"Finalized metadata is incomplete or corrupt: {path}")
@@ -798,6 +1310,9 @@ class EpisodeWriter:
             if not self.resume:
                 raise ExistingOutputError(f"Incomplete metadata transaction exists: {staging}")
             if (staging / ".transaction.json").is_file():
+                if defer_commit:
+                    self._validate_meta_transaction(staging, meta)
+                    return records
                 self._commit_meta_transaction(staging, meta)
                 return records
             shutil.rmtree(staging)
@@ -817,7 +1332,7 @@ class EpisodeWriter:
         atomic_write_json(staging / "info.json", info_value)
         write_parquet_atomic(
             staging / "episodes.parquet",
-            [episode_record_to_table_row(record) for record in records],
+            _episode_metadata_table(records),
         )
         write_parquet_atomic(staging / "tasks.parquet", flexible_mapping_rows(task_rows))
         write_parquet_atomic(staging / "cameras.parquet", flexible_mapping_rows(camera_rows))
@@ -853,6 +1368,8 @@ class EpisodeWriter:
             staging / ".transaction.json",
             {"config_hash": self.config_hash, "content_hashes": content_hashes},
         )
+        if defer_commit:
+            return records
         self._commit_meta_transaction(staging, meta)
         return records
 
@@ -866,14 +1383,7 @@ def load_episode_records(dataset_root: str | Path) -> list[EpisodeRecord]:
     finalized_complete = completion_path.is_file()
     if finalized_complete:
         completion = json.loads(completion_path.read_text(encoding="utf-8"))
-        required = {
-            "info.json",
-            "episodes.parquet",
-            "tasks.parquet",
-            "cameras.parquet",
-            "provenance.parquet",
-            "splits.parquet",
-        }
+        required = FINALIZED_METADATA_ARTIFACTS
         hashes = dict(completion.get("content_hashes") or {})
         if not required.issubset(hashes):
             raise RuntimeError("Finalized metadata completion marker is missing required hashes")

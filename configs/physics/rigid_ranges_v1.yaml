@@ -8,6 +8,18 @@ policy:
   train_id_fraction_of_validated_support: 0.80
   uncalibrated_values_are_development_only: true
   solver_parameters_are_not_physical_restitution: true
+strict_acceptance_thresholds:
+  maximum_object_gripper_penetration_m: 0.002
+  maximum_object_task_surface_penetration_m: 0.003
+  maximum_measured_effective_restitution: 1.05
+  maximum_free_flight_energy_drift_fraction: 0.05
+  timestep_halving_maximum_event_shift_s: 0.03333333333333333
+  timestep_halving_maximum_key_position_shift_m: 0.01
+  require_no_solver_warnings: true
+  require_no_nonfinite_state: true
+  require_no_tunneling: true
+  require_no_unexplained_velocity_discontinuity: true
+  require_no_mutation_boundary_violation: true
 fields:
   radius_m:
     unit: m

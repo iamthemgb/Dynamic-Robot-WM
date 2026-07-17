@@ -31,6 +31,83 @@ def exact_frame_timestamps(frame_count: int, fps_num: int, fps_den: int = 1) -> 
     return [float(index * period) for index in range(frame_count)]
 
 
+def fixed_duration_frame_timestamps(
+    duration_s: float,
+    fps_num: int = 30,
+    fps_den: int = 1,
+) -> list[float]:
+    """Return the canonical half-open render clock for one rollout.
+
+    The frame count is exactly ``round(duration_s * fps)`` and frame ``k`` is
+    presented at ``k / fps``. Decimal-string rationalization plus explicit
+    positive round-half-up avoids platform-dependent floating-point ties.
+    """
+
+    if (
+        not math.isfinite(duration_s)
+        or duration_s <= 0
+        or fps_num <= 0
+        or fps_den <= 0
+    ):
+        raise SynchronizationError(
+            "Duration must be finite and positive and FPS must be positive"
+        )
+    duration = Fraction(str(duration_s))
+    frames_exact = duration * fps_num / fps_den
+    frame_count = (2 * frames_exact.numerator + frames_exact.denominator) // (
+        2 * frames_exact.denominator
+    )
+    if frame_count <= 0:
+        raise SynchronizationError("Duration produces no canonical video frames")
+    return exact_frame_timestamps(frame_count, fps_num, fps_den)
+
+
+def validate_persisted_render_schedule(
+    frame_rows: Sequence[dict[str, Any]],
+    *,
+    duration_s: float,
+    fps_num: int = 30,
+    fps_den: int = 1,
+    maximum_sample_error_s: float | None = None,
+) -> None:
+    """Validate ideal PTS and the actual simulation sample used per frame."""
+
+    expected = fixed_duration_frame_timestamps(duration_s, fps_num, fps_den)
+    if len(frame_rows) != len(expected):
+        raise SynchronizationError(
+            f"Render schedule has {len(frame_rows)} rows, expected {len(expected)}"
+        )
+    tolerance = 1e-9
+    for index, (row, target) in enumerate(zip(frame_rows, expected)):
+        try:
+            pts = float(row["timestamp"])
+            simulation_timestamp = float(row["simulation_timestamp"])
+            recorded_error = float(row["synchronization_error_s"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise SynchronizationError(
+                f"Frame {index} lacks finite render-synchronization fields"
+            ) from error
+        values = (pts, simulation_timestamp, recorded_error)
+        if any(not math.isfinite(value) for value in values):
+            raise SynchronizationError(
+                f"Frame {index} has non-finite render-synchronization fields"
+            )
+        if abs(pts - target) > tolerance:
+            raise SynchronizationError(
+                f"Frame {index} PTS {pts} differs from canonical {target}"
+            )
+        actual_error = abs(simulation_timestamp - target)
+        if recorded_error < 0 or abs(recorded_error - actual_error) > tolerance:
+            raise SynchronizationError(
+                f"Frame {index} synchronization error does not match its sample time"
+            )
+        if maximum_sample_error_s is not None and actual_error > maximum_sample_error_s:
+            raise SynchronizationError(
+                f"Frame {index} sample error {actual_error}s exceeds "
+                f"{maximum_sample_error_s}s"
+            )
+
+
 def validate_monotonic_timestamps(
     timestamps: Sequence[float],
     *,
@@ -131,4 +208,3 @@ def validate_synchronized_streams(
             raise SynchronizationError(
                 f"Camera clocks differ by {worst}s, exceeding tolerance {tolerance_s}s"
             )
-

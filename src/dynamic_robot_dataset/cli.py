@@ -850,7 +850,13 @@ def _generation_config(arguments: argparse.Namespace) -> dict[str, Any]:
         override = getattr(arguments, key, None)
         if override is not None:
             config[key] = list(override) if key in {"branches", "views"} else override
-    if not config.get("family"):
+    backend_name = (
+        str(config.get("backend") or "diagnostic")
+        .strip()
+        .lower()
+        .replace("-", "_")
+    )
+    if not config.get("family") and backend_name != CORRECTED_SOURCE_BACKEND:
         raise ValueError("Generation requires --family or a family field in --config")
     return config
 
@@ -947,21 +953,126 @@ def _native_plans_from_adapter(
     return typed_plans
 
 
+def _source_preview_selectors(
+    arguments: argparse.Namespace,
+    config: Mapping[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...], bool]:
+    def _configured_values(name: str) -> tuple[str, ...]:
+        raw = config.get(name, ())
+        if raw is None:
+            return ()
+        if isinstance(raw, str):
+            return (raw,)
+        if not isinstance(raw, Sequence):
+            raise ValueError(
+                f"source preview {name} must be a string or list of strings"
+            )
+        values = tuple(str(value) for value in raw)
+        if any(not value for value in values):
+            raise ValueError(f"source preview {name} cannot contain empty values")
+        return values
+
+    case_ids = tuple(getattr(arguments, "review_case", None) or ()) or _configured_values(
+        "review_cases"
+    )
+    leaf_ids = tuple(getattr(arguments, "review_leaf", None) or ()) or _configured_values(
+        "review_leaves"
+    )
+    clean_r0_only = bool(
+        getattr(arguments, "clean_r0_only", False)
+        or config.get("clean_r0_only", False)
+    )
+    return case_ids, leaf_ids, clean_r0_only
+
+
+def _execute_source_preview(
+    review_suite_root: str | Path,
+    dataset_root: str | Path,
+    *,
+    case_ids: tuple[str, ...],
+    leaf_ids: tuple[str, ...],
+    clean_r0_only: bool,
+    resume: bool,
+) -> Any:
+    from .common.source_preview import execute_source_review_preview
+
+    return execute_source_review_preview(
+        review_suite_root,
+        dataset_root,
+        case_ids=case_ids,
+        leaf_ids=leaf_ids,
+        clean_r0_only=clean_r0_only,
+        resume=resume,
+    )
+
+
+def _command_generate_source_preview(
+    arguments: argparse.Namespace,
+    config: Mapping[str, Any],
+    output: str | Path | None,
+) -> int:
+    if getattr(arguments, "renderer", None):
+        raise ValueError(
+            "--renderer is diagnostic-only; source_mujoco renders its own rollout"
+        )
+    review_suite_root = getattr(arguments, "review_suite_root", None) or config.get(
+        "review_suite_root"
+    )
+    if not review_suite_root:
+        raise ValueError("source_mujoco generation requires --review-suite-root")
+    case_ids, leaf_ids, clean_r0_only = _source_preview_selectors(arguments, config)
+    if arguments.dry_run:
+        from .common.review_suite import load_review_suite_bundle
+        from .common.source_preview import select_source_review_cases
+
+        bundle = load_review_suite_bundle(review_suite_root)
+        cases = select_source_review_cases(
+            bundle,
+            case_ids=case_ids,
+            leaf_ids=leaf_ids,
+            clean_r0_only=clean_r0_only,
+        )
+        _json_print(
+            {
+                "dry_run": True,
+                "backend": CORRECTED_SOURCE_BACKEND,
+                "review_suite_id": bundle.plan.suite_id,
+                "review_plan_sha256": bundle.plan.plan_sha256,
+                "episode_count": len(cases),
+                "case_ids": [case.case_id for case in cases],
+                "corpus_leaf_ids": [case.corpus_leaf_id for case in cases],
+            }
+        )
+        return 0
+    if output is None:
+        raise ValueError("source_mujoco generation requires --output")
+    result = _execute_source_preview(
+        review_suite_root,
+        output,
+        case_ids=case_ids,
+        leaf_ids=leaf_ids,
+        clean_r0_only=clean_r0_only,
+        resume=bool(arguments.resume),
+    )
+    _json_print(result.to_dict())
+    return 0 if result.strict_qc_passed else 1
+
+
 def _command_generate(arguments: argparse.Namespace) -> int:
-    from .families import get_family
 
     config = _generation_config(arguments)
     output = arguments.output or config.pop("output", None)
-    adapter = get_family(str(config["family"]))
     backend_name = str(config.get("backend") or "diagnostic").strip().lower().replace("-", "_")
     reject_retired_custom_tool_backend(backend_name)
     if backend_name == CORRECTED_SOURCE_BACKEND:
-        raise ValueError(
-            "source_mujoco canonical execution is not enabled yet: source access "
-            "can be verified with 'inspect-embodiments', but the LeRobot-to-v2 "
-            "normalizer and independent objective replay must pass before this "
-            "command is allowed to generate release candidates"
+        return _command_generate_source_preview(
+            arguments,
+            config,
+            output,
         )
+    from .families import get_family
+
+    adapter = get_family(str(config["family"]))
     plans = adapter.plan(config)
     if backend_name == "native_mujoco":
         plans = _native_plans_from_adapter(plans, config)
@@ -2109,7 +2220,11 @@ def _command_finalize(arguments: argparse.Namespace) -> int:
 
 
 def _command_validate(arguments: argparse.Namespace) -> int:
-    report = validate_dataset(arguments.dataset, deep_video_checks=not arguments.shallow)
+    report = validate_dataset(
+        arguments.dataset,
+        deep_video_checks=not arguments.shallow,
+        strict_all=bool(getattr(arguments, "strict_all", False)),
+    )
     _json_print(report.to_dict())
     return 0 if report.passed else 1
 
@@ -2120,6 +2235,7 @@ def _command_qc(arguments: argparse.Namespace) -> int:
         deep_video_checks=True,
         write_reports=True,
         report_dir=arguments.report_dir,
+        strict_all=bool(getattr(arguments, "strict_all", False)),
     )
     _json_print(report.to_dict())
     return 0 if report.passed else 1
@@ -2141,6 +2257,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(prog="dynamic-robot-dataset")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    from .orchestration_cli import add_orchestration_subcommands
+    from .review_suite_cli import add_review_suite_subcommand
+
+    add_orchestration_subcommands(subparsers)
+    add_review_suite_subcommand(subparsers)
 
     inventory = subparsers.add_parser("inventory", help="read-only source inventory")
     inventory.add_argument("--roots", nargs="+", default=DEFAULT_SOURCE_ROOTS)
@@ -2186,6 +2308,25 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--resume", action="store_true")
     generate.add_argument("--dry-run", action="store_true")
     generate.add_argument(
+        "--review-suite-root",
+        help="existing immutable fixed review-suite bundle for source_mujoco previews",
+    )
+    generate.add_argument(
+        "--review-case",
+        action="append",
+        help="fixed review case ID; repeat to select multiple source_mujoco previews",
+    )
+    generate.add_argument(
+        "--review-leaf",
+        action="append",
+        help="corpus leaf ID; repeat to select multiple source_mujoco previews",
+    )
+    generate.add_argument(
+        "--clean-r0-only",
+        action="store_true",
+        help="restrict source_mujoco generation to fixed clean R0 review cases",
+    )
+    generate.add_argument(
         "--renderer",
         help="diagnostic/backward-compatible renderer callable as module:function",
     )
@@ -2200,6 +2341,11 @@ def build_parser() -> argparse.ArgumentParser:
     validate = subparsers.add_parser("validate", help="validate a canonical dataset")
     validate.add_argument("--dataset", "--dataset-root", dest="dataset", required=True)
     validate.add_argument("--shallow", action="store_true", help="skip perceptual/frozen-video checks")
+    validate.add_argument(
+        "--strict-all",
+        action="store_true",
+        help="fail when any episode fails, including quarantined/nonrelease previews",
+    )
     validate.set_defaults(handler=_command_validate)
 
     splits = subparsers.add_parser("build-splits", help="create deterministic stratified 80/10/10 splits")
@@ -2211,6 +2357,11 @@ def build_parser() -> argparse.ArgumentParser:
     qc = subparsers.add_parser("qc", help="validate and write QC reports")
     qc.add_argument("--dataset", "--dataset-root", dest="dataset", required=True)
     qc.add_argument("--report-dir")
+    qc.add_argument(
+        "--strict-all",
+        action="store_true",
+        help="publish review QC only when every episode passes",
+    )
     qc.set_defaults(handler=_command_qc)
 
     wan = subparsers.add_parser("export-wan", help="export 24 FPS, 121-frame Wan clips")

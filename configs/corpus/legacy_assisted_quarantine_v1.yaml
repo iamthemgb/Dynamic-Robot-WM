@@ -1,0 +1,28 @@
+schema_version: dynamic-robot-legacy-quarantine/v1
+namespace: legacy_assisted
+policy:
+  read_only: true
+  training_eligible: false
+  release_eligible: false
+  counts_toward_generated_hours: false
+  may_satisfy_review_or_scale_gate: false
+  copy_into_canonical_namespace: false
+collections:
+  - collection_id: collaborator_f1a_conversion_2026_07_16
+    corpus_leaf_id: F1a
+    root: /gpfs/radev/scratch/sous/zss8/dynamic_manip_corpus/F1_falling_catch/F1a_nominal_vertical_drop
+    episode_count: 1500
+    default_release_tier: assisted_contact
+    prohibited_mechanisms_observed:
+      - post_capture_object_state_rewrite
+      - latch_assisted_retention
+    blockers:
+      - no_free_contact_release_evidence
+      - metadata_completion_marker_lacks_artifact_hashes
+      - independent_objective_replay_not_accepted
+      - cannot_count_toward_generated_hours
+    snapshot_sha256:
+      _TARGET.json: e9825336f8a4864628004fa3be690ebb5393629589f5baf4f23d92a549abd817
+      meta/info.json: 7a0b3d9d25bc477f14830b67ae014d82fdd8608f98153082d670124d7ec64f92
+      meta/episodes.parquet: d6e46fae3e61c77940d784a3669907a49ca3ac81f947c318ef7ed5a44c46244e
+      meta/.complete.json: 49f75081ad552a9a9f3ead10c4d73c10240cd310cf7a5172352617fdfd86763f

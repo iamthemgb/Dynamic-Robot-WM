@@ -36,8 +36,11 @@ from dynamic_robot_dataset.common.schema import (
 )
 from dynamic_robot_dataset.common.splits import SplitAssigner, validate_no_split_leakage
 from dynamic_robot_dataset.common.synchronization import (
+    SynchronizationError,
     exact_frame_timestamps,
+    fixed_duration_frame_timestamps,
     synchronize_previous,
+    validate_persisted_render_schedule,
     validate_synchronized_streams,
 )
 
@@ -262,6 +265,27 @@ def test_exact_timestamps_and_causal_controller_alignment() -> None:
     validate_synchronized_streams({"main": frames, "secondary": list(frames)})
     aligned = synchronize_previous(frames, [0.0, 0.05, 0.1], ["a", "b", "c"])
     assert [sample.value for sample in aligned] == ["a", "a", "b", "c"]
+
+
+def test_fixed_duration_render_schedule_records_actual_simulation_time() -> None:
+    timestamps = fixed_duration_frame_timestamps(0.1, 30)
+    assert timestamps == [0.0, 1 / 30, 2 / 30]
+    rows = [
+        {
+            "timestamp": timestamp,
+            "simulation_timestamp": timestamp + (0.0005 if index else 0.0),
+            "synchronization_error_s": 0.0005 if index else 0.0,
+        }
+        for index, timestamp in enumerate(timestamps)
+    ]
+    validate_persisted_render_schedule(
+        rows,
+        duration_s=0.1,
+        maximum_sample_error_s=1.0 / 600.0,
+    )
+    rows[1]["synchronization_error_s"] = 0.0
+    with pytest.raises(SynchronizationError, match="does not match"):
+        validate_persisted_render_schedule(rows, duration_s=0.1)
 
 
 def test_camera_roundtrip_and_quaternion_conversion() -> None:

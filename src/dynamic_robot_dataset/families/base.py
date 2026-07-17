@@ -385,6 +385,12 @@ class FamilyAdapter(ABC):
                 object_color_ids=tuple(str(value) for value in catalog_mapping.get("object_color_ids", ("default",))),
                 tool_asset_ids=tuple(str(value) for value in catalog_mapping.get("tool_asset_ids", ())),
                 camera_preset_ids=tuple(str(value) for value in catalog_mapping.get("camera_preset_ids", ("main_secondary_v1",))),
+                scene_asset_manifest_sha256={
+                    str(key): str(value)
+                    for key, value in dict(
+                        catalog_mapping.get("scene_asset_manifest_sha256", {}) or {}
+                    ).items()
+                },
             )
             randomization = RandomizationPlanner(catalog=catalog, seed=request.seed).plan(
                 split_group_id,

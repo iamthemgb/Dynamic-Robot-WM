@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+from ..backends.actuator_only import validate_action_rows
+from .assets import validate_robocasa_asset_manifest
 from .contacts import ContactEvent, normalize_contact_row, select_task_event_time
 from .contract_v2 import (
     DEFAULT_OBJECTIVE_EVALUATORS,
@@ -28,10 +30,24 @@ from .contract_v2 import (
 from .cameras import CameraCalibration
 from .episode_writer import load_episode_records, read_parquet_rows, write_parquet_atomic
 from .hashing import hamming_distance_hex, sha256_file, sha256_json
+from .embodiments import PRODUCTION_END_EFFECTORS
 from .paths import atomic_write_bytes, atomic_write_json, ensure_not_source_path, resolve_dataset_path
+from .physics_contract import (
+    STRICT_RIGID_THRESHOLDS,
+    rigid_task_evidence_failures,
+    strict_contact_penetration_check,
+    strict_persisted_physics_failures,
+    strict_runtime_audit_failures,
+)
+from .randomization import validate_randomization_admission
 from .schema import DynamicsMode, EpisodeRecord, ReleaseTier, SchemaValidationError
 from .splits import validate_no_split_leakage
-from .synchronization import SynchronizationError, validate_monotonic_timestamps, validate_synchronized_streams
+from .synchronization import (
+    SynchronizationError,
+    validate_monotonic_timestamps,
+    validate_persisted_render_schedule,
+    validate_synchronized_streams,
+)
 from .video_writer import VideoProbe, VideoSpec, iter_rgb_frames, probe_frame_timestamps, probe_video, validate_video_probe
 from .visual_qc import NATIVE_VISUAL_QC_SCHEMA, NATIVE_VISUAL_THRESHOLDS
 
@@ -341,11 +357,13 @@ class DatasetQCReport:
     global_warnings: list[str] = field(default_factory=list)
     exact_duplicate_groups: list[list[str]] = field(default_factory=list)
     perceptual_duplicate_pairs: list[tuple[str, str, int]] = field(default_factory=list)
+    strict_all: bool = False
 
     @property
     def passed(self) -> bool:
         return not self.global_failures and all(
-            result.passed or not result.release_eligible for result in self.episodes
+            result.passed or (not self.strict_all and not result.release_eligible)
+            for result in self.episodes
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -354,6 +372,8 @@ class DatasetQCReport:
             "passed": self.passed,
             "episode_count": len(self.episodes),
             "release_eligible_count": sum(result.release_eligible for result in self.episodes),
+            "strict_all": self.strict_all,
+            "failed_episode_count": sum(not result.passed for result in self.episodes),
             "failed_release_eligible_count": sum(
                 result.release_eligible and not result.passed for result in self.episodes
             ),
@@ -488,10 +508,12 @@ class QCValidator:
         *,
         deep_video_checks: bool = True,
         objective_evaluators: ObjectiveEvaluatorRegistry | None = None,
+        strict_all: bool = False,
     ):
         self.root = Path(dataset_root).resolve(strict=True)
         self.deep_video_checks = deep_video_checks
         self.objective_evaluators = objective_evaluators or DEFAULT_OBJECTIVE_EVALUATORS
+        self.strict_all = strict_all
 
     def _validate_episode(self, record: EpisodeRecord) -> tuple[EpisodeQC, dict[str, str]]:
         result = EpisodeQC(record.episode_uuid, record.episode_index, record.release_eligible)
@@ -500,6 +522,41 @@ class QCValidator:
         high_rate_rows: list[dict[str, Any]] = []
         transition_rows: list[dict[str, Any]] = []
         object_state_rows: list[dict[str, Any]] = []
+        source_scenario = record.extras.get("source_scenario_spec")
+        source_embodiment = (
+            source_scenario.get("embodiment")
+            if isinstance(source_scenario, Mapping)
+            else None
+        )
+        end_effector = str(
+            record.extras.get("end_effector")
+            or (
+                source_embodiment.get("end_effector")
+                if isinstance(source_embodiment, Mapping)
+                else ""
+            )
+            or record.tool_type
+            or ""
+        )
+        backend_provenance = record.extras.get("backend_provenance")
+        backend_name = str(
+            (
+                backend_provenance.get("backend")
+                if isinstance(backend_provenance, Mapping)
+                else None
+            )
+            or record.extras.get("backend")
+            or (
+                source_scenario.get("backend")
+                if isinstance(source_scenario, Mapping)
+                else None
+            )
+            or ""
+        ).strip().lower()
+        source_mujoco_backend = backend_name == "source_mujoco"
+        source_rigid_backend = source_mujoco_backend and (
+            end_effector in PRODUCTION_END_EFFECTORS or end_effector == "no_robot"
+        )
         release_claimed = (
             record.label_status.value == "verified_objective"
             and record.release_tier == ReleaseTier.FREE_CONTACT
@@ -590,6 +647,26 @@ class QCValidator:
                 frame_rows = rows
                 timestamps = [float(row["timestamp"]) for row in rows]
                 validate_monotonic_timestamps(timestamps)
+                source_scenario = record.extras.get("source_scenario_spec")
+                if isinstance(source_scenario, Mapping):
+                    source_physics = source_scenario.get("physics")
+                    if not isinstance(source_physics, Mapping):
+                        raise ValueError(
+                            "persisted source scenario lacks its physics mapping"
+                        )
+                    simulation_hz = float(
+                        source_physics.get(
+                            "simulation_hz", source_physics.get("sim_hz")
+                        )
+                    )
+                    validate_persisted_render_schedule(
+                        rows,
+                        duration_s=float(source_scenario["duration_s"]),
+                        maximum_sample_error_s=1.0 / simulation_hz + 1e-12,
+                    )
+                    result.metrics["maximum_simulation_sample_error_s"] = max(
+                        float(row["synchronization_error_s"]) for row in rows
+                    )
                 if record.frame_count is None:
                     result.fail("frame_count is required")
                 elif len(rows) != record.frame_count:
@@ -698,6 +775,16 @@ class QCValidator:
                         result.fail(f"frame semantics: {problem}")
                     else:
                         result.warnings.append(f"frame semantics: {problem}")
+                end_effector = str(
+                    record.extras.get("end_effector") or record.tool_type or ""
+                )
+                if end_effector in PRODUCTION_END_EFFECTORS:
+                    for problem in validate_action_rows(
+                        rows,
+                        embodiment=end_effector,
+                        action_semantics=record.action_mode,
+                    ):
+                        result.fail(f"canonical actuator action: {problem}")
                 control_hz = float(record.extras.get("control_hz", 0.0) or 0.0)
                 assistance_tolerance = 1.0 / control_hz if control_hz > 0 else 1.0 / 60.0
                 for problem in validate_assistance_observations(
@@ -745,6 +832,36 @@ class QCValidator:
                             result.metrics["derived_action_hash"] = (
                                 derived_action_hash_from_rows(rows)
                             )
+                        if end_effector in PRODUCTION_END_EFFECTORS:
+                            for problem in validate_action_rows(
+                                rows,
+                                embodiment=end_effector,
+                                action_semantics=record.action_mode,
+                            ):
+                                result.fail(
+                                    f"control-rate canonical actuator action: {problem}"
+                                )
+                            for row_index, row in enumerate(rows):
+                                applied = row.get("simulator.applied_actuator_ctrl")
+                                action = row.get("action.actuator_command")
+                                if applied is None:
+                                    result.fail(
+                                        "control-rate action lacks simulator applied-control echo"
+                                    )
+                                    break
+                                try:
+                                    applied_values = tuple(float(value) for value in applied)
+                                    action_values = tuple(float(value) for value in action)
+                                except (TypeError, ValueError):
+                                    result.fail(
+                                        f"control-rate applied-control echo is invalid at row {row_index}"
+                                    )
+                                    break
+                                if applied_values != action_values:
+                                    result.fail(
+                                        f"persisted action differs from applied data.ctrl at row {row_index}"
+                                    )
+                                    break
                     elif label == "transitions" and rows:
                         transition_rows = rows
                         validate_monotonic_timestamps(
@@ -823,8 +940,26 @@ class QCValidator:
                 if penetrations:
                     maximum_penetration = max(penetrations)
                     result.metrics["maximum_penetration_depth_m"] = maximum_penetration
-                    if maximum_penetration > 0.02:
+                    if maximum_penetration > STRICT_RIGID_THRESHOLDS.maximum_task_surface_penetration_m:
                         result.fail(f"explosive/excessive penetration: {maximum_penetration} m")
+                end_effector = str(
+                    record.extras.get("end_effector") or record.tool_type or ""
+                )
+                source_scenario = record.extras.get("source_scenario_spec")
+                strict_source_mujoco = bool(
+                    isinstance(source_scenario, Mapping)
+                    and source_scenario.get("backend") == "source_mujoco"
+                )
+                if end_effector in PRODUCTION_END_EFFECTORS or strict_source_mujoco:
+                    strict_penetration = strict_contact_penetration_check(
+                        event_rows,
+                        require_classification=True,
+                    )
+                    result.metrics["physics.strict_contact_penetration"] = dict(
+                        strict_penetration.metrics
+                    )
+                    for failure in strict_penetration.failures:
+                        result.fail(f"strict contact penetration: {failure}")
                 if record.extras.get("event_time_semantics") == "first_non_fixture_task_contact":
                     measured_task_time = select_task_event_time(event_rows)
                     if measured_task_time is None and record.event_time_s is not None:
@@ -970,21 +1105,33 @@ class QCValidator:
                         transition_rows=transition_rows,
                     )
                 )
-                for problem in compare_recomputed_objective(record, recomputed):
+                recompute_problems = compare_recomputed_objective(record, recomputed)
+                if recomputed.key_event_name != record.key_event_name:
+                    recompute_problems.append(
+                        "key_event_name disagrees with independent objective recomputation"
+                    )
+                recompute_problems = sorted(set(recompute_problems))
+                for problem in recompute_problems:
                     result.fail(problem)
+                recomputed_evidence_hash = sha256_json(recomputed.evidence)
                 result.metrics["objective_recompute"] = {
+                    "evaluator_id": record.objective_evaluator_id,
+                    "evaluator_version": record.objective_evaluator_version,
                     "evidence_version": recomputed.evidence_version,
-                    "evidence_hash": sha256_json(recomputed.evidence),
+                    "evidence_hash": recomputed_evidence_hash,
                     "task_success": recomputed.task_success,
                     "actual_outcome_class": recomputed.actual_outcome_class.value,
                     "primary_failure_code": recomputed.primary_failure_code,
+                    "key_event_name": recomputed.key_event_name,
+                    "key_event_time_s": recomputed.key_event_time_s,
+                    "replay_match": not recompute_problems,
                 }
                 if record.objective_evidence.get("independently_recomputed") is not True:
                     result.fail(
                         "objective evaluator ran but metadata does not attest independent recomputation"
                     )
                 stored_evidence_hash = record.objective_evidence.get("evidence_hash")
-                if stored_evidence_hash and stored_evidence_hash != sha256_json(recomputed.evidence):
+                if stored_evidence_hash and stored_evidence_hash != recomputed_evidence_hash:
                     result.fail("stored objective evidence hash disagrees with recomputation")
             except Exception as error:
                 result.fail(f"objective recomputation: {error}")
@@ -1033,7 +1180,157 @@ class QCValidator:
                     "critical-contact occlusion not evaluated: no visibility_qc metadata",
                 ]
             )
-        backend_provenance = record.extras.get("backend_provenance")
+        if source_mujoco_backend:
+            objective_recompute = result.metrics.get("objective_recompute")
+            if not isinstance(objective_recompute, Mapping):
+                result.fail(
+                    "source_mujoco episode lacks persisted-artifact objective recomputation"
+                )
+            else:
+                if objective_recompute.get("evaluator_id") != record.objective_evaluator_id:
+                    result.fail(
+                        "source_mujoco objective recomputation evaluator_id disagrees with the record"
+                    )
+                if not str(objective_recompute.get("evaluator_id") or "").strip() or (
+                    objective_recompute.get("evaluator_id") == "legacy_embedded"
+                ):
+                    result.fail(
+                        "source_mujoco objective recomputation lacks a versioned evaluator_id"
+                    )
+                if not str(objective_recompute.get("key_event_name") or "").strip():
+                    result.fail(
+                        "source_mujoco objective recomputation lacks key_event_name"
+                    )
+                key_event_time_s = objective_recompute.get("key_event_time_s")
+                if (
+                    not isinstance(key_event_time_s, (int, float))
+                    or isinstance(key_event_time_s, bool)
+                    or not math.isfinite(float(key_event_time_s))
+                    or float(key_event_time_s) < 0
+                ):
+                    result.fail(
+                        "source_mujoco objective recomputation lacks finite key_event_time_s"
+                    )
+                if objective_recompute.get("replay_match") is not True:
+                    result.fail(
+                        "source_mujoco persisted-artifact objective replay does not match the recorded outcome"
+                    )
+                recomputed_evidence_hash = str(
+                    objective_recompute.get("evidence_hash") or ""
+                )
+                if len(recomputed_evidence_hash) != 64 or any(
+                    character not in "0123456789abcdef"
+                    for character in recomputed_evidence_hash
+                ):
+                    result.fail(
+                        "source_mujoco objective recomputation evidence is not content-bound"
+                    )
+                if not str(
+                    objective_recompute.get("evidence_version") or ""
+                ).strip():
+                    result.fail(
+                        "source_mujoco objective recomputation lacks evidence_version"
+                    )
+            stored_evidence_hash = str(
+                record.objective_evidence.get("evidence_hash") or ""
+            )
+            if record.objective_evidence.get("independently_recomputed") is not True:
+                result.fail(
+                    "source_mujoco record lacks independent persisted-artifact objective evidence"
+                )
+            if len(stored_evidence_hash) != 64 or any(
+                character not in "0123456789abcdef"
+                for character in stored_evidence_hash
+            ):
+                result.fail(
+                    "source_mujoco record lacks a content-bound objective evidence hash"
+                )
+            if not str(record.key_event_name or "").strip():
+                result.fail("source_mujoco record lacks key_event_name")
+            if (
+                record.key_event_time_s is None
+                or not math.isfinite(float(record.key_event_time_s))
+                or record.key_event_time_s < 0
+            ):
+                result.fail("source_mujoco record lacks finite key_event_time_s")
+        if source_rigid_backend:
+            audit = (
+                backend_provenance.get("runtime_audit")
+                if isinstance(backend_provenance, Mapping)
+                else None
+            )
+            if not isinstance(audit, Mapping):
+                result.fail("source_mujoco provenance lacks a strict runtime audit")
+            else:
+                for failure in strict_runtime_audit_failures(
+                    audit,
+                    require_control_updates=end_effector != "no_robot",
+                ):
+                    result.fail(f"strict runtime audit: {failure}")
+            persisted_qc = record.extras.get("physics_qc")
+            if not isinstance(persisted_qc, Mapping):
+                result.fail("source_mujoco episode lacks persisted strict physics QC")
+            else:
+                for failure in strict_persisted_physics_failures(persisted_qc):
+                    result.fail(f"strict physics QC: {failure}")
+                task_evidence = persisted_qc.get("task_evidence")
+                if not isinstance(task_evidence, Mapping):
+                    result.fail("source_mujoco strict QC lacks family-specific task evidence")
+                else:
+                    source_spec = record.extras.get("source_scenario_spec")
+                    task_variant = str(
+                        source_spec.get("task_variant")
+                        if isinstance(source_spec, Mapping)
+                        else record.variant
+                    )
+                    for failure in rigid_task_evidence_failures(
+                        family=record.family,
+                        subfamily=record.subfamily,
+                        task_variant=task_variant,
+                        evidence=task_evidence,
+                        task_success=record.task_success,
+                    ):
+                        result.fail(f"strict task physics: {failure}")
+            try:
+                validate_randomization_admission(
+                    record.randomization,
+                    r1_accepted=bool(record.extras.get("r1_accepted", False)),
+                )
+            except ValueError as error:
+                result.fail(f"randomization admission: {error}")
+            background = str(record.randomization.get("background_style") or "")
+            if background.startswith("robocasa_"):
+                manifest = record.extras.get("robocasa_asset_manifest")
+                if not isinstance(manifest, Sequence) or isinstance(
+                    manifest, (str, bytes, bytearray)
+                ):
+                    result.fail("RoboCasa scene lacks a runtime asset-admission manifest")
+                else:
+                    allow_pending_render_review = bool(
+                        isinstance(backend_provenance, Mapping)
+                        and backend_provenance.get("review_only") is True
+                        and not record.release_eligible
+                    )
+                    try:
+                        validate_robocasa_asset_manifest(
+                            manifest,
+                            required_asset_ids=(
+                                str(record.randomization.get("scene_asset_id")),
+                            ),
+                            allow_pending_render_review=allow_pending_render_review,
+                        )
+                    except ValueError as error:
+                        result.fail(f"RoboCasa asset admission: {error}")
+                    else:
+                        if allow_pending_render_review and any(
+                            value.get("blockers")
+                            == ["rendered_occlusion_review_pending"]
+                            for value in manifest
+                            if isinstance(value, Mapping)
+                        ):
+                            result.warnings.append(
+                                "RoboCasa rendered occlusion human review pending"
+                            )
         native_backend = (
             isinstance(backend_provenance, Mapping)
             and backend_provenance.get("backend") == "native_mujoco"
@@ -1563,6 +1860,7 @@ class QCValidator:
             sorted(set(global_warnings)),
             duplicate_groups,
             perceptual_pairs,
+            self.strict_all,
         )
 
 
@@ -1573,6 +1871,7 @@ def validate_dataset(
     write_reports: bool = False,
     report_dir: str | Path | None = None,
     objective_evaluators: ObjectiveEvaluatorRegistry | None = None,
+    strict_all: bool = False,
 ) -> DatasetQCReport:
     """Stable public validator API used by tests, CLI, and smoke orchestration."""
 
@@ -1580,6 +1879,7 @@ def validate_dataset(
         dataset_root,
         deep_video_checks=deep_video_checks,
         objective_evaluators=objective_evaluators,
+        strict_all=strict_all,
     ).validate()
     if write_reports:
         write_qc_reports(report, report_dir or (Path(dataset_root) / "qc"))

@@ -1,0 +1,148 @@
+schema_version: dynamic-robot-rigid-profile-calibration/v1
+calibration_id: source_mujoco_rigid_600_1200_candidate_v3
+contract_version: dynamic-robot-dataset/v2
+
+# This file records exploratory measurements made while repairing the owned
+# source_mujoco controller/contact path.  It is deliberately not an admission
+# artifact: the measurements are not yet bound to finalized episode/QC hashes,
+# the complete fixed review matrix has not run, and human review is pending.
+evidence_status: exploratory_unbound
+release_state: blocked
+release_eligible: false
+admission:
+  admitted: false
+  preferred_profile: null
+  cheaper_profile_admitted: false
+  blockers:
+    - hash_bound_rollout_artifacts_missing
+    - full_leaf_timestep_halving_matrix_pending
+    - fixed_six_rollouts_per_leaf_pending
+    - human_review_pending
+
+source_binding:
+  backend: source_mujoco
+  backend_capability_registry: configs/backends/capabilities_v1.yaml
+  external_dependency_manifest_sha256: 823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99
+  evidence_artifacts_hash_bound: false
+  source_trees_read_only: true
+
+acceptance_thresholds:
+  maximum_object_gripper_penetration_m: 0.002
+  maximum_object_task_surface_penetration_m: 0.003
+  maximum_measured_effective_restitution: 1.05
+  maximum_free_flight_energy_drift_fraction: 0.05
+  timestep_halving_maximum_event_shift_s: 0.03333333333333333
+  timestep_halving_maximum_key_position_shift_m: 0.01
+
+profiles:
+  rigid_600hz_candidate_v3:
+    simulation_hz: 600
+    timestep_s: 0.0016666666666666668
+    control_hz: 60
+    video_hz: 30
+    admitted: false
+    wall_contact:
+      solref: [0.012, 0.7]
+    robotiq_thick_pad_contact:
+      condim: 3
+      friction: [0.9, 0.005, 0.0001]
+      tendon_control_target: 115.0
+      actuator_force_range_n: [-0.16, 0.16]
+      closure_start_before_ballistic_event_s: 0.16
+      closure_duration_s: 0.10
+
+  rigid_1200hz_reference_v3:
+    simulation_hz: 1200
+    timestep_s: 0.0008333333333333334
+    control_hz: 60
+    video_hz: 30
+    admitted: false
+    wall_contact:
+      solref: [0.012, 0.7]
+    robotiq_thick_pad_contact:
+      condim: 3
+      friction: [0.9, 0.005, 0.0001]
+      tendon_control_target: 115.0
+      actuator_force_range_n: [-0.16, 0.16]
+      closure_start_before_ballistic_event_s: 0.16
+      closure_duration_s: 0.10
+
+measurements:
+  wall_rebound:
+    description: repaired ballistic wall contact, measured from separated pre/post-contact samples
+    review_case_id: P0c-review-01
+    trials:
+      - profile: rigid_600hz_candidate_v3
+        first_wall_contact_time_s: 0.6866666666680415
+        incoming_normal_velocity_m_s: -1.1
+        outgoing_normal_velocity_m_s: 0.2065546584452154
+        measured_effective_restitution: 0.18777696222292306
+        maximum_object_task_surface_penetration_m: 0.0012532183338868248
+        observation: stable_rebound
+      - profile: rigid_1200hz_reference_v3
+        first_wall_contact_time_s: 0.6866666666664013
+        incoming_normal_velocity_m_s: -1.1
+        outgoing_normal_velocity_m_s: 0.2663860524704877
+        measured_effective_restitution: 0.24216913860953423
+        maximum_object_task_surface_penetration_m: 0.0023098714683699346
+        observation: stable_rebound
+    timestep_halving_comparison:
+      absolute_event_time_shift_s: 1.6402434965812063e-12
+      key_event_position_shift_m: 0.002515149907592526
+      outcome_match: true
+      within_one_video_frame: true
+      within_one_centimeter: true
+
+  robotiq_free_contact_catch:
+    review_case_id: F1a-review-01
+    fixed_master_seed: 20260717
+    review_case_sha256: f0906f9350aaf20dfd114f733862f25ba2edb89ba4d02d57d14ed821a11dfb70
+    controller_rng_subseed: 12099713734891440590
+    controller_profile: source-mujoco-rigid-review-2026-07-v3
+    trials:
+      - profile: rigid_600hz_candidate_v3
+        first_bilateral_contact_time_s: 0.43666666666753823
+        maximum_object_gripper_penetration_m: 0.0013733292870516597
+      - profile: rigid_1200hz_reference_v3
+        first_bilateral_contact_time_s: 0.4366666666664955
+        maximum_object_gripper_penetration_m: 0.001547687056695994
+    timestep_halving_comparison:
+      absolute_event_time_shift_s: 1.0427214647277256e-12
+      key_event_position_shift_m: 0.0006155363968804172
+      final_position_shift_m: 0.004186892649805686
+      outcome_match: true
+      within_one_video_frame: true
+      within_one_centimeter: true
+      observed_maximum_penetration_m: 0.001547687056695994
+
+  reference_rate_required_cases:
+    description: fixed review classes where the 600 Hz candidate failed strict QC and the 1200 Hz reference passed
+    cases:
+      - review_case_id: P0c-review-01
+        reason: object_task_surface_penetration
+        rigid_600hz_observation: 0.0033322342866883847
+        rigid_1200hz_observation: 0.0025323783420552193
+        threshold: 0.003
+      - review_case_id: P0c-review-02
+        reason: separated_rebound_samples
+        rigid_600hz_observation: false
+        rigid_1200hz_observation: true
+      - review_case_id: F1a-review-04
+        reason: object_task_surface_penetration
+        rigid_600hz_observation: 0.003989257183182181
+        rigid_1200hz_observation: 0.0017129018833768328
+        threshold: 0.003
+      - review_case_id: F1b-review-04
+        reason: object_task_surface_penetration
+        rigid_600hz_observation: 0.00400255110098318
+        rigid_1200hz_observation: 0.0
+        threshold: 0.003
+    policy: compile_matching_case_classes_at_rigid_1200hz_reference_v3
+
+required_before_admission:
+  - persist_exact_source_scenario_specs
+  - bind_each_trial_to_episode_and_qc_sha256
+  - run_timestep_halving_for_every_rigid_leaf_and_applicable_embodiment
+  - pass_all_automated_physics_and_synchronization_checks
+  - pass_six_fixed_review_rollouts_for_each_leaf
+  - record_hash_bound_human_review_approval

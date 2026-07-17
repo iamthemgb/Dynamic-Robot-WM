@@ -247,10 +247,29 @@ class ResumeGuard:
 
     FILE_NAME = ".generation.json"
 
-    def __init__(self, output: str | Path, config: Any, *, resume: bool = False):
+    def __init__(
+        self,
+        output: str | Path,
+        config: Any,
+        *,
+        resume: bool = False,
+        identity_settings: Any | None = None,
+    ):
         self.output = ensure_not_source_path(output)
         self.config = config
-        self.config_hash = sha256_json(config)
+        self.identity_settings = identity_settings
+        # Keep the user-facing resolved configuration separate while binding
+        # storage settings (video codec, chunking, split policy, layout) into
+        # the identity used for resume.  ``None`` retains compatibility with
+        # generation roots written before storage settings were recorded.
+        self.config_hash = sha256_json(
+            config
+            if identity_settings is None
+            else {
+                "resolved_config": config,
+                "identity_settings": identity_settings,
+            }
+        )
         self.resume = resume
 
     @property
@@ -272,10 +291,15 @@ class ResumeGuard:
                 raise ResumeMismatchError(
                     f"Resolved config changed: expected {marker.get('config_hash')}, got {self.config_hash}"
                 )
+            if marker.get("identity_settings") != self.identity_settings:
+                raise ResumeMismatchError("Storage/layout settings changed since the run was created")
             return self.config_hash
         self.output.mkdir(parents=True, exist_ok=True)
-        atomic_write_json(
-            self.marker,
-            {"config_hash": self.config_hash, "resolved_config": self.config},
-        )
+        marker_value = {
+            "config_hash": self.config_hash,
+            "resolved_config": self.config,
+        }
+        if self.identity_settings is not None:
+            marker_value["identity_settings"] = self.identity_settings
+        atomic_write_json(self.marker, marker_value)
         return self.config_hash

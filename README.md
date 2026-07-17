@@ -1,92 +1,62 @@
 # Unified Dynamic-Robotics Dataset Generator
 
-This repository is the non-destructive, Franka-first generator for
-dynamics-centered robotics data. It separates persistent physics, transient
-state, and actions; derives outcomes from saved evidence instead of branch
-intent; and keeps synchronized camera views as observations of one physical
-rollout rather than counting them as separate experiences.
+This repository is the canonical orchestration, schema, writer, evaluator, and
+QC layer for the 20-leaf dynamic-manipulation corpus. It uses the physics
+backend appropriate to each leaf while emitting one
+`dynamic-robot-dataset/v2` contract.
 
-The production revision adds a typed MuJoCo lifecycle, the
-`dynamic-robot-dataset/v2` contract, deterministic connected-group 80/10/10
-splits, calibrated release gates, exact duration accounting, and staged 10-hour
-and 100-hour pilot plans. It does **not** launch either pilot or declare the
-160-case acceptance suite passed.
+The repository is fail-closed. P0a-d and F1a-d currently have executable
+review implementations; the other 12 leaves have zero execution quota. All 20
+remain release-blocked pending their fixed acceptance evidence, so executable
+review code is not a claim that large-scale generation is ready.
 
-## Embodiment correction (2026-07-13)
+For the exact operating procedure, start with the
+[unified generator operator guide](docs/unified_generator_operator_guide.md).
 
-The first maintained rigid backend mounted a synthetic tray, bin, or paddle on
-the Franka flange. That was the wrong embodiment for this project. All outputs
-made through that path were removed from this workspace, its two SLURM launchers
-were deleted, and public execution through `native_mujoco` now fails before an
-output directory is created. The implementation remains only as quarantined
-regression code; it is not a generator or an acceptance candidate.
+## Canonical boundary
 
-Production data may use only:
+Two checked-in registries are the runtime sources of truth:
 
-- `franka_hand`: the real MuJoCo Panda hand and two fingers; or
-- `robotiq_2f85_thick_pad`: the real Menagerie Robotiq 2F-85 mounted on the
-  no-hand Panda, with its explicitly declared fingertip-pad variant.
+- [`configs/corpus/dynamic_manipulation_v2.yaml`](configs/corpus/dynamic_manipulation_v2.yaml)
+  defines exactly P0a-d, F1a-d, F2a-f, F3a-d, D1, and D2, including each
+  leaf's backend, embodiments, variants, rates, evaluator, metadata, release
+  state, and blockers.
+- [`configs/backends/capabilities_v1.yaml`](configs/backends/capabilities_v1.yaml)
+  declares supported leaf/embodiment tuples and content hashes for read-only
+  source dependencies.
 
-`inspect-embodiments` verifies the existing generators and hashes their required
-source files without writing to those source trees. All three rigid source
-candidates (Panda catch, Panda bounce-catch, and Panda+Robotiq catch) are
-currently accessible, but none is a release candidate yet: successful catches
-hold/rewrite ball state after capture, and the Panda bounce source also rewrites
-the bounce response. The cloth preview is accessible as well; lift/fold use an
-equality-connect proxy grasp. These are embodiment references and refactoring
-inputs, not corrected training episodes.
+| Backend | Corpus leaves | Status |
+|---|---|---|
+| `source_mujoco` | P0a-d, F1a-d, F2a-f, F3a/F3b/F3d | Rigid review implementation; blocked until per-leaf evidence passes |
+| `source_genesis_fluid` | F3c | Blocked; current-and-pickup fluid scene is unfinished |
+| `source_mujoco_deformable` | D1/D2 | Blocked; frictional grasp and replay acceptance are unfinished |
+| `native_mujoco` | none | Permanently blocked custom tray/bin/paddle regression backend |
 
-## Current boundary
+“Unified” means one registry, scenario contract, writer, evaluator/QC
+interface, and orchestration layer. It does not claim that rigid, fluid, and
+deformable simulators use identical internal physics.
 
-| Component | Status |
-|---|---|
-| Real-gripper source adapters | Read-only contracts and source/hash inspection implemented for Panda-hand catch, Panda-hand bounce, and Panda+Robotiq catch; all are assisted/scripted sources requiring free-contact repair before canonical v2 execution |
-| Retired custom-tool backend | Synthetic tray/bin/paddle backend is blocked from public generation and retained only for low-level regression tests |
-| v2 schema, outcomes, counterfactual declarations, QC, statistics, splits, and Wan export | Implemented with v1 read compatibility |
-| Diagnostic 120-branch suite | Preserved as an accepted pipeline regression fixture; never training data |
-| Previous 160-branch suite | Marked `retired_custom_attachment_definition`; execution is disabled and it cannot satisfy any release gate |
-| Corrected real-gripper acceptance suite | Not yet defined or executable; release gates require `real_gripper_acceptance_160_v2` so an old artifact cannot be reused |
-| Cloth and rope | Objective/tiering contracts and rope target repair implemented; native deformable production validation remains open |
-| Foam ball, beanbag, pouch | Gated behind rigid-contact acceptance; beanbag/pouch also need validated shell and self-contact models |
-| Production-scale generation and Wan training | Out of scope; no jobs are submitted or modified |
+## Dataset contract
 
-The three scratch source trees, selected collaborator-owned project source
-trees listed in `common/paths.py`, `legacy_sources/`, and the separate
-`wan_scripts` workspace are protected by the common path guard. Legacy copying
-is limited to the allowlisted small source/configuration snapshot already
-recorded under `migration/`. Generated datasets, media, environments,
-third-party repositories, fluids, checkpoints, and active jobs are not touched.
+Canonical episodes require:
 
-See [the production revision](docs/production_revision.md) for the exact schema,
-scenario, suite, duration, and release contracts. Source-lineage evidence and
-remaining migration uncertainty are in
-[the implementation report](migration/implementation_report.md).
+- exactly `round(duration × 30)` synchronized frames from one persisted
+  rollout at timestamps `k/30`, with simulator timestamps and synchronization
+  error recorded;
+- `main` and `secondary` H.264/yuv420p views at 832x480 and 30 Hz;
+- actual actuator commands as actions: seven arm controls plus Panda finger or
+  Robotiq tendon control;
+- saved state/contact/event evidence and independent objective replay;
+- source, XML, mesh, texture, configuration, video, table, and finalized
+  metadata hashes;
+- strict hard-physics checks, including penetration, energy, restitution,
+  tunneling, mutation-boundary, and task-specific contact evidence;
+- outcome mismatches preserved as measured attempts, never retried to obtain an
+  intended label.
 
-## Canonical contract
-
-- Python 3.10 with dependencies locked by `uv.lock`.
-- Atomic, resumable MP4 + Parquet episodes; resume requires the same resolved
-  configuration hash and never overwrites an episode.
-- Two synchronized calibrated H.264/`yuv420p` streams at 832x480 and 30 FPS.
-- Event-adaptive duration with PTS-derived timestamps; physical time is never
-  slowed to fill a model window.
-- SI units, right-handed world/task frames, +Z up, WXYZ quaternions.
-- Closed measured outcomes, concrete failure evidence, objective evaluator
-  identity, and independent recomputation from persisted tables.
-- Separate action-counterfactual bundles and physics-counterfactual families,
-  joined by one leakage-prevention split group.
-- Per-frame phase, motion mode, surface, contact role, transition events, and
-  simulator-observed assistance intervals.
-- Explicit `free_contact`, `assisted_contact`, `scripted_motion`, `unverified`,
-  and quarantine publication boundaries.
-- Default training export includes only objective-verified, calibrated,
-  free-contact, physics-QC-passing, hard-QC-passing v2 episodes.
-
-The Wan export remains derived and model-specific: 832x480, 24 FPS, 121 frames,
-one manifest row per logical episode. `video` names the main view and the
-secondary synchronized view remains a sidecar in the same row. Endpoint frames
-may repeat when source context is shorter than the fixed window, and that
-padding is reported separately.
+Legacy state-rewritten, welded, latched, scripted, diagnostic, or custom-tool
+episodes remain in `legacy_assisted`/diagnostic quarantine. They never count as
+training data or generated hours.
 
 ## Install
 
@@ -96,149 +66,156 @@ uv sync --frozen --extra mujoco --extra deformable --extra video --extra test
 uv run --frozen dynamic-robot-dataset --help
 ```
 
-The real embodiment sources are selected with `FRANKA_HAND_SOURCE_ROOT`,
-`ROBOTIQ_SOURCE_ROOT`, and `FRANKA_DEFORMABLE_SOURCE_ROOT` when overrides are
-needed. Their defaults point at the existing collaborator-owned generators.
-Those roots are read-only inputs and are never vendored or used as output
-locations.
-
-## Safe workflow
-
-Inventory and dry-run operations are read-only:
+The canonical RoboCasa dependency is read-only:
 
 ```bash
-uv run --frozen dynamic-robot-dataset inventory \
-  --output migration/source_inventory.refresh.json
-
-uv run --frozen dynamic-robot-dataset inspect-embodiments \
-  --require-rigid-sources
-
-uv run --frozen dynamic-robot-dataset generate \
-  --family falling_catch \
-  --subfamily centered_vertical_drop \
-  --num-bundles 2 \
-  --branches success_seeking,near_miss,contact_failure,no_op \
-  --views main,secondary \
-  --seed 0 \
-  --randomization-level R1 \
-  --scene-style clean_franka_lab \
-  --dry-run
-
+export ROBOCASA_ROOT=/gpfs/radev/project/sous/mzl7/robocasa
+export ROBOCASA_ASSETS_ROOT=/gpfs/radev/project/sous/mzl7/robocasa/robocasa/models/assets
+export MUJOCO_GL=egl
 ```
 
-Corrected canonical execution will use `source_mujoco`, but it is fail-closed
-until the existing LeRobot outputs are normalized into v2 and their objectives
-are independently recomputed. The following currently returns an explanatory
-error and creates no data:
+External generator, RoboCasa, robot-model, scratch-data, and Wan-training trees
+are protected inputs. Never choose one as a dataset output root.
+
+The catalog contains four content-bound, visual-only candidates covering the
+five R1 profiles. Runtime strips arbitrary external `rc_*` selections and
+injects exactly the catalog candidate for the requested profile. Candidates
+remain release-blocked until rendered occlusion review is recorded.
+
+## Immutable orchestration
+
+Large or multi-worker runs use one three-phase lifecycle:
 
 ```bash
-export MUJOCO_GL=egl
+uv run --frozen dynamic-robot-dataset plan-run \
+  --config run_inputs/resolved_run.yaml \
+  --episodes run_inputs/episodes.yaml \
+  --output outputs/example_run \
+  --shards 2
+
+uv run --frozen dynamic-robot-dataset run-shard \
+  --dataset outputs/example_run \
+  --shard-id 0
+
+uv run --frozen dynamic-robot-dataset run-shard \
+  --dataset outputs/example_run \
+  --shard-id 1
+
+uv run --frozen dynamic-robot-dataset finalize-run \
+  --dataset outputs/example_run \
+  --info run_inputs/dataset_info.yaml \
+  --tasks run_inputs/tasks.yaml \
+  --cameras run_inputs/cameras.yaml \
+  --provenance run_inputs/provenance.yaml \
+  --counterfactual-families run_inputs/counterfactual_families.yaml
+```
+
+`plan-run` binds exact membership, deterministic shard assignment, encoding,
+chunking, layout, and split settings. Workers stage privately. `finalize-run`
+requires exact plan membership, acquires an exclusive seal, hashes every
+metadata artifact, and rejects post-seal commits.
+
+`run-shard` resolves the owned backend from the immutable plan. Supplying a
+`module:function` executor is diagnostic-only and requires the explicit
+`--unsafe-executor` opt-in.
+
+`generate` is reserved for bounded single-worker previews over the same owned
+backend path. It must fail before materialization when the selected capability
+or leaf is blocked; diagnostic rendering is not production evidence.
+
+## Fixed review and release sequence
+
+Create or validate the immutable acceptance plan with:
+
+```bash
+uv run --frozen dynamic-robot-dataset review-suite \
+  --output outputs/review/unified_acceptance_v1
+
+uv run --frozen dynamic-robot-dataset review-suite \
+  --output outputs/review/unified_acceptance_v1 \
+  --validate-only
+
+uv run --frozen dynamic-robot-dataset review-suite \
+  --output outputs/review/unified_acceptance_v1 \
+  --validate-only --execute \
+  --dataset-output outputs/review/f1a_fixed_six \
+  --leaf-id F1a
+```
+
+The plan is exactly 20 leaves × 6 fixed seeds: 120 logical episodes, 240
+canonical videos, and two-view event strips. The scene sequence is clean R0,
+then real RoboCasa lab, kitchen, workbench, storage, and tabletop. Planning does
+not give blocked leaves execution quota.
+
+For a quick single-case preview, select the same immutable review case through
+the bounded wrapper:
+
+```bash
 uv run --frozen dynamic-robot-dataset generate \
   --backend source_mujoco \
-  --family falling_catch \
-  --subfamily catch_retain \
-  --num-bundles 1 \
-  --branches success_seeking,near_miss,contact_failure,no_op \
-  --output outputs/native_catch_retain
+  --review-suite-root outputs/review/unified_acceptance_v1 \
+  --review-case F1a-review-00 \
+  --output outputs/previews/f1a_r0
 ```
 
-Canonical datasets are then finalized, split, validated, measured, and
-optionally exported:
+Complete six-case leaves produce a hash-bound
+`reviews/human_review_ledger.pending.json`; the ledger contains no fabricated
+human decisions and cannot activate a leaf until reviewers fill and validate
+it.
 
-```bash
-uv run --frozen dynamic-robot-dataset finalize \
-  --dataset-root outputs/native_catch_retain
-uv run --frozen dynamic-robot-dataset build-splits \
-  --dataset-root outputs/native_catch_retain \
-  --config configs/splits/default.yaml
-uv run --frozen dynamic-robot-dataset qc \
-  --dataset-root outputs/native_catch_retain
-uv run --frozen dynamic-robot-dataset stats \
-  --dataset-root outputs/native_catch_retain
-uv run --frozen dynamic-robot-dataset export-wan \
-  --dataset-root outputs/native_catch_retain \
-  --output outputs/native_catch_retain_wan
-```
+Each leaf activates independently only after:
 
-Exact verification, calibration, gate, and diagnostic commands are in
-[`migration/reproduction_commands.md`](migration/reproduction_commands.md).
+1. all six fixed rollouts pass automated QC, saved-artifact objective replay,
+   and hash-bound human review;
+2. its 100-episode pilot has zero hard failures and passes a two-shard
+   interruption/resume rehearsal;
+3. the existing 10-unique-hour gate passes; and
+4. the subsequent 100-unique-hour gate passes before hundreds-of-hours scale.
 
-## Diagnostic fixture and retired suite
+Camera streams count once. Blocked leaves get zero quota, and quota is not
+reallocated. The old 10h/100h YAMLs still name the retired 160-case/native
+acceptance suite and therefore remain historical fail-closed inputs until the
+readiness verifier is migrated to the new hash-bound 120-case ledger.
 
-`configs/families/smoke_120.yaml` is the preserved diagnostic suite: 24
-falling/catch, 16 rolling, 30 projectile/rebound and sweeps, 16 cloth, 18 rope,
-12 soft-body, and four quarantined proxy branches. Its state renderer is
-schematic. All 120 logical episodes are explicitly excluded from training.
+## Physics and randomization status
 
-```bash
-uv run --frozen python tools/run_smoke_suite.py \
-  --config configs/families/smoke_120.yaml \
-  --output outputs/smoke_tests/reproduced_smoke_120
-```
+[`configs/randomization/default.yaml`](configs/randomization/default.yaml)
+defines independent RNG streams. R0 fixes physics and appearance; R1 varies
+admitted RoboCasa appearance; R2 adds validated object, camera, robot-start,
+latency, and controller variation only after R1 passes. Counterfactual siblings
+retain their fixed streams.
 
-`configs/families/native_acceptance_160.yaml` preserves the previous exact
-definition only so tests and provenance remain understandable. It is marked
-retired and cannot be dry-run or executed through the public CLI because its
-128 rigid cases used the synthetic attachment backend. Its old smoke and
-acceptance SLURM launchers were removed. A new acceptance definition must be
-built around the real source adapters and must cover both allowed end effectors;
-the release gates name it `real_gripper_acceptance_160_v2` and forbid custom
-flange attachments.
+[`configs/physics/rigid_600_1200_calibration_v1.yaml`](configs/physics/rigid_600_1200_calibration_v1.yaml)
+records exploratory wall-rebound and Robotiq 600/1200 Hz measurements. Both
+profiles remain explicitly unadmitted until the full timestep-halving matrix,
+hash-bound artifacts, fixed reviews, and human approval exist.
 
-## Calibration, gates, and hours
+## Collaborator harmonizer boundary
 
-`configs/physics/rigid_ranges_v1.yaml` is provisional and release-ineligible.
-`calibrate-physics` requires native free-fall, bounce, slide, roll/slip, and
-contact-stability evidence before admitting support. MuJoCo solver values are
-not labelled as measured physical restitution or friction. Calibration accepts
-only the versioned observation schema with hash-verified episode/QC sources,
-recomputable raw oracle trials, admitted support inside the candidate ranges,
-and a separately hash-bound reviewer approval; an asserted `passed` field is
-not evidence.
-
-The 10-hour and 100-hour YAML files under `configs/pilots/` are non-submitting
-plans (`submit: false`). Readiness is evaluated from QC-passed unique logical
-episode duration. Camera streams, Wan clips, and endpoint padding have separate
-denominators and never inflate a scaling target. The 10-hour quota is not
-reallocated if no deformable family is ready; the 100-hour gate additionally
-requires an external model-evaluation artifact. Both gates require a canonical
-`dynamic-robot-qc-report/v2` bound to the exact episode table and an explicit
-`--acceptance-report` for the passed `real_gripper_acceptance_160_v2` suite.
-Readiness checks every acceptance record's end-effector and rejects retired
-tray/bin/paddle names or matching backend provenance. QC/readiness also rehashes
-finalized metadata and episode media/tables, and prerequisite reports are accepted only at
-`DATASET/qc/readiness/GATE_ID.json`. Model-evaluation claims require real,
-hash-matching model and evaluation-manifest paths. No pilot has been launched.
+`/gpfs/radev/project/sous/zss8/dataset-generation/harmonized/` is a read-only
+migration/conversion reference. Its `harmonize.py`, `taxonomy.py`, and
+`converters/` scaffold or convert existing data into a canonical layout; they
+do not provide free-contact physics generation or acceptance evidence. Only
+the v3-ish converter adapter is currently wired, and conversion must use that
+framework's own virtual environment. Use a five-episode `convert --limit 5`
+smoke test before a full existing-dataset conversion, but use this repository's
+owned review/generation path for new simulated episodes.
 
 ## Repository map
 
-- `src/dynamic_robot_dataset/common/embodiments.py`: real-gripper allowlist,
-  retired-backend guard, and read-only source-adapter provenance.
-- `src/dynamic_robot_dataset/backends`: typed lifecycle plus quarantined custom-
-  attachment regression implementation; not public production generation.
-- `src/dynamic_robot_dataset/common`: v2 schema, atomic writer, calibration,
-  objectives, statistics, QC, split, provenance, and Wan export.
-- `src/dynamic_robot_dataset/families`: planning adapters, diagnostic fixtures,
-  and task-specific objective/tiering logic.
-- `configs`: v2 schema, cameras, randomization, physics, suites, pilots, and
-  release gates.
-- `docs`: production architecture and release policy.
-- `migration`: source inventory, allowlisted copy provenance, source hashes,
-  known issues, implementation status, and exact commands.
-- `legacy_sources`: immutable byte-identical allowlisted source snapshots.
-- `tests`: schema, family, backend, writer, QC, split, and round-trip contracts.
+- `src/dynamic_robot_dataset/common`: contracts, registries, randomization,
+  writer, orchestration, review, physics QC, splits, and provenance.
+- `src/dynamic_robot_dataset/backends`: owned backend controllers plus the
+  permanently blocked regression backend.
+- `configs`: corpus/backend registries, media, assets, physics, randomization,
+  review, pilots, and release gates.
+- `docs`: canonical operations plus historical design rationale.
+- `migration` and `legacy_sources`: source inventory and immutable quarantine
+  provenance; never a production execution path.
+- `tests`: unit, failure-injection, concurrency, and rendered integration
+  contracts.
 
-## Important limitations
-
-The missing historical projectile module
-`scripts_mujoco_projectile_catch_robocasa_train2500_yaml_scenes` has not been
-reconstructed speculatively. The available kitchen projectile package matches
-the observed production interface and metadata, not proven historical bytes or
-rollout behavior. Two mzl7 catch directories also remain inaccessible.
-
-Source accessibility is not synonymous with accepted data. Until real-gripper
-v2 normalization, objective replay, calibration, a corrected acceptance suite,
-and release gates pass, no new output should be described as a production Wan
-training corpus. Native cloth/rope/soft-object simulation remains an explicit
-blocker. Fluids, complex knotting/bags, chaotic multi-object scenes, uncontrolled
-multi-bounce motion, and production-scale jobs remain outside this revision.
+The older [production revision](docs/production_revision.md) and migration
+reports are retained for historical rationale. Where their retired
+`native_mujoco`/160-case terminology conflicts with the registries and operator
+guide above, the registries and operator guide are authoritative.

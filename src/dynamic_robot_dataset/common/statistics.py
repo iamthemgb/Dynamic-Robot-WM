@@ -16,6 +16,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from .episode_writer import load_episode_records
 from .hashing import sha256_file
+from .legacy_quarantine import LEGACY_ASSISTED_NAMESPACE
 from .paths import resolve_dataset_path
 from .schema import EpisodeRecord
 from .video_writer import probe_video
@@ -52,14 +53,22 @@ class DatasetStatistics:
     """Auditable counts and duration totals for one canonical dataset."""
 
     dataset_root: str
+    # Headline generated/training-source inventory excludes quarantined legacy,
+    # assisted-contact, and scripted-motion episodes.
     logical_episode_count: int
     encoded_source_view_count: int
+    inventory_logical_episode_count: int
+    inventory_encoded_source_view_count: int
+    quarantine_logical_episode_count: int
+    quarantine_encoded_source_view_count: int
     release_eligible_episode_count: int
     qc_passed_release_episode_count: int
     unique_scene_count: int
     action_bundle_count: int
     physics_family_count: int
     durations: DurationAccounting
+    inventory_durations: DurationAccounting
+    quarantine_durations: DurationAccounting
     release_durations: DurationAccounting
     counts_by_family: dict[str, int] = field(default_factory=dict)
     counts_by_tier: dict[str, int] = field(default_factory=dict)
@@ -76,7 +85,21 @@ class DatasetStatistics:
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["durations"] = self.durations.to_dict()
+        result["inventory_durations"] = self.inventory_durations.to_dict()
+        result["quarantine_durations"] = self.quarantine_durations.to_dict()
         result["release_durations"] = self.release_durations.to_dict()
+        result["accounting_semantics"] = {
+            "durations": (
+                "headline generated/training source; excludes legacy_assisted, "
+                "assisted_contact, and scripted_motion quarantine"
+            ),
+            "inventory_durations": "all canonical episode records",
+            "quarantine_durations": (
+                "legacy_assisted namespace or assisted/scripted dynamics/release tiers"
+            ),
+            "unique_duration_rule": "each logical rollout counts once regardless of camera views",
+            "encoded_stream_duration_rule": "each encoded camera stream counts separately",
+        }
         return result
 
 
@@ -181,7 +204,11 @@ def _qc_pass_map(
     }, []
 
 
-def _wan_accounting(wan_root: Path | None) -> tuple[float, float, float, list[str]]:
+def _wan_accounting(
+    wan_root: Path | None,
+    *,
+    include_episode_uuids: set[str] | None = None,
+) -> tuple[float, float, float, list[str]]:
     if wan_root is None:
         return 0.0, 0.0, 0.0, []
     manifest_path = wan_root / "manifest.jsonl"
@@ -194,6 +221,11 @@ def _wan_accounting(wan_root: Path | None) -> tuple[float, float, float, list[st
         if not line.strip():
             continue
         row = json.loads(line)
+        if (
+            include_episode_uuids is not None
+            and str(row.get("episode_uuid") or "") not in include_episode_uuids
+        ):
+            continue
         duration = float(row.get("frame_count", 0)) / float(row.get("fps", 1))
         unique += duration
         videos = row.get("videos") or {"primary": row.get("video")}
@@ -204,6 +236,77 @@ def _wan_accounting(wan_root: Path | None) -> tuple[float, float, float, list[st
                 + int(sample.get("endpoint_padding_end_frames", 0))
             ) / float(row.get("fps", 24))
     return unique, streams, padding, []
+
+
+def _namespace_values(record: EpisodeRecord) -> set[str]:
+    """Return explicitly declared dataset/corpus quarantine namespaces."""
+
+    extras = record.extras if isinstance(record.extras, Mapping) else {}
+    values = {
+        str(value).strip().lower()
+        for value in (
+            record.family,
+            extras.get("namespace"),
+            extras.get("dataset_namespace"),
+            extras.get("corpus_namespace"),
+            extras.get("quarantine_namespace"),
+        )
+        if value is not None and str(value).strip()
+    }
+    legacy = extras.get("legacy_quarantine")
+    if isinstance(legacy, Mapping) and legacy.get("namespace") is not None:
+        values.add(str(legacy["namespace"]).strip().lower())
+    return values
+
+
+def _excluded_from_generated_hours(record: EpisodeRecord) -> bool:
+    """Apply the fail-closed legacy/assisted/scripted hour policy."""
+
+    legacy_prefix = LEGACY_ASSISTED_NAMESPACE.lower()
+    in_legacy_namespace = any(
+        value == legacy_prefix
+        or value.startswith(legacy_prefix + "/")
+        or value.startswith(legacy_prefix + ":")
+        for value in _namespace_values(record)
+    )
+    release_tier = record.release_tier.value
+    dynamics_mode = record.dynamics_mode.value
+    return in_legacy_namespace or release_tier in {
+        "assisted_contact",
+        "scripted_motion",
+    } or dynamics_mode in {
+        "assisted_contact",
+        "scripted_motion",
+    }
+
+
+def _dataset_is_legacy_assisted(root: Path) -> bool:
+    """Recognize an explicitly namespaced all-quarantine dataset root."""
+
+    info_path = root / "meta" / "info.json"
+    if not info_path.is_file():
+        return False
+    try:
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    extras = info.get("extras") if isinstance(info, Mapping) else None
+    extras = extras if isinstance(extras, Mapping) else {}
+    candidates = (
+        info.get("namespace") if isinstance(info, Mapping) else None,
+        extras.get("namespace"),
+        extras.get("dataset_namespace"),
+        extras.get("corpus_namespace"),
+        extras.get("quarantine_namespace"),
+    )
+    prefix = LEGACY_ASSISTED_NAMESPACE.lower()
+    return any(
+        str(value).strip().lower() == prefix
+        or str(value).strip().lower().startswith(prefix + "/")
+        or str(value).strip().lower().startswith(prefix + ":")
+        for value in candidates
+        if value is not None
+    )
 
 
 def collect_dataset_statistics(
@@ -218,25 +321,75 @@ def collect_dataset_statistics(
     records = load_episode_records(root)
     qc_pass, qc_warnings = _qc_pass_map(root, records)
     warnings: list[str] = list(qc_warnings)
-    source_unique = sum(float(record.duration_s or 0.0) for record in records)
-    source_stream = 0.0
-    encoded_views = 0
+    root_is_legacy_assisted = _dataset_is_legacy_assisted(root)
+    quarantine = [
+        record
+        for record in records
+        if root_is_legacy_assisted or _excluded_from_generated_hours(record)
+    ]
+    quarantined_episode_uuids = {record.episode_uuid for record in quarantine}
+    generated = [
+        record
+        for record in records
+        if record.episode_uuid not in quarantined_episode_uuids
+    ]
+    if quarantine:
+        warnings.append(
+            f"excluded {len(quarantine)} legacy/assisted/scripted episodes and "
+            f"{sum(len(record.video_paths) for record in quarantine)} encoded views "
+            "from headline generated/training source hours; see quarantine_durations "
+            "and inventory_durations"
+        )
+    generated_ids = {record.episode_uuid for record in generated}
+    quarantine_ids = {record.episode_uuid for record in quarantine}
+    inventory_source_unique = sum(float(record.duration_s or 0.0) for record in records)
+    generated_source_unique = sum(float(record.duration_s or 0.0) for record in generated)
+    quarantine_source_unique = sum(float(record.duration_s or 0.0) for record in quarantine)
+    inventory_source_stream = 0.0
+    generated_source_stream = 0.0
+    quarantine_source_stream = 0.0
+    inventory_encoded_views = 0
+    generated_encoded_views = 0
+    quarantine_encoded_views = 0
     for record in records:
-        encoded_views += len(record.video_paths)
+        is_quarantine = record.episode_uuid in quarantine_ids
+        inventory_encoded_views += len(record.video_paths)
+        if is_quarantine:
+            quarantine_encoded_views += len(record.video_paths)
+        else:
+            generated_encoded_views += len(record.video_paths)
+        record_stream_duration = 0.0
         if not probe_streams:
-            source_stream += float(record.duration_s or 0.0) * len(record.video_paths)
-            continue
-        for relative in record.video_paths.values():
-            try:
-                source_stream += probe_video(root / relative).duration_s
-            except Exception as error:
-                warnings.append(f"could not probe {relative}: {error}")
-    derived_unique, derived_stream, padding, wan_warnings = _wan_accounting(
+            record_stream_duration = float(record.duration_s or 0.0) * len(
+                record.video_paths
+            )
+        else:
+            for relative in record.video_paths.values():
+                try:
+                    record_stream_duration += probe_video(root / relative).duration_s
+                except Exception as error:
+                    warnings.append(f"could not probe {relative}: {error}")
+        inventory_source_stream += record_stream_duration
+        if is_quarantine:
+            quarantine_source_stream += record_stream_duration
+        else:
+            generated_source_stream += record_stream_duration
+    inventory_derived_unique, inventory_derived_stream, inventory_padding, wan_warnings = _wan_accounting(
         None if wan_root is None else Path(wan_root).resolve(strict=True)
     )
     warnings.extend(wan_warnings)
+    generated_derived_unique, generated_derived_stream, generated_padding, _ = _wan_accounting(
+        None if wan_root is None else Path(wan_root).resolve(strict=True),
+        include_episode_uuids=generated_ids,
+    )
+    quarantine_derived_unique, quarantine_derived_stream, quarantine_padding, _ = _wan_accounting(
+        None if wan_root is None else Path(wan_root).resolve(strict=True),
+        include_episode_uuids=quarantine_ids,
+    )
 
-    release = [record for record in records if record.release_eligible]
+    # Namespace/tier quarantine is authoritative even if malformed imported
+    # metadata were to claim release eligibility.
+    release = [record for record in generated if record.release_eligible]
     qc_release = [record for record in release if qc_pass.get(record.episode_uuid, False)]
     if not qc_pass and release:
         warnings.append(
@@ -302,14 +455,38 @@ def collect_dataset_statistics(
 
     return DatasetStatistics(
         dataset_root=str(root),
-        logical_episode_count=len(records),
-        encoded_source_view_count=encoded_views,
+        logical_episode_count=len(generated),
+        encoded_source_view_count=generated_encoded_views,
+        inventory_logical_episode_count=len(records),
+        inventory_encoded_source_view_count=inventory_encoded_views,
+        quarantine_logical_episode_count=len(quarantine),
+        quarantine_encoded_source_view_count=quarantine_encoded_views,
         release_eligible_episode_count=len(release),
         qc_passed_release_episode_count=len(qc_release),
         unique_scene_count=len({(record.family, record.subfamily, record.scene_seed) for record in records}),
         action_bundle_count=len({record.counterfactual_bundle_id for record in records}),
         physics_family_count=len({record.physics_counterfactual_family_id for record in records if record.physics_counterfactual_family_id}),
-        durations=DurationAccounting(source_unique, source_stream, derived_unique, derived_stream, padding),
+        durations=DurationAccounting(
+            generated_source_unique,
+            generated_source_stream,
+            generated_derived_unique,
+            generated_derived_stream,
+            generated_padding,
+        ),
+        inventory_durations=DurationAccounting(
+            inventory_source_unique,
+            inventory_source_stream,
+            inventory_derived_unique,
+            inventory_derived_stream,
+            inventory_padding,
+        ),
+        quarantine_durations=DurationAccounting(
+            quarantine_source_unique,
+            quarantine_source_stream,
+            quarantine_derived_unique,
+            quarantine_derived_stream,
+            quarantine_padding,
+        ),
         release_durations=DurationAccounting(release_unique, release_stream),
         counts_by_family=count("family"),
         counts_by_tier=count("release_tier"),
