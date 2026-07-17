@@ -8,9 +8,9 @@ The read-only source-copy phase is complete. It selected and copied the
 accessible canonical non-fluid generators, retained meaningful version
 differences, and recorded missing, duplicate, scripted, preview, and development
 lineages without modifying any source tree. A subsequent production-oriented
-revision adds a native rigid backend and stricter v2 release contracts. This is
-still not a declaration that the mixed 160-case acceptance suite or a
-production corpus has passed.
+revision added a native rigid test backend and stricter v2 release contracts.
+The embodiment correction below supersedes that backend for production. No
+real-gripper acceptance suite or production corpus has passed.
 
 - **148** allowlisted files (**1,418,073 bytes**) were copied byte-for-byte:
   59 from mzl7, 29 from zl664, and 60 from zss8.
@@ -25,6 +25,34 @@ production corpus has passed.
 - Generated videos, trajectories, datasets, logs, caches, environments,
   backups, pilots, debug/smoke outputs, third-party trees, and fluids were not
   copied.
+
+## Embodiment correction
+
+The initial maintained `native_mujoco` rigid path was subsequently found to
+mount a synthetic tray, bin, or paddle on the Franka flange. It did not use the
+Panda hand or Robotiq clamp found in the selected source generators. Its local
+acceptance/smoke outputs and logs were removed, its two SLURM launchers were
+deleted, and public CLI execution now rejects that backend before writing any
+output. The code remains only as a quarantined low-level regression fixture.
+
+The corrected production allowlist is exactly `franka_hand` and
+`robotiq_2f85_thick_pad`. Read-only source adapters now identify and hash:
+
+- zss8 Panda-hand centered-drop catch;
+- zss8 Panda-hand table-bounce catch;
+- zl664 Panda+Robotiq centered-drop and direct-projectile catch; and
+- the zl664 Franka cloth preview, which remains non-release because lift/fold
+  use equality-connect proxy grasps.
+
+All required source files for those four adapters are currently readable.
+The catch sources still hold/rewrite ball state after capture, the Panda bounce
+source also rewrites the bounce response, and cloth lift/fold use equality-
+connect grasps. All are therefore marked non-release. `source_mujoco` generation remains
+blocked until LeRobot-to-v2 normalization and independent objective replay are
+implemented. Release gates now require the not-yet-produced
+`real_gripper_acceptance_160_v2` suite and reject custom attachment names and
+provenance. This section supersedes the historical custom-tool acceptance
+claims retained below for auditability.
 
 ## Production generator revision
 
@@ -76,24 +104,22 @@ Two immutable suites now have different meanings:
 | Suite | Definition | Status and admissible claim |
 |---|---|---|
 | Diagnostic smoke | `configs/families/smoke_120.yaml`, exactly 120 logical branches | Existing accepted regression artifact; schema/video/QC/Wan pipeline evidence only, never training data |
-| Native acceptance | `configs/families/native_acceptance_160.yaml`, exactly 160 branches | Deterministic definition; executor routes 128 rigid cases to `native_mujoco` and 32 deformable/negative controls to `diagnostic_quarantine`; no full artifact was generated or passed in this revision |
+| Retired custom-tool acceptance | `configs/families/native_acceptance_160.yaml`, exactly 160 branches | Retained as a regression/provenance definition with `execution_allowed: false`; never training or gate evidence |
+| Corrected real-gripper acceptance | `real_gripper_acceptance_160_v2` | Required by release gates but intentionally undefined until the source adapters and v2 normalizer pass |
 
-The native acceptance definition contains 40 falling/catch/retention, 48
+The retired acceptance definition contains 40 falling/catch/retention, 48
 rolling/sliding/transition, 40 projectile/rebound/deflection, 12 cloth tiering,
 16 rope repair/tiering, and four assisted/scripted negative controls. It uses
-three visual styles and two synchronized cameras. The 128 rigid cases execute
-through `native_mujoco`; the other 32 are deliberately quarantined diagnostics,
-and their presence makes full-native coverage/readiness fail until native
-deformable backends exist. A generated outcome is never retried or relabelled
-simply because it differs from branch intent. Each rigid outcome class present
-in the immutable branch plan must also be present in the measured labels, or
-the suite version fails.
+three visual styles and two synchronized cameras. It no longer executes through
+the public CLI because the 128 rigid cases used the wrong custom attachment.
+Its structure may inform the corrected suite, but neither names nor labels can
+convert its outputs into real-gripper data.
 
 Native cloth, rope, foam, beanbag, and pouch production models have not been
 accepted. Cloth/rope objective code and the rope constraint repair do not prove
 native deformable topology, self-contact, tunnelling, strain, settling, or
-visibility quality. Consequently the mixed 160-case definition cannot be
-described as a passed native suite based on rigid-backend tests alone.
+visibility quality. The retired 160-case definition cannot be described as a
+passed suite.
 The installed MuJoCo 3.10 build compiles the retained cable rope models but
 lacks the `mujoco.elasticity.shell` plug-in required by the legacy shell-cloth
 model. A downgraded edge-only grid is explicitly not accepted as equivalent
@@ -106,37 +132,22 @@ this revision. All targets mean QC-passed unique logical episode-hours. The
 also requires an accepted 10-hour readiness report and an external
 model-evaluation artifact. Both gates require an exact
 `dynamic-robot-qc-report/v2` and the canonical report for a passed, fully native
-160-branch acceptance suite. The current mixed suite cannot satisfy that
+160-branch real-gripper acceptance suite. The retired suite cannot satisfy that
 condition. See
 `docs/production_revision.md` for the complete release boundary.
 
 ### Code-level verification
 
 The frozen current test command in `reproduction_commands.md` is the
-authoritative verification command for the checked-out revision; its result
-must be recorded when that revision is accepted rather than copied from the
-historical diagnostic run. The current suite includes v1/v2 schema and failure
-contracts, exact
-160-case/128-native/32-quarantine planning, symmetric counterfactual invariants,
-immutable pre-simulation membership and no-retry resume behavior, 80/10/10
-connected splits, calibration/readiness/statistics contracts, and the existing
-MP4/Parquet/Wan round trip. The final pre-launch local verification for this
-implementation reported **146 passing tests**.
+authoritative verification command. The suite now includes the real-gripper
+allowlist, read-only source hashing, public retirement guard, release-gate
+end-effector enforcement, and the existing v1/v2 schema, counterfactual,
+split, QC, MP4/Parquet, and Wan round-trip contracts.
 
-A native MuJoCo integration test also executes a centered Franka drop without
-rendering at reduced dimensions. It verifies exactly one initial object-state
-write, zero object or robot state rewrites after initialization, actuator
-updates, no equality/latch assistance, physics QC, event-adaptive termination,
-v2 frame semantics, and label equivalence with the persisted-state/event/transition
-evaluator. A separate local no-render audit executed all 128 rigid acceptance
-branches. Every required measured rigid outcome class was present; 124 passed
-native physics QC. Cases 54, 58, 73, and 82 remain truthfully quarantined after
-measured Franka acceleration of 146.63, 162.88, 96.95, and 118.05 rad/s^2
-respectively exceeded the 80 rad/s^2 gate; cases 58 and 82 also exceeded the
-3.5 rad/s joint-velocity gate. This is useful native lifecycle and
-scenario-balance evidence, but it is **not** a passed 832x480 rendered
-acceptance artifact, a fully native 160-case suite, or physics-range
-calibration. The 32 deformable/negative-control cases remain quarantined.
+Earlier no-render measurements over the 128 rigid cases characterize only the
+retired custom attachment implementation. They must not be cited as Panda-hand
+or Robotiq acceptance evidence, regardless of their physics or kinematic QC
+results.
 
 ## Canonical decisions
 
@@ -202,19 +213,16 @@ cloth/rope/soft-body geometry remain non-production fixtures; rendering one of
 those trajectories with an external plug-in does not make it native. All such
 records carry exclusion flags and stay out of the default training manifest.
 
-The new `native_mujoco` path is separate. It compiles a typed native rigid
-scenario around the MuJoCo Menagerie Franka, advances the robot through actuator
-commands, lets MuJoCo advance object state and contacts, and returns synchronized
-state/action/contact/camera/video sidecars to the same atomic writer. Object
-pose or velocity is initialized at episode start and is not an allowed
-post-release control mechanism. Production eligibility remains conditional on
-the backend provenance, objective recomputation, calibrated parameter support,
-physics/visual QC, complete counterfactual declarations, and hard dataset QC.
+The old `native_mujoco` implementation is a quarantined custom-attachment
+regression path. Public generation rejects it. The corrected `source_mujoco`
+boundary targets the selected real Panda-hand and Panda+Robotiq source
+generators, but canonical execution is blocked until the v2 normalizer and
+objective replay exist. Object pose/velocity initialization-only rules,
+calibrated parameter support, physics/visual QC, complete counterfactual
+declarations, and hard dataset QC still apply after that integration.
 
-This native implementation is Franka-first and rigid-first. It is not claimed
-as feature parity with every copied Franka/Robotiq controller or every legacy
-camera/task variant. Cloth and rope currently have maintained native-objective
-and tiering contracts, not an accepted general native deformable backend.
+Cloth and rope currently have maintained native-objective and tiering
+contracts, not an accepted general free-contact deformable backend.
 Soft-body generation remains gated, and dual-Franka box folding, shake-wave,
 complex bags, knots, fluids, and chaotic scenes remain suspended or deferred.
 
@@ -324,13 +332,15 @@ whole-workspace before/after hash equality.
 The migration ledgers and preserved diagnostic smoke/Wan round trip are
 accepted as pipeline evidence. The v2 schema, atomic/resumable writer,
 counterfactual declarations, connected splits, statistics, calibration and
-readiness evaluators, and Franka-first native rigid path are implemented code.
+readiness evaluators are implemented code. Real-gripper source inspection is
+implemented; real-gripper canonical generation is not.
 They have not converted the historical diagnostic artifact into training data,
 and they do not establish production-corpus acceptance.
 
 The repository must not be used to advertise a production Wan training corpus
-until native physics calibration, the complete 160-case suite, objective and
-visual QC, counterfactual/leakage checks, and the relevant stage gate all pass.
+until real-gripper v2 integration, native physics calibration, the corrected
+160-case suite, objective and visual QC, counterfactual/leakage checks, and the
+relevant stage gate all pass.
 Native deformable/soft-object acceptance is still missing. The preserved
 diagnostic default manifest correctly contains zero episodes, and no pilot or
 training job was launched by this revision.

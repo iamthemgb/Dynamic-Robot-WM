@@ -10,6 +10,12 @@ from typing import Any, Mapping
 
 import yaml
 
+from .embodiments import (
+    CORRECTED_SOURCE_BACKEND,
+    PRODUCTION_END_EFFECTORS,
+    reject_retired_custom_tool_backend,
+    validate_production_end_effector,
+)
 from .hashing import stable_uint64
 
 
@@ -195,6 +201,20 @@ def load_pilot_plan(path: str | Path) -> dict[str, Any]:
         raise ValueError("Unsupported pilot schema_version")
     if config.get("submit") is not False:
         raise ValueError("Pilot contracts in this repository must default to submit=false")
+    backend = str(config.get("backend") or "")
+    reject_retired_custom_tool_backend(backend)
+    if backend != CORRECTED_SOURCE_BACKEND:
+        raise ValueError(f"pilot backend must be {CORRECTED_SOURCE_BACKEND!r}")
+    allowed = {
+        validate_production_end_effector(str(value))
+        for value in config.get("allowed_end_effectors", ())
+    }
+    if allowed != PRODUCTION_END_EFFECTORS:
+        raise ValueError(
+            "pilot must declare both real production end effectors and no aliases"
+        )
+    if config.get("forbid_custom_flange_attachments") is not True:
+        raise ValueError("pilot must forbid custom flange attachments")
     allocations = list(config.get("allocations", ()))
     if not allocations:
         raise ValueError("Pilot plan has no allocations")

@@ -1,6 +1,8 @@
 schema_version: dynamic-robot-pilot/v1
 pilot_id: repaired_pilot_10_unique_hours
-backend: native_mujoco
+backend: source_mujoco
+allowed_end_effectors: [franka_hand, robotiq_2f85_thick_pad]
+forbid_custom_flange_attachments: true
 submit: false
 target_unique_release_hours: 10.0
 maximum_planned_raw_hours: 12.0

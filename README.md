@@ -6,20 +6,46 @@ state, and actions; derives outcomes from saved evidence instead of branch
 intent; and keeps synchronized camera views as observations of one physical
 rollout rather than counting them as separate experiences.
 
-The production revision adds a typed native-MuJoCo lifecycle, the
+The production revision adds a typed MuJoCo lifecycle, the
 `dynamic-robot-dataset/v2` contract, deterministic connected-group 80/10/10
 splits, calibrated release gates, exact duration accounting, and staged 10-hour
 and 100-hour pilot plans. It does **not** launch either pilot or declare the
 160-case acceptance suite passed.
 
+## Embodiment correction (2026-07-13)
+
+The first maintained rigid backend mounted a synthetic tray, bin, or paddle on
+the Franka flange. That was the wrong embodiment for this project. All outputs
+made through that path were removed from this workspace, its two SLURM launchers
+were deleted, and public execution through `native_mujoco` now fails before an
+output directory is created. The implementation remains only as quarantined
+regression code; it is not a generator or an acceptance candidate.
+
+Production data may use only:
+
+- `franka_hand`: the real MuJoCo Panda hand and two fingers; or
+- `robotiq_2f85_thick_pad`: the real Menagerie Robotiq 2F-85 mounted on the
+  no-hand Panda, with its explicitly declared fingertip-pad variant.
+
+`inspect-embodiments` verifies the existing generators and hashes their required
+source files without writing to those source trees. All three rigid source
+candidates (Panda catch, Panda bounce-catch, and Panda+Robotiq catch) are
+currently accessible, but none is a release candidate yet: successful catches
+hold/rewrite ball state after capture, and the Panda bounce source also rewrites
+the bounce response. The cloth preview is accessible as well; lift/fold use an
+equality-connect proxy grasp. These are embodiment references and refactoring
+inputs, not corrected training episodes.
+
 ## Current boundary
 
 | Component | Status |
 |---|---|
-| Native Franka rigid backend | Implemented for falling/catch/retention, rolling/sliding/transitions, and projectile/rebound/deflection; still subject to calibration and acceptance gates |
+| Real-gripper source adapters | Read-only contracts and source/hash inspection implemented for Panda-hand catch, Panda-hand bounce, and Panda+Robotiq catch; all are assisted/scripted sources requiring free-contact repair before canonical v2 execution |
+| Retired custom-tool backend | Synthetic tray/bin/paddle backend is blocked from public generation and retained only for low-level regression tests |
 | v2 schema, outcomes, counterfactual declarations, QC, statistics, splits, and Wan export | Implemented with v1 read compatibility |
 | Diagnostic 120-branch suite | Preserved as an accepted pipeline regression fixture; never training data |
-| Native acceptance 160-branch suite | Immutable definition implemented; execution routes 128 rigid cases through `native_mujoco` and 32 deformable/negative controls through `diagnostic_quarantine`, so it cannot pass full native coverage yet |
+| Previous 160-branch suite | Marked `retired_custom_attachment_definition`; execution is disabled and it cannot satisfy any release gate |
+| Corrected real-gripper acceptance suite | Not yet defined or executable; release gates require `real_gripper_acceptance_160_v2` so an old artifact cannot be reused |
 | Cloth and rope | Objective/tiering contracts and rope target repair implemented; native deformable production validation remains open |
 | Foam ball, beanbag, pouch | Gated behind rigid-contact acceptance; beanbag/pouch also need validated shell and self-contact models |
 | Production-scale generation and Wan training | Out of scope; no jobs are submitted or modified |
@@ -70,11 +96,11 @@ uv sync --frozen --extra mujoco --extra deformable --extra video --extra test
 uv run --frozen dynamic-robot-dataset --help
 ```
 
-Set `MUJOCO_MENAGERIE_ROOT` (or `FRANKA_MJCF_PATH`) for the native Franka
-backend. Optional RoboCasa/RobotWin roots are referenced through environment
-variables and are never vendored. An asset does not become production-admitted
-merely because it loads: scale, collision, rendering, content hash, and license
-notice checks must pass.
+The real embodiment sources are selected with `FRANKA_HAND_SOURCE_ROOT`,
+`ROBOTIQ_SOURCE_ROOT`, and `FRANKA_DEFORMABLE_SOURCE_ROOT` when overrides are
+needed. Their defaults point at the existing collaborator-owned generators.
+Those roots are read-only inputs and are never vendored or used as output
+locations.
 
 ## Safe workflow
 
@@ -83,6 +109,9 @@ Inventory and dry-run operations are read-only:
 ```bash
 uv run --frozen dynamic-robot-dataset inventory \
   --output migration/source_inventory.refresh.json
+
+uv run --frozen dynamic-robot-dataset inspect-embodiments \
+  --require-rigid-sources
 
 uv run --frozen dynamic-robot-dataset generate \
   --family falling_catch \
@@ -95,18 +124,17 @@ uv run --frozen dynamic-robot-dataset generate \
   --scene-style clean_franka_lab \
   --dry-run
 
-uv run --frozen dynamic-robot-dataset generate-suite \
-  --config configs/families/native_acceptance_160.yaml \
-  --dry-run
 ```
 
-Native execution must be selected explicitly. It owns both simulation and
-rendering; the legacy renderer hook is not a production-physics substitute:
+Corrected canonical execution will use `source_mujoco`, but it is fail-closed
+until the existing LeRobot outputs are normalized into v2 and their objectives
+are independently recomputed. The following currently returns an explanatory
+error and creates no data:
 
 ```bash
 export MUJOCO_GL=egl
 uv run --frozen dynamic-robot-dataset generate \
-  --backend native_mujoco \
+  --backend source_mujoco \
   --family falling_catch \
   --subfamily catch_retain \
   --num-bundles 1 \
@@ -135,7 +163,7 @@ uv run --frozen dynamic-robot-dataset export-wan \
 Exact verification, calibration, gate, and diagnostic commands are in
 [`migration/reproduction_commands.md`](migration/reproduction_commands.md).
 
-## Two suites, two meanings
+## Diagnostic fixture and retired suite
 
 `configs/families/smoke_120.yaml` is the preserved diagnostic suite: 24
 falling/catch, 16 rolling, 30 projectile/rebound and sweeps, 16 cloth, 18 rope,
@@ -148,29 +176,14 @@ uv run --frozen python tools/run_smoke_suite.py \
   --output outputs/smoke_tests/reproduced_smoke_120
 ```
 
-`configs/families/native_acceptance_160.yaml` is separate: 40 falling/catch,
-48 rolling/sliding, 40 projectile/rebound, 12 cloth tiering, 16 rope repair,
-and four negative controls. It covers three styles and both cameras. Its full
-executor sends the 128 rigid cases to `native_mujoco` and the remaining 32
-cloth/rope/negative-control cases to an explicit `diagnostic_quarantine` path.
-That preserves exact coverage without pretending deformable proxies are native,
-and the suite report records `full_native: false`; stage readiness must remain
-failed until real native deformable backends exist. A dry run proves only
-deterministic suite expansion; no 160-case artifact was generated by this
-revision. The execution gate requires every planned rigid outcome class—not
-only a generic success/failure pair—to appear in independently measured labels.
-The checked-out implementation also completed a local no-render audit of all
-128 rigid branches. All required measured outcome classes were present, while
-124 branches passed native physics QC and four were correctly quarantined for
-exceeding the declared Franka joint-velocity and/or joint-acceleration gates
-(acceptance cases 54, 58, 73, and 82). These measured failures are not waived
-or relabeled. This does not substitute for the missing rendered/finalized
-160-case artifact or native deformable coverage.
-
-`slurm/native_rigid_smoke.sbatch` and
-`slurm/native_acceptance_160.sbatch` are explicit wrappers only. Creating them
-does not submit a job; each requires a caller-provided new output directory and
-an explicit `sbatch` invocation.
+`configs/families/native_acceptance_160.yaml` preserves the previous exact
+definition only so tests and provenance remain understandable. It is marked
+retired and cannot be dry-run or executed through the public CLI because its
+128 rigid cases used the synthetic attachment backend. Its old smoke and
+acceptance SLURM launchers were removed. A new acceptance definition must be
+built around the real source adapters and must cover both allowed end effectors;
+the release gates name it `real_gripper_acceptance_160_v2` and forbid custom
+flange attachments.
 
 ## Calibration, gates, and hours
 
@@ -190,17 +203,19 @@ denominators and never inflate a scaling target. The 10-hour quota is not
 reallocated if no deformable family is ready; the 100-hour gate additionally
 requires an external model-evaluation artifact. Both gates require a canonical
 `dynamic-robot-qc-report/v2` bound to the exact episode table and an explicit
-`--acceptance-report` for a passed, 160-branch, fully native suite. The current
-128-native/32-quarantine definition deliberately fails that full-native gate;
-it cannot unlock either pilot. QC/readiness also rehash finalized metadata and
-episode media/tables, and prerequisite reports are accepted only at
+`--acceptance-report` for the passed `real_gripper_acceptance_160_v2` suite.
+Readiness checks every acceptance record's end-effector and rejects retired
+tray/bin/paddle names or matching backend provenance. QC/readiness also rehashes
+finalized metadata and episode media/tables, and prerequisite reports are accepted only at
 `DATASET/qc/readiness/GATE_ID.json`. Model-evaluation claims require real,
 hash-matching model and evaluation-manifest paths. No pilot has been launched.
 
 ## Repository map
 
-- `src/dynamic_robot_dataset/backends`: typed lifecycle and integrated native
-  MuJoCo backend.
+- `src/dynamic_robot_dataset/common/embodiments.py`: real-gripper allowlist,
+  retired-backend guard, and read-only source-adapter provenance.
+- `src/dynamic_robot_dataset/backends`: typed lifecycle plus quarantined custom-
+  attachment regression implementation; not public production generation.
 - `src/dynamic_robot_dataset/common`: v2 schema, atomic writer, calibration,
   objectives, statistics, QC, split, provenance, and Wan export.
 - `src/dynamic_robot_dataset/families`: planning adapters, diagnostic fixtures,
@@ -221,9 +236,9 @@ reconstructed speculatively. The available kitchen projectile package matches
 the observed production interface and metadata, not proven historical bytes or
 rollout behavior. Two mzl7 catch directories also remain inaccessible.
 
-Native rigid code is not synonymous with calibrated data. Until calibration,
-the native suite, and release gates pass, no output should be described as a
-production Wan training corpus. Native cloth/rope/soft-object simulation remains
-an explicit blocker. Fluids, complex knotting/bags, chaotic multi-object scenes,
-uncontrolled multi-bounce motion, and production-scale jobs remain outside this
-revision.
+Source accessibility is not synonymous with accepted data. Until real-gripper
+v2 normalization, objective replay, calibration, a corrected acceptance suite,
+and release gates pass, no new output should be described as a production Wan
+training corpus. Native cloth/rope/soft-object simulation remains an explicit
+blocker. Fluids, complex knotting/bags, chaotic multi-object scenes, uncontrolled
+multi-bounce motion, and production-scale jobs remain outside this revision.

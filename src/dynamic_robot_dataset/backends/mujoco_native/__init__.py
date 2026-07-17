@@ -1,4 +1,9 @@
-"""Native MuJoCo rigid-object backend."""
+"""Retired custom-attachment MuJoCo regression backend.
+
+This package is retained for low-level lifecycle/QC regression tests.  It
+mounts synthetic task geometry on the Franka flange and is not a Panda-hand or
+Robotiq production generator.  Public execution is blocked in the CLI.
+"""
 
 from .backend import NativeMuJoCoBackend
 from .evaluators import (

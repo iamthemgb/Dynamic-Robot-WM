@@ -16,6 +16,10 @@ from .contract_v2 import (
     validate_counterfactual_family_records,
 )
 from .episode_writer import load_episode_records, read_parquet_rows
+from .embodiments import (
+    FORBIDDEN_CUSTOM_ATTACHMENTS,
+    validate_production_end_effector,
+)
 from .hashing import sha256_file, sha256_json
 from .native_suite import plan_suite_cases
 from .paths import resolve_dataset_path
@@ -62,6 +66,10 @@ def load_gate_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("Unsupported readiness gate schema_version")
     if not config.get("gate_id"):
         raise ValueError("Readiness gate requires gate_id")
+    acceptance = config.get("acceptance_suite")
+    if isinstance(acceptance, Mapping):
+        for value in acceptance.get("required_end_effectors", ()):
+            validate_production_end_effector(str(value))
     return config
 
 
@@ -638,6 +646,54 @@ def _acceptance_checks(
         and all(_native_record(record) for record in acceptance_records)
     )
 
+    required_end_effectors = {
+        str(value) for value in requirement.get("required_end_effectors", ())
+    }
+    forbid_custom_attachments = bool(
+        requirement.get("forbid_custom_flange_attachments", False)
+    )
+    enforce_embodiment_contract = bool(required_end_effectors) or forbid_custom_attachments
+    observed_end_effectors: set[str] = set()
+    embodiment_problems: list[str] = []
+    for record in (acceptance_records if enforce_embodiment_contract else ()):
+        raw_end_effector = str(record.tool_type or "").strip()
+        try:
+            end_effector = validate_production_end_effector(raw_end_effector)
+        except ValueError as error:
+            embodiment_problems.append(f"{record.episode_uuid}: {error}")
+            continue
+        observed_end_effectors.add(end_effector)
+        if required_end_effectors and end_effector not in required_end_effectors:
+            embodiment_problems.append(
+                f"{record.episode_uuid}: undeclared end effector {end_effector!r}"
+            )
+        backend_provenance = record.extras.get("backend_provenance")
+        if isinstance(backend_provenance, Mapping):
+            serialized = json.dumps(backend_provenance, sort_keys=True).lower()
+            forbidden = sorted(
+                value for value in FORBIDDEN_CUSTOM_ATTACHMENTS if value in serialized
+            )
+            if forbidden:
+                embodiment_problems.append(
+                    f"{record.episode_uuid}: custom attachment provenance {forbidden}"
+                )
+    missing_end_effectors = sorted(required_end_effectors - observed_end_effectors)
+    if missing_end_effectors:
+        embodiment_problems.append(
+            f"acceptance coverage is missing end effectors {missing_end_effectors}"
+        )
+    embodiment_contract_passed = not enforce_embodiment_contract or (
+        bool(acceptance_records)
+        and not embodiment_problems
+        and (
+            not forbid_custom_attachments
+            or all(
+                str(record.tool_type or "") not in FORBIDDEN_CUSTOM_ATTACHMENTS
+                for record in acceptance_records
+            )
+        )
+    )
+
     target_qc_uuids = {
         record.episode_uuid
         for record in acceptance_records
@@ -836,6 +892,7 @@ def _acceptance_checks(
         "report_plan_generation_content_chain": content_bound,
         "exact_finalized_membership": exact_membership and not dataset_error,
         "planned_and_measured_backends_match": not backend_problems,
+        "real_gripper_embodiment_contract": embodiment_contract_passed,
         "attempts_complete_without_retry_or_failure": not attempt_problems,
         "views_and_styles_match_plan": not view_style_problems,
         "native_physics_qc_pass": not native_physics_failures,
@@ -951,6 +1008,19 @@ def _acceptance_checks(
                 "problems": backend_problems,
             },
             "backend counts and per-record provenance agree with plan and report",
+        ),
+        ReadinessCheck(
+            "acceptance_suite.real_gripper_embodiments",
+            embodiment_contract_passed,
+            {
+                "observed_end_effectors": sorted(observed_end_effectors),
+                "problems": embodiment_problems,
+            },
+            {
+                "required_end_effectors": sorted(required_end_effectors),
+                "forbid_custom_flange_attachments": forbid_custom_attachments,
+            },
+            "acceptance data must use only declared real Franka/Robotiq end effectors",
         ),
         ReadinessCheck(
             "acceptance_suite.qc_v2_bound_and_target_records_pass",

@@ -30,6 +30,9 @@ outputs/native_*/
 outputs/acceptance/
 outputs/slurm-*.out
 
+# Real-gripper example renders are reproducible local QC artifacts.
+outputs/examples/
+
 # Local asset roots and resolved run state are machine-specific.
 configs/assets/asset_roots.local.yaml
 *.resolved.yaml

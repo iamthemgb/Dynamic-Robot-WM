@@ -1,4 +1,4 @@
-"""Integrated native MuJoCo simulation, control, rendering, and measurement."""
+"""Retired custom-attachment MuJoCo simulation regression implementation."""
 
 from __future__ import annotations
 
@@ -2144,14 +2144,11 @@ class NativeMuJoCoBackend(SimulationBackend):
         physics_range_calibrated = bool(
             spec.physics_provenance.calibrated and physics_artifact_ok
         )
-        simulator_production_eligible = bool(
-            physics_qc.get("physics_qc_pass", False)
-            and self.asset.verified_menagerie_layout
-            and physics_range_calibrated
-            and tool_calibrated
-            and visual_style_validated
-            and render
-        )
+        # This backend mounts synthetic tray/paddle/bin geometry.  Even if all
+        # historical calibration fields are supplied, it is not the required
+        # Panda-hand or Robotiq embodiment and can never become production
+        # eligible.  Keep the other checks for regression diagnostics only.
+        simulator_production_eligible = False
         simulation = SimulationResult(
             plan=native_plan.episode_plan,
             frame_times_s=[sample.timestamp for sample in frame_samples],
@@ -2190,6 +2187,7 @@ class NativeMuJoCoBackend(SimulationBackend):
                 "model_hash": description.model_hash,
             },
             notes=(
+                "RETIRED: synthetic task attachment; not Panda-hand or Robotiq production data.",
                 "Object qpos/qvel are written only during initialization; all subsequent motion uses native MuJoCo dynamics.",
                 "Franka motion uses seven joint position actuators driven by Cartesian damped-least-squares control.",
                 "MuJoCo contact parameters are solver settings; effective restitution is measured from the rollout when observable.",
@@ -2219,7 +2217,7 @@ class NativeMuJoCoBackend(SimulationBackend):
             and camera_roles.get("secondary") == expected_secondary_role
         )
         thresholds = visibility["thresholds"]
-        quality_flags: list[str] = []
+        quality_flags: list[str] = ["retired_custom_attachment_backend"]
         if not self.asset.verified_menagerie_layout:
             quality_flags.append("unverified_franka_asset")
         if not physics_range_calibrated:
@@ -2311,6 +2309,8 @@ class NativeMuJoCoBackend(SimulationBackend):
             "simulator_version": self._mujoco.__version__,
             "renderer": "mujoco.Renderer",
             "production_eligible": simulator_production_eligible,
+            "retired_custom_attachment_backend": True,
+            "allowed_production_end_effector": False,
             "model_hash": description.model_hash,
             "scenario_hash": native_plan.compiled_scenario_hash,
             "fixed_field_hash": native_plan.fixed_field_hash,

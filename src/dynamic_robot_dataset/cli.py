@@ -25,6 +25,12 @@ from .common.contract_v2 import (
     validate_counterfactual_family_records,
 )
 from .common.hashing import sha256_file, sha256_json
+from .common.embodiments import (
+    CORRECTED_SOURCE_BACKEND,
+    RETIRED_CUSTOM_TOOL_BACKEND,
+    inspect_source_generator_adapters,
+    reject_retired_custom_tool_backend,
+)
 from .common.labels import project_candidate_outcome
 from .common.native_suite import (
     PlannedSuiteEpisode,
@@ -792,6 +798,19 @@ def _command_inventory(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _command_inspect_embodiments(arguments: argparse.Namespace) -> int:
+    payload = inspect_source_generator_adapters(arguments.adapters)
+    if arguments.output:
+        atomic_write_json(arguments.output, payload)
+    else:
+        _json_print(payload)
+    if arguments.require_rigid_sources and not payload[
+        "all_rigid_candidate_sources_accessible"
+    ]:
+        return 1
+    return 0
+
+
 def _generation_config(arguments: argparse.Namespace) -> dict[str, Any]:
     defaults: dict[str, Any] = {
         "subfamily": "default",
@@ -935,6 +954,14 @@ def _command_generate(arguments: argparse.Namespace) -> int:
     output = arguments.output or config.pop("output", None)
     adapter = get_family(str(config["family"]))
     backend_name = str(config.get("backend") or "diagnostic").strip().lower().replace("-", "_")
+    reject_retired_custom_tool_backend(backend_name)
+    if backend_name == CORRECTED_SOURCE_BACKEND:
+        raise ValueError(
+            "source_mujoco canonical execution is not enabled yet: source access "
+            "can be verified with 'inspect-embodiments', but the LeRobot-to-v2 "
+            "normalizer and independent objective replay must pass before this "
+            "command is allowed to generate release candidates"
+        )
     plans = adapter.plan(config)
     if backend_name == "native_mujoco":
         plans = _native_plans_from_adapter(plans, config)
@@ -1580,15 +1607,23 @@ def _suite_acceptance_gates(
 
 def _command_generate_suite(arguments: argparse.Namespace) -> int:
     config_path = Path(arguments.config).resolve(strict=True)
-    cases = expand_suite(config_path)
-    planned = plan_suite_cases(cases)
-    declarations = build_planned_counterfactual_family_records(planned)
-    planned_backend_counts = Counter(item.execution_backend for item in planned)
     try:
         import yaml
     except ImportError as error:  # pragma: no cover - base dependency is pinned
         raise RuntimeError("generate-suite requires PyYAML") from error
     raw_suite_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(raw_suite_config, Mapping):
+        raise ValueError("suite configuration must contain a mapping")
+    backend_name = str(raw_suite_config.get("backend", "diagnostic"))
+    reject_retired_custom_tool_backend(backend_name)
+    if raw_suite_config.get("execution_allowed") is False:
+        raise ValueError(
+            str(raw_suite_config.get("retirement_reason") or "suite execution is disabled")
+        )
+    cases = expand_suite(config_path)
+    planned = plan_suite_cases(cases)
+    declarations = build_planned_counterfactual_family_records(planned)
+    planned_backend_counts = Counter(item.execution_backend for item in planned)
     required_outcome_families = tuple(
         str(value)
         for value in dict(raw_suite_config.get("requirements") or {}).get(
@@ -2112,6 +2147,15 @@ def build_parser() -> argparse.ArgumentParser:
     inventory.add_argument("--output")
     inventory.set_defaults(handler=_command_inventory)
 
+    embodiments = subparsers.add_parser(
+        "inspect-embodiments",
+        help="verify read-only Franka-hand/Robotiq source-adapter access and hashes",
+    )
+    embodiments.add_argument("--adapters", nargs="+")
+    embodiments.add_argument("--output")
+    embodiments.add_argument("--require-rigid-sources", action="store_true")
+    embodiments.set_defaults(handler=_command_inspect_embodiments)
+
     generate = subparsers.add_parser("generate", help="plan/simulate an episode family")
     generate.add_argument("--config", help="YAML/JSON generation configuration")
     generate.add_argument("--family")
@@ -2119,7 +2163,14 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--variant")
     generate.add_argument("--robot-model")
     generate.add_argument("--tool-type")
-    generate.add_argument("--backend", choices=("diagnostic", "native_mujoco"))
+    generate.add_argument(
+        "--backend",
+        choices=("diagnostic", CORRECTED_SOURCE_BACKEND),
+        help=(
+            f"{RETIRED_CUSTOM_TOOL_BACKEND} is retired because it used custom "
+            "tray/paddle/bin attachments"
+        ),
+    )
     generate.add_argument("--num-bundles", type=int)
     generate.add_argument("--branches", type=_comma_list)
     generate.add_argument("--views", type=_comma_list)

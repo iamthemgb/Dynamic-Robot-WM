@@ -15,38 +15,36 @@ variation repairs.
 
 ## What is production and what is diagnostic
 
-The repository now has two deliberately different execution paths:
+The repository now distinguishes three paths:
 
 | Path | Purpose | Physics/rendering claim | Training eligibility |
 |---|---|---|---|
-| `native_mujoco` | Franka-first rigid-contact generation and acceptance | MuJoCo advances object and robot state; the backend owns simulation and synchronized rendering | Only after v2 objective, calibration, physics, visual, and dataset QC gates pass |
+| `source_mujoco` | Planned canonical adapter over the existing real Panda-hand and Panda+Robotiq generators | Must preserve source MuJoCo states, actions, contacts, and synchronized rendering while normalizing to v2 | Fail-closed until the normalizer and objective replay are implemented and tested |
+| retired `native_mujoco` | Low-level regression for the first custom attachment implementation | MuJoCo advances state, but the flange carries a synthetic tray/bin/paddle instead of the required grippers | Never training or acceptance data; public execution disabled |
 | diagnostic family adapters and state renderer | Fast schema, writer, split, QC, and Wan-export regression | Deterministic analytical/scripted fixtures, not native production physics | Always excluded |
 
 The old `--renderer module:function` hook is retained only for diagnostic and
 backward-compatible workflows. A renderer plug-in cannot turn an analytical
-adapter trajectory into native physics. Production execution instead follows:
+adapter trajectory into native physics. Corrected production execution must follow:
 
 ```text
-ScenarioSpec
-  -> EpisodePlan / NativeEpisodePlan
-  -> NativeMuJoCoBackend.run()
+real Panda-hand or Panda+Robotiq source generator
+  -> source episode plus synchronized LeRobot tables/videos
+  -> source_mujoco canonical-v2 adapter
   -> synchronized states, actions, contacts, cameras, and frames
   -> atomic episode writer
   -> objective recomputation, QC, splits, and Wan export
 ```
 
-Native rigid episodes use the MuJoCo Menagerie Franka Panda, actuator commands,
-and MuJoCo contacts. Object pose and velocity are set only in the initial state;
-post-release capture, rebound, rolling, and transition behavior must emerge from
-the simulation. Production rigid scenarios permit one or two task contacts,
-not uncontrolled multi-bounce motion. Backend provenance records the resolved
-Franka MJCF and license hashes, compiled model/scenario identities, simulator
-version, and whether the run is eligible even to be considered for release.
-
-The native rigid backend does **not** establish production readiness by itself.
-The provisional parameter catalog is intentionally release-ineligible, and the
-full native acceptance artifact has not been declared passed merely because its
-configuration expands to 160 branches.
+The allowlist is exactly `franka_hand` and `robotiq_2f85_thick_pad`. The latter
+is an explicit source variant of the real Robotiq 2F-85, not a generic tool
+alias. Source access and hashes are checked by `inspect-embodiments`; access does
+not establish release readiness. Current successful catch controllers hold or
+rewrite ball state after capture, and the Panda bounce source also rewrites the
+bounce response, so they are embodiment references rather than release
+candidates. Object motion after initialization must remain native MuJoCo motion,
+and canonical provenance must bind the exact source files, robot/gripper model,
+action schema, and conversion version.
 
 ## Version-2 dataset contract
 
@@ -123,19 +121,18 @@ The revision deliberately deepens a small dynamics-centered scenario library.
 
 | Area | Maintained direction | Current release boundary |
 |---|---|---|
-| Falling/catch | centered, off-center, drifted, retain, transport, abrupt brake, tray tilt, edge recovery; tray/bin geometry and controller latency variation | Native rigid implementation must pass containment, dwell, visibility, and no-latch checks |
-| Rolling/sliding | both directions, sphere/puck/cube, rolling/sliding, slope, ramp-to-table, roll-off edge, occlusion, container receive, paddle block, redirect | Highest production priority; rolling slip and surface-transition order are hard evidence |
-| Projectile/rebound | direct interception, table/wall/angled rebound, ramp launch, floor-to-wall, roll-off edge, paddle deflection, bounce-to-interception | One or two well-defined contacts; measured bounce response must be calibrated and is never inferred from solver settings |
+| Falling/catch | centered Panda-hand drops, Panda-hand bounce-catch, and centered/lateral Panda+Robotiq catch are the currently verified source lineages | Expand only by actuating the real fingers/clamp; retention means a measured physical grasp, never a tray or hidden latch |
+| Rolling/sliding | both directions, rolling/sliding transitions, slopes, finite surfaces, and direct interception remain the highest-priority design target | No corrected real-gripper production adapter exists yet; old paddle/bin cases are retired, not relabelled |
+| Projectile/rebound | direct Robotiq interception and Panda bounce-catch are the current source lineages; wall/table/edge transitions remain desired | One or two well-defined contacts; no synthetic paddle attachment, and measured bounce response is never inferred from solver settings |
 | Cloth | freeze volume; objectively evaluate poke; tier lift/release and fold-edge as assisted unless free contact is demonstrated | Dual-Franka box folding remains suspended |
 | Rope | repair drag, tug, lift/drape, wrap, and a small ring-thread pilot; bind the grasp equality to the requested segment | Shake-wave is suspended; ring thread is not released until the corrected target and metric pass |
-| Soft objects | interfaces and configs only; foam-ball catch and paddle deflection are first | Blocked until rigid-contact gates pass; beanbag and pouch additionally require validated shell/self-contact models |
+| Soft objects | interfaces and configs only; foam-ball hand/clamp catch is first | Blocked until rigid-contact gates pass; beanbag and pouch additionally require validated shell/self-contact models |
 | Deferred | handoff beyond catch recovery, complex bags, knots, fluids, chaotic multi-object and uncontrolled multi-bounce tasks | No production generator in this revision |
 
 The cloth and rope modules currently provide objective/tiering contracts and the
-rope equality-target repair. They are not, by themselves, a completed native
-deformable simulation backend. The 160-case suite therefore cannot be called a
-passed native acceptance run until those cases execute through verified native
-state records and all release checks succeed.
+rope equality-target repair. The accessible Franka cloth package is explicitly a
+preview: poke is contact-based, while lift/fold use equality-connect proxy
+grasps. These are not, by themselves, completed free-contact deformable data.
 
 `configs/families/soft_objects_gated.yaml` makes the soft-object boundary
 machine-readable. Its production flag is false; a config flag cannot override
@@ -149,7 +146,7 @@ admission: scale, collision, rendering, content hash, and license-notice checks
 are all required. Appearance, light, cameras, and object identity stay fixed
 within counterfactual siblings.
 
-## Diagnostic and native suites
+## Diagnostic fixture and retired suite
 
 `configs/families/smoke_120.yaml` remains the immutable fast diagnostic
 regression fixture. It contains exactly 120 logical branches and two views per
@@ -157,8 +154,8 @@ branch. Its accepted historical artifact checks encoding, synchronization,
 metadata, resume, splitting, QC, contact sheets, and Wan conversion. Every
 episode is marked diagnostic and excluded from default training.
 
-`configs/families/native_acceptance_160.yaml` is a separate immutable acceptance
-definition:
+`configs/families/native_acceptance_160.yaml` preserves the previous 160-case
+definition for provenance and low-level regression:
 
 | Category | Branches |
 |---|---:|
@@ -169,26 +166,18 @@ definition:
 | Rope repair/tiering | 16 |
 | Scripted/assisted negative controls | 4 |
 
-The suite definition expands deterministically to exactly 160 cases across all
-three styles and both cameras. Its executor routes the 128 rigid cases through
-`native_mujoco` and the 32 cloth/rope/negative-control cases through an explicit
-`diagnostic_quarantine` path. This exercises finalization and tiering without
-misrepresenting a deformable proxy as native physics. The resulting suite
-execution report records `full_native: false`, and stage readiness remains
-failed until genuine native deformable backends exist. Dry-run expansion is a
-contract test, not a successful simulation, and no full 160-case artifact was
-generated in this revision.
-Outcome mismatch is not retried. Every rigid outcome class represented by the
-planned branch set (success, near miss, contact failure, no-op, and wrong action
-where planned) must also occur in independently measured labels; a missing
-class fails that generator version.
+It is now marked `retired_custom_attachment_definition` and public dry-run and
+execution both fail before creating output. Its 128 rigid cases were generated
+with synthetic tray/bin/paddle flange attachments and cannot be repaired by
+renaming their `tool_type`. All artifacts from that path in this workspace and
+both related SLURM launchers were removed.
 
-Non-dry execution writes `.suite_plan.json` before starting a simulator, so
-expected siblings survive a crash or failed branch. Per-case attempt records
-are immutable and the aggregate `.suite_execution.json` reports backend routes,
-commits, failures, measured outcomes, and `full_native: false`. Resume may
-recover already committed cases with the same configuration hash; it does not
-retry a failed case within the same suite version.
+The corrected acceptance identity is `real_gripper_acceptance_160_v2`. It is
+intentionally not defined until source normalization and objective replay are
+implemented. Every release gate requires that exact suite name, both
+`franka_hand` and `robotiq_2f85_thick_pad`, and absence of custom flange
+attachments. Readiness recomputes this from finalized records and backend
+provenance rather than trusting a report flag.
 
 ## Physics calibration and staged gates
 
@@ -237,8 +226,10 @@ Both the 10-hour and 100-hour evaluators require `--acceptance-report` pointing
 to the canonical `.suite_execution.json` inside the acceptance dataset named by
 that report. The report and its immutable `.suite_plan.json` must exist, contain
 all 160 committed branches, pass the suite gates, and say both
-`passed_execution: true` and `full_native: true`. The currently defined mixed
-128-native/32-quarantine suite cannot satisfy this condition. Readiness also
+`passed_execution: true` and `full_native: true`. It must also be named
+`real_gripper_acceptance_160_v2`, cover both allowed end effectors, and contain
+no custom flange attachment. The retired suite cannot satisfy this condition.
+Readiness also
 requires the canonical `qc/dataset_report.json` to use
 `dynamic-robot-qc-report/v2` and bind the exact dataset root,
 the complete finalized metadata manifest, complete episode-UUID membership,

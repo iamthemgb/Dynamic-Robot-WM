@@ -5,10 +5,12 @@ require_native_mujoco: true
 free_contact_only: true
 require_no_sparse_strata: true
 acceptance_suite:
-  suite_name: native_acceptance_160
+  suite_name: real_gripper_acceptance_160_v2
   branch_count: 160
   require_full_native: true
   require_passed_execution: true
+  required_end_effectors: [franka_hand, robotiq_2f85_thick_pad]
+  forbid_custom_flange_attachments: true
 prerequisite_gate:
   gate_id: native_10h_v1
   passed: true

@@ -251,6 +251,12 @@ def test_pilot_hours_are_unique_episode_allocations_and_not_submitted() -> None:
     ten = load_pilot_plan(ROOT / "configs/pilots/pilot_10h.yaml")
     hundred = load_pilot_plan(ROOT / "configs/pilots/pilot_100h.yaml")
     assert ten["submit"] is False and hundred["submit"] is False
+    assert ten["backend"] == hundred["backend"] == "source_mujoco"
+    assert set(ten["allowed_end_effectors"]) == {
+        "franka_hand",
+        "robotiq_2f85_thick_pad",
+    }
+    assert ten["forbid_custom_flange_attachments"] is True
     assert sum(value["unique_hours"] for value in ten["allocations"]) == 10.0
     assert sum(value["unique_hours"] for value in hundred["allocations"]) == 100.0
     deformable = next(value for value in ten["allocations"] if value["id"] == "free_contact_deformable")

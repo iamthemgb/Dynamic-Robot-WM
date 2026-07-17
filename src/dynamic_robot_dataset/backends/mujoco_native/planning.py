@@ -1,4 +1,4 @@
-"""Deterministic native scenario factories and EpisodePlan conversion."""
+"""Deterministic factories for the retired custom-attachment regression."""
 
 from __future__ import annotations
 

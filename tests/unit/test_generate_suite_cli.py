@@ -140,7 +140,25 @@ def _record(
     )
 
 
-def test_generate_suite_dry_run_reports_mixed_truth(capsys: pytest.CaptureFixture[str]) -> None:
+def _enable_retired_suite_regression(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bypass the public retirement guard only for low-level regression tests."""
+
+    original_safe_load = yaml.safe_load
+
+    def regression_safe_load(stream):
+        value = original_safe_load(stream)
+        if isinstance(value, dict) and value.get("name") == "native_acceptance_160":
+            value = {**value, "execution_allowed": True}
+        return value
+
+    monkeypatch.setattr(cli, "reject_retired_custom_tool_backend", lambda _backend: None)
+    monkeypatch.setattr(yaml, "safe_load", regression_safe_load)
+
+
+def test_generate_suite_dry_run_reports_mixed_truth(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _enable_retired_suite_regression(monkeypatch)
     assert cli._command_generate_suite(_arguments(None, dry_run=True)) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["case_count"] == 160
@@ -589,6 +607,7 @@ def test_failed_suite_persists_preplan_expected_context_and_never_retries(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    _enable_retired_suite_regression(monkeypatch)
     cases = [
         case
         for case in expand_suite(SUITE)

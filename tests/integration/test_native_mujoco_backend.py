@@ -55,6 +55,9 @@ def test_native_centered_drop_is_actuator_only_and_recomputable() -> None:
     assert validate_v2_frame_semantics(result.frame_rows) == []
     assert result.backend_provenance["duration_policy"] == "event_adaptive"
     assert "visual_style_unvalidated" in result.quality_flags
+    assert "retired_custom_attachment_backend" in result.quality_flags
+    assert result.backend_provenance["production_eligible"] is False
+    assert result.backend_provenance["allowed_production_end_effector"] is False
 
     independent = evaluate_saved_native_episode(
         spec,

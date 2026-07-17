@@ -1,8 +1,9 @@
-"""Procedural task geometry around the official MuJoCo Menagerie Panda.
+"""Retired procedural custom-tool geometry around the Menagerie Panda.
 
 Only robot joint controls and MuJoCo contact dynamics advance the rollout.  The
-builder removes the Panda finger-coupling equality because the mounted task
-tool, rather than an assisted gripper latch, performs object interaction.
+builder removes the Panda finger-coupling equality because a mounted synthetic
+task tool performs object interaction.  This is not a Panda-hand or Robotiq
+model and is retained only for regression tests.
 """
 
 from __future__ import annotations

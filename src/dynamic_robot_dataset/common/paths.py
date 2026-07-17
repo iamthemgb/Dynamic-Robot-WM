@@ -30,6 +30,7 @@ DEFAULT_READ_ONLY_SOURCE_ROOTS = (
     Path("/gpfs/radev/project/sous/zl664/demo_mujoco_deformable"),
     Path("/gpfs/radev/project/sous/zss8/dataset-generation"),
     Path("/gpfs/radev/home/zl664/project/demo_mujoco_arm_gripper"),
+    Path("/gpfs/radev/home/zl664/project/demo_mujoco_deformable"),
     # This repository must never mutate the separately scoped Wan experiment.
     Path("/gpfs/radev/project/sous/zl664/wan_scripts"),
     # The byte-identical migration snapshot is immutable after initialization.

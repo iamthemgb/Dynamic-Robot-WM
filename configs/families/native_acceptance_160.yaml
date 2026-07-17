@@ -1,6 +1,14 @@
 schema_version: dynamic-robot-suite/v1
 name: native_acceptance_160
 backend: native_mujoco
+execution_allowed: false
+status: retired_custom_attachment_definition
+retirement_reason: >-
+  This suite is retained only as a regression fixture. Its native_mujoco path
+  mounted synthetic tray, bin, and paddle geometry rather than the required
+  Franka Panda hand or Robotiq 2F-85. It must not generate, calibrate, or admit
+  data. Build a new source_mujoco acceptance suite after the real embodiment
+  adapters and v2 normalizer pass their tests.
 robot_model: franka_emika_panda
 views: [main, secondary]
 immutable_after_generation: true

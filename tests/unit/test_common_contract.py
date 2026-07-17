@@ -154,6 +154,10 @@ def test_portable_paths_and_source_write_protection(tmp_path: Path) -> None:
     with pytest.raises(PermissionError):
         ensure_not_source_path("/gpfs/radev/project/sous/zss8/dataset-generation/do-not-write")
     with pytest.raises(PermissionError):
+        ensure_not_source_path(
+            "/gpfs/radev/home/zl664/project/demo_mujoco_deformable/do-not-write"
+        )
+    with pytest.raises(PermissionError):
         ensure_not_source_path("/gpfs/radev/project/sous/zl664/wan_scripts/checkpoints/do-not-write")
     repository_root = Path(__file__).resolve().parents[2]
     with pytest.raises(PermissionError):

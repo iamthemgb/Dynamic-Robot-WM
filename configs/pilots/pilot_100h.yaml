@@ -1,6 +1,8 @@
 schema_version: dynamic-robot-pilot/v1
 pilot_id: first_serious_100_unique_hours
-backend: native_mujoco
+backend: source_mujoco
+allowed_end_effectors: [franka_hand, robotiq_2f85_thick_pad]
+forbid_custom_flange_attachments: true
 submit: false
 target_unique_release_hours: 100.0
 prerequisite_gate: configs/release_gates/10h.yaml
