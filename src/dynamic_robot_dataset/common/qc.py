@@ -2138,7 +2138,7 @@ def _validate_source_mujoco_background_clearance(
 ) -> None:
     """Bind runtime background clearance to the complete persisted trajectory."""
 
-    schema = "source-mujoco-background-clearance/v3"
+    schema = "source-mujoco-background-clearance/v4"
     if clearance.get("schema_version") != schema:
         result.fail("source_mujoco background clearance schema changed")
     for name in (
@@ -2264,6 +2264,7 @@ def _validate_source_mujoco_background_clearance(
             "classification",
             "source_name",
             "catalog_slot",
+            "fixture_support_id",
             "body_id",
             "body_name",
             "body_weld_id",
@@ -2287,6 +2288,7 @@ def _validate_source_mujoco_background_clearance(
                     "classification",
                     "source_name",
                     "catalog_slot",
+                    "fixture_support_id",
                 )
             }
             for row in background_static_rows

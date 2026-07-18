@@ -22,6 +22,9 @@ DEFAULT_SOURCE_ROOT = Path(
     "/gpfs/radev/project/sous/zl664/demo_mujoco_arm_gripper"
 )
 DEFAULT_ROBOCASA_ROOT = Path("/gpfs/radev/project/sous/mzl7/robocasa")
+DEFAULT_ROLLING_ISLAND_SOURCE_ROOT = Path(
+    "/gpfs/radev/project/sous/mzl7/ball_roll_interception_scripts"
+)
 
 # Hashes measured from the read-only source snapshot used for the calibrated
 # July 2026 experiments.  Runtime comparison is mandatory; these values are
@@ -45,6 +48,20 @@ PINNED_SOURCE_MANIFEST_SHA256 = (
     "823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99"
 )
 
+# Michael's later rolling-interception tree is a distinct, read-only scene
+# dependency.  Only its scene/YAML/appearance implementation is consumed.  Its
+# controller is intentionally outside the allowlist because that controller
+# writes robot and object qpos/qvel after initialization.
+PINNED_ROLLING_ISLAND_SOURCE_FILES: Mapping[str, str] = {
+    "scene_builder.py": "61887be9dc7ee1b80076b9c2bf60ebf56474baf3db031ac57ccdca20be6ec5c7",
+    "utils.py": "618720ecfe64e354311500e9c6e19852c3debf5eec8850ec6eeb0fc4b91a45c8",
+    "variants.py": "fce9fbaf623668f4532a48f30b67106ee1014b7bceffee7ee7d7d77e30246d40",
+    "yaml_scene.py": "cfee5a192e9c2b7ee991a57e6dafcbb2181b7c66c71d52a514ae4fb7d708e9c8",
+}
+PINNED_ROLLING_ISLAND_MANIFEST_SHA256 = (
+    "cf6a9ec045b8392f8ca6351b9d749021aab8973ed5ffff78499b51497d55d384"
+)
+
 
 class SourceDependencyError(RuntimeError):
     """An external scene/asset dependency is absent or differs from its pin."""
@@ -55,6 +72,19 @@ class SourceDependencyManifest:
     source_root: str
     file_sha256: Mapping[str, str]
     manifest_sha256: str
+    read_only_usage: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class RollingIslandDependencyManifest:
+    source_root: str
+    file_sha256: Mapping[str, str]
+    manifest_sha256: str
+    usage: str = "scene_geometry_and_placement_only"
+    controller_imported: bool = False
     read_only_usage: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +157,45 @@ def resolve_source_dependency(
             "the verified ten-file source manifest differs from its aggregate pin"
         )
     return SourceDependencyManifest(
+        source_root=str(root),
+        file_sha256=ordered,
+        manifest_sha256=manifest_sha256,
+    )
+
+
+def resolve_rolling_island_dependency(
+    source_root: str | Path | None = None,
+) -> RollingIslandDependencyManifest:
+    """Require the audited collaborator scene snapshot without its controller."""
+
+    root = _resolved_root(
+        source_root,
+        environment_name="SOURCE_MUJOCO_ROLLING_ISLAND_ROOT",
+        default=DEFAULT_ROLLING_ISLAND_SOURCE_ROOT,
+    )
+    actual: dict[str, str] = {}
+    failures: list[str] = []
+    for relative, expected in PINNED_ROLLING_ISLAND_SOURCE_FILES.items():
+        path = root / relative
+        if not path.is_file():
+            failures.append(f"missing:{relative}")
+            continue
+        digest = sha256_file(path)
+        actual[relative] = digest
+        if digest != expected:
+            failures.append(f"hash_mismatch:{relative}")
+    if failures:
+        raise SourceDependencyError(
+            "rolling-island scene dependency is not the audited collaborator snapshot: "
+            + ", ".join(failures)
+        )
+    ordered = dict(sorted(actual.items()))
+    manifest_sha256 = combined_manifest_hash(ordered)
+    if manifest_sha256 != PINNED_ROLLING_ISLAND_MANIFEST_SHA256:
+        raise SourceDependencyError(
+            "verified rolling-island source manifest differs from its aggregate pin"
+        )
+    return RollingIslandDependencyManifest(
         source_root=str(root),
         file_sha256=ordered,
         manifest_sha256=manifest_sha256,
@@ -226,14 +295,19 @@ def referenced_asset_manifest(
 
 __all__ = [
     "DEFAULT_ROBOCASA_ROOT",
+    "DEFAULT_ROLLING_ISLAND_SOURCE_ROOT",
     "DEFAULT_SOURCE_ROOT",
     "PINNED_ROBOCASA_LICENSE_SHA256",
+    "PINNED_ROLLING_ISLAND_MANIFEST_SHA256",
+    "PINNED_ROLLING_ISLAND_SOURCE_FILES",
     "PINNED_SOURCE_MANIFEST_SHA256",
     "PINNED_SOURCE_FILES",
     "RoboCasaDependency",
+    "RollingIslandDependencyManifest",
     "SourceDependencyError",
     "SourceDependencyManifest",
     "referenced_asset_manifest",
     "resolve_robocasa_dependency",
+    "resolve_rolling_island_dependency",
     "resolve_source_dependency",
 ]

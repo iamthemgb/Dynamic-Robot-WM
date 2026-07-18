@@ -8,6 +8,11 @@ backends:
     release_state: blocked
     source_hashes:
       external_dependency_manifest: 823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99
+      rolling_island_dependency_manifest: cf6a9ec045b8392f8ca6351b9d749021aab8973ed5ffff78499b51497d55d384
+      rolling_island_scene_builder_py: 61887be9dc7ee1b80076b9c2bf60ebf56474baf3db031ac57ccdca20be6ec5c7
+      rolling_island_utils_py: 618720ecfe64e354311500e9c6e19852c3debf5eec8850ec6eeb0fc4b91a45c8
+      rolling_island_variants_py: fce9fbaf623668f4532a48f30b67106ee1014b7bceffee7ee7d7d77e30246d40
+      rolling_island_yaml_scene_py: cfee5a192e9c2b7ee991a57e6dafcbb2181b7c66c71d52a514ae4fb7d708e9c8
       scene_builder_py: f0fba618860ddc19754d4803c9c06d96a08a2874ea17831d846d47d8a9ec943d
       variants_py: 01f39393cc34d346934cbc876d959e5ce5c2c61776cc027a855338bf543312f5
       robocasa_importer_py: ca716f680e15bea10494977841e01f7878eb6cda661c848886be03d230a4f874
@@ -15,8 +20,8 @@ backends:
       panda_nohand_xml: e7090a5e2384b18a223ef532d98bf914f7f9a6b74dc8bc9f74c8291201074071
       robotiq_2f85_xml: d48aca5f9151798ffd38111ce4e8b2081f3ec2d4f525161b33643451580010de
     blockers:
-      - actuator_only_controller_integration_pending
       - rigid_profile_acceptance_pending
+      - fixed_review_human_acceptance_pending
     support:
       - leaf: P0a
         family: passive_no_franka

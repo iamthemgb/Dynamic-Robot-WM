@@ -85,6 +85,10 @@ def classify_contact(row: Mapping[str, Any]) -> ContactClass:
         "robot_tool": ContactClass.GRIPPER,
         "robot_gripper": ContactClass.GRIPPER,
         "gripper": ContactClass.GRIPPER,
+        # Robot-link impacts are physical, classified robot contacts.  They
+        # use the stricter 2 mm object/robot penetration limit rather than
+        # being silently reported as unknown contacts.
+        "robot_arm": ContactClass.GRIPPER,
         "task_surface": ContactClass.TASK_SURFACE,
         "fixture": ContactClass.TASK_SURFACE,
         "support": ContactClass.TASK_SURFACE,

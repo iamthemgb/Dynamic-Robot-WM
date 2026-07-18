@@ -14,10 +14,21 @@ from ...common.hashing import sha256_json
 from ...common.review import event_strip_frame_indices
 from ...common.synchronization import fixed_duration_frame_timestamps
 from .profiles import RIGID_REVIEW_PROFILE
+from .provenance import (
+    RoboCasaDependency,
+    RollingIslandDependencyManifest,
+    resolve_robocasa_dependency,
+    resolve_rolling_island_dependency,
+)
+from .rolling_island import (
+    ROLLING_ISLAND_SURFACE_NAME,
+    RollingIslandScenePlan,
+    resolve_rolling_island_plan,
+)
 
 
-SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v3"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.10.0-review"
+SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v4"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.13.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):
@@ -188,6 +199,7 @@ class SourceMujocoCompiledScenario:
     surfaces: tuple[PhysicalSurface, ...]
     rng_subseeds: Mapping[str, int]
     evaluator: str
+    rolling_island_scene: RollingIslandScenePlan | None
     backend_version: str = SOURCE_MUJOCO_BACKEND_VERSION
     schema_version: str = SOURCE_MUJOCO_COMPILED_SCHEMA
     production_eligible: bool = False
@@ -238,6 +250,23 @@ class SourceMujocoCompiledScenario:
             raise SourceMujocoUnsupported("R1 scene/profile admission flags disagree")
         if self.randomization_level != ("R0" if self.scene_profile == "clean_R0" else "R1"):
             raise SourceMujocoUnsupported("scene profile uses the wrong randomization level")
+        if self.corpus_leaf_id == "F3b" and self.requires_real_robocasa:
+            if self.rolling_island_scene is None:
+                raise SourceMujocoUnsupported(
+                    "R1 F3b requires its audited RoboCasa rolling-island scene"
+                )
+            try:
+                self.rolling_island_scene.validate()
+            except ValueError as error:
+                raise SourceMujocoUnsupported(str(error)) from error
+            if self.rolling_island_scene.scene_profile != self.scene_profile:
+                raise SourceMujocoUnsupported(
+                    "rolling-island plan/profile identities disagree"
+                )
+        elif self.rolling_island_scene is not None:
+            raise SourceMujocoUnsupported(
+                "rolling-island scenes are restricted to randomized F3b review cases"
+            )
         if self.embodiment == "no_robot":
             if self.robot_base_position_m is not None or self.robot_base_euler_rad is not None:
                 raise SourceMujocoUnsupported("no_robot scenario cannot declare a robot base pose")
@@ -291,6 +320,20 @@ class SourceMujocoCompiledScenario:
         surface_by_name = {surface.name: surface for surface in self.surfaces}
         if len(surface_by_name) != len(self.surfaces):
             raise SourceMujocoUnsupported("physical fixture names must be unique")
+        if self.corpus_leaf_id == "F3b":
+            task_surfaces = tuple(
+                surface
+                for surface in self.surfaces
+                if surface.role != "structural_support"
+            )
+            if len(task_surfaces) != 1 or task_surfaces[0].role != "table":
+                raise SourceMujocoUnsupported(
+                    "F3b requires one real table surface and no runway/backstop"
+                )
+            if task_surfaces[0].name != ROLLING_ISLAND_SURFACE_NAME:
+                raise SourceMujocoUnsupported(
+                    "F3b table surface lacks its stable rolling-island identity"
+                )
         structural_supports = tuple(
             surface
             for surface in self.surfaces
@@ -570,6 +613,7 @@ def _recipe(
     *,
     seed: int,
     tabletop_height_m: float,
+    rolling_island_scene: RollingIslandScenePlan | None = None,
 ) -> dict[str, Any]:
     rng = np.random.default_rng(seed)
     gravity = (0.0, 0.0, -9.81)
@@ -750,21 +794,25 @@ def _recipe(
             surfaces=(),
         )
     elif leaf_id == "F3b":
+        base["duration_s"] = 2.5
         event_time = RIGID_REVIEW_PROFILE.rolling_pickup_event_time_s
         speed = RIGID_REVIEW_PROFILE.rolling_pickup_speed_m_s
-        runway_half_xy = RIGID_REVIEW_PROFILE.rolling_pickup_runway_half_xy_m
-        runway_height = RIGID_REVIEW_PROFILE.rolling_pickup_runway_height_m
-        plate_half = (*runway_half_xy, runway_height / 2.0)
-        plate_center_z = tabletop_height_m + runway_height / 2.0
-        plate_top_z = tabletop_height_m + runway_height
-        # The intercept sits on the rolling path at ball-center height; the
-        # ball is released rolling without slip toward the robot and must be
-        # captured by the bounded closure exactly like a falling catch, then
-        # lifted so the pickup exhibits genuine contact-supported
-        # displacement.  The raised runway keeps the reach arm-feasible and
-        # is long enough to contain the run-up plus the overrun of every
-        # declared negative.
-        target = np.array((0.47, 0.0, plate_top_z + radius), dtype=np.float64)
+        if rolling_island_scene is None:
+            # R0 uses one neutral, full table.  It deliberately has neither
+            # the former blue miniature runway nor its artificial backstop.
+            table_top_z = 0.10
+            table_position = (0.60, 0.0, table_top_z / 2.0)
+            table_half_size = (0.65, 0.40, table_top_z / 2.0)
+            table_yaw = 0.0
+        else:
+            table_top_z = rolling_island_scene.table_top_z_m
+            table_position = rolling_island_scene.surface_position_task_m
+            table_half_size = rolling_island_scene.surface_half_size_m
+            table_yaw = rolling_island_scene.counter_yaw_task_rad
+        # The intercept lies on the actual counter surface.  The object is
+        # initialized rolling without slip; all subsequent robot motion is
+        # produced through actuators and all ball motion through contact.
+        target = np.array((0.47, 0.0, table_top_z + radius), dtype=np.float64)
         start_xy = np.array((float(target[0]) + speed * event_time, 0.0))
         controller_target = target.copy()
         if embodiment == ROBOTIQ_2F85_THICK_PAD:
@@ -792,27 +840,25 @@ def _recipe(
                 + RIGID_REVIEW_PROFILE.pickup_transport_lateral_m
             )
         )
+        if embodiment == ROBOTIQ_2F85_THICK_PAD:
+            lift_x += RIGID_REVIEW_PROFILE.robotiq_pickup_capture_followthrough_x_m
         transport = (
             lift_x,
             float(controller_target[1]),
             float(target[2]) + RIGID_REVIEW_PROFILE.pickup_lift_height_m,
         )
-        plate_center_x = float(target[0]) + 0.5 * speed * event_time
-        # A missed ball must finish on the declared fixture: without the
-        # backstop it rolled off the runway end and struck the robot
-        # pedestal, producing strictly-rejected unclassified contacts.  The
-        # backstop is an owned wall at the far end of the runway, well past
-        # the intercept, so every miss overruns visibly and stops on the
-        # runway.
-        backstop_center_x = plate_center_x - plate_half[0] + 0.03
-        backstop_half_z = 0.05
+        if negative:
+            # Preserve the failed rollout instead of commanding a gratuitous
+            # empty-hand lift after the measured miss.  Successful branches
+            # still require the full contact-supported displacement evidence.
+            transport = None
         base.update(
             key_event_time_s=event_time,
             motion_kind="rolling_pickup_interception",
             object_initial_position_m=(
                 float(start_xy[0]),
                 float(start_xy[1]),
-                float(plate_top_z + radius),
+                float(table_top_z + radius),
             ),
             object_initial_linear_velocity_m_s=(-speed, 0.0, 0.0),
             object_initial_angular_velocity_rad_s=(0.0, -speed / radius, 0.0),
@@ -824,16 +870,11 @@ def _recipe(
             controller_transport_position_m=transport,
             surfaces=(
                 _surface(
-                    "supported_rolling_pickup_plate",
+                    ROLLING_ISLAND_SURFACE_NAME,
                     "table",
-                    (plate_center_x, 0.0, plate_center_z),
-                    plate_half,
-                ),
-                _surface(
-                    "supported_rolling_pickup_backstop",
-                    "wall",
-                    (backstop_center_x, 0.0, plate_top_z + backstop_half_z),
-                    (0.02, plate_half[1], backstop_half_z),
+                    table_position,
+                    table_half_size,
+                    euler=(0.0, 0.0, table_yaw),
                 ),
             ),
         )
@@ -1012,6 +1053,9 @@ def _apply_passive_variation(
 
 def compile_review_case(
     case: Mapping[str, Any] | Any,
+    *,
+    rolling_island_dependency: RollingIslandDependencyManifest | None = None,
+    robocasa_dependency: RoboCasaDependency | None = None,
 ) -> SourceMujocoCompiledScenario:
     """Compile one fixed review case without making a release claim."""
 
@@ -1034,7 +1078,23 @@ def compile_review_case(
     randomization_level = str(value.get("randomization_level") or "")
     requires_real_robocasa = bool(value.get("requires_real_robocasa"))
     rng_subseeds = _rng_mapping(value.get("rng_subseeds"))
-    external_tabletop_height = 0.74 if requires_real_robocasa else 0.0
+    rolling_island_scene: RollingIslandScenePlan | None = None
+    if leaf_id == "F3b" and requires_real_robocasa:
+        rolling_dependency = (
+            rolling_island_dependency or resolve_rolling_island_dependency()
+        )
+        robocasa = robocasa_dependency or resolve_robocasa_dependency()
+        rolling_island_scene = resolve_rolling_island_plan(
+            scene_profile,
+            dependency=rolling_dependency,
+            robocasa=robocasa,
+            seed=rng_subseeds["assets"],
+        )
+    external_tabletop_height = (
+        rolling_island_scene.table_top_z_m
+        if rolling_island_scene is not None
+        else (0.74 if requires_real_robocasa else 0.0)
+    )
     # F1 is a free-space interception rooted at the room floor.  The external
     # R1 scene historically raised both robot and task by 0.74 m to sit on a
     # procedural table whose collision was later disabled.  That made R0 and
@@ -1067,6 +1127,7 @@ def compile_review_case(
         branch_role,
         seed=rng_subseeds["initial_state"],
         tabletop_height_m=task_height,
+        rolling_island_scene=rolling_island_scene,
     )
     if leaf_id.startswith("P0"):
         recipe = _apply_passive_variation(
@@ -1135,6 +1196,7 @@ def compile_review_case(
         video_hz=RIGID_REVIEW_PROFILE.video_hz,
         rng_subseeds=rng_subseeds,
         evaluator=str(value.get("evaluator") or leaf.evaluator),
+        rolling_island_scene=rolling_island_scene,
         **recipe,
     )
     result.validate()

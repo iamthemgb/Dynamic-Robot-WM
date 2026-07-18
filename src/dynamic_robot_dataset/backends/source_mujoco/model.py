@@ -21,8 +21,13 @@ from .compiler import PhysicalSurface, SourceMujocoCompiledScenario
 from .profiles import RIGID_REVIEW_PROFILE
 from .provenance import (
     RoboCasaDependency,
+    RollingIslandDependencyManifest,
     SourceDependencyManifest,
     referenced_asset_manifest,
+)
+from .rolling_island import (
+    ROLLING_ISLAND_WRAPPER_NAME,
+    install_rolling_island_scene,
 )
 
 
@@ -181,7 +186,7 @@ def _surface_dict(value: PhysicalSurface) -> dict[str, Any]:
         "material_rgba": (
             (0.12, 0.16, 0.20, 1.0)
             if structural
-            else (0.20, 0.36, 0.58, 1.0)
+            else (0.46, 0.31, 0.18, 1.0)
         ),
         "roughness": 0.72 if structural else 0.62,
     }
@@ -524,11 +529,18 @@ def _select_catalog_candidate(
         if scenario.corpus_leaf_id.startswith("P0")
         else 0.0
     )
-    position = (
-        original_position[0],
-        original_position[1],
-        original_position[2] + clearance_lift_m,
-    )
+    if scenario.rolling_island_scene is not None:
+        # The old catalog pose was calibrated for a 0.74 m procedural table
+        # and can intersect the much larger real island.  Put the visual-only
+        # review accessory on the room floor in a remote task-frame corner;
+        # the full RoboCasa layout remains the visible scene context.
+        position = (1.55, 1.35, original_position[2] - 0.74)
+    else:
+        position = (
+            original_position[0],
+            original_position[1],
+            original_position[2] + clearance_lift_m,
+        )
     descriptor = Path(candidate.descriptor_path).resolve(strict=True)
     asset_root = Path(dependency.asset_root).resolve(strict=True)
     try:
@@ -822,6 +834,12 @@ def _repair_task_camera(
 ) -> None:
     """Keep owned physical fixtures from hiding the task in the main view."""
 
+    if scenario.rolling_island_scene is not None:
+        # The adapter installs Michael's arm-relative island camera in the
+        # normalized task frame.  It is the requested visual reference for
+        # F3b and must not be replaced by the former miniature-runway view.
+        return
+
     if scenario.motion_kind not in {
         "direct_free_contact_interception",
         "rolling_pickup_interception",
@@ -977,6 +995,19 @@ def _patch_calibrated_model(
             # create a hidden fixture.
             geom.set("margin", "0.004")
 
+    if scenario.rolling_island_scene is not None:
+        floor = root.find(".//geom[@name='floor']")
+        if floor is None:
+            raise RuntimeError("rolling-island scene lacks its physical room floor")
+        floor.set("contype", "1")
+        floor.set("conaffinity", "1")
+        floor.set("condim", "3")
+        floor.set("friction", "0.9 0.005 0.0001")
+        floor.set("solref", "0.003 1")
+        floor.set("solimp", "0.94 0.995 0.001")
+        floor.set("priority", "2")
+        floor.set("margin", "0.004")
+
     for surface in scenario.surfaces:
         geom = root.find(f".//geom[@name='{surface.name}']")
         if geom is None:
@@ -993,6 +1024,23 @@ def _patch_calibrated_model(
 
     if scenario.embodiment != "no_robot":
         _restore_collision_geometries(root)
+        # A missed rolling ball is allowed to strike the real robot pedestal,
+        # but the contact must still obey the strict 2 mm robot-penetration
+        # gate.  Calibrate the restored link0 collision shell just like the
+        # hand shells instead of suppressing this physically meaningful
+        # contact or rounding a threshold violation away.
+        link0 = root.find(".//body[@name='link0']")
+        if link0 is None:
+            raise RuntimeError("robot pedestal body is unavailable: link0")
+        for geom in link0.findall("./geom"):
+            if "collision" not in str(geom.get("class") or ""):
+                continue
+            geom.set("condim", "3")
+            geom.set("friction", "0.9 0.005 0.0001")
+            geom.set("solref", "0.003 1")
+            geom.set("solimp", "0.94 0.995 0.001")
+            geom.set("priority", "2")
+            geom.set("margin", "0.004")
     if scenario.embodiment == FRANKA_HAND:
         for body_name in ("hand", "left_finger", "right_finger"):
             body = root.find(f".//body[@name='{body_name}']")
@@ -1021,6 +1069,11 @@ def _patch_calibrated_model(
             pad = root.find(f".//geom[@name='{name}']")
             if pad is None:
                 raise RuntimeError(f"Robotiq calibrated pad is unavailable: {name}")
+            pad_size = [float(value) for value in str(pad.get("size") or "").split()]
+            if len(pad_size) != 3:
+                raise RuntimeError(f"Robotiq calibrated pad size is malformed: {name}")
+            pad_size[0] = RIGID_REVIEW_PROFILE.robotiq_pad_half_depth_m
+            pad.set("size", " ".join(f"{value:.9g}" for value in pad_size))
             pad.set("condim", str(RIGID_REVIEW_PROFILE.robotiq_pad_condim))
             pad.set(
                 "friction",
@@ -1050,7 +1103,9 @@ def _patch_calibrated_model(
     # R0 and R1; other current recipes retain their declared table/support
     # frame.
     height_offset = (
-        0.0
+        scenario.rolling_island_scene.table_top_z_m
+        if scenario.rolling_island_scene is not None
+        else 0.0
         if _is_floor_rooted_interception(scenario.corpus_leaf_id)
         else 0.74
         if scenario.requires_real_robocasa
@@ -1317,6 +1372,66 @@ def _background_geometry_contract(
         )
         classified_geom_ids.add(geom_id)
 
+    rolling_wrapper_id = int(
+        mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, ROLLING_ISLAND_WRAPPER_NAME
+        )
+    )
+    if scenario.rolling_island_scene is not None and rolling_wrapper_id < 0:
+        raise RuntimeError("rolling-island scenario omitted its scene wrapper")
+    if scenario.rolling_island_scene is None and rolling_wrapper_id >= 0:
+        raise RuntimeError("non-F3b scenario unexpectedly contains a rolling island")
+    if rolling_wrapper_id >= 0:
+        assert scenario.rolling_island_scene is not None
+        counter_name = scenario.rolling_island_scene.counter_name
+        counter_suffix = counter_name.removeprefix("island_")
+        rolling_body_ids: set[int] = set()
+        for body_id in range(1, model.nbody):
+            cursor = body_id
+            while cursor > 0:
+                if cursor == rolling_wrapper_id:
+                    rolling_body_ids.add(body_id)
+                    break
+                cursor = int(model.body_parentid[cursor])
+        ordinal = 0
+        for geom_id in range(model.ngeom):
+            if int(model.geom_bodyid[geom_id]) not in rolling_body_ids:
+                continue
+            name = str(
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+                or ""
+            )
+            if name in exclusions:
+                continue
+            if geom_id in classified_geom_ids:
+                raise RuntimeError("background geom received multiple classifications")
+            suffix = name or f"geom:{ordinal:04d}"
+            is_fixture_support = bool(
+                name
+                and (
+                    name.endswith(counter_name)
+                    or name.endswith(counter_suffix)
+                )
+            )
+            descriptors.append(
+                {
+                    "stable_id": f"rolling_island:{suffix}",
+                    "geom_id": geom_id,
+                    "classification": (
+                        "rolling_island_fixture_support"
+                        if is_fixture_support
+                        else "rolling_island"
+                    ),
+                    "source_name": name or None,
+                    "catalog_slot": None,
+                    "fixture_support_id": (
+                        scenario.surfaces[0].name if is_fixture_support else None
+                    ),
+                }
+            )
+            classified_geom_ids.add(geom_id)
+            ordinal += 1
+
     for item in robocasa_assets:
         slot = str(item.get("slot") or "")
         if not slot:
@@ -1362,6 +1477,12 @@ def _background_geometry_contract(
             )
             classified_geom_ids.add(geom_id)
 
+    # v4 makes the fixture relationship part of every descriptor, including
+    # an explicit null for ordinary visual backgrounds.  Omitting the key on
+    # some rows made the planned static hash differ from the independently
+    # normalized runtime replay even though the geometry itself was identical.
+    for descriptor in descriptors:
+        descriptor.setdefault("fixture_support_id", None)
     descriptors.sort(key=lambda value: str(value["stable_id"]))
     if len({str(value["stable_id"]) for value in descriptors}) != len(descriptors):
         raise RuntimeError("background geometry stable IDs are not unique")
@@ -1422,7 +1543,13 @@ def _remove_procedural_fixture_intersections(
     remain fail-closed in runtime clearance.
     """
 
-    if not scenario.requires_real_robocasa or not scenario.surfaces:
+    if (
+        not scenario.surfaces
+        or (
+            not scenario.requires_real_robocasa
+            and scenario.corpus_leaf_id != "F3b"
+        )
+    ):
         return ()
     provisional_xml = ET.tostring(root, encoding="unicode")
     provisional_model = mujoco.MjModel.from_xml_string(provisional_xml)
@@ -1476,12 +1603,15 @@ def compile_source_model(
     *,
     source_dependency: SourceDependencyManifest,
     robocasa_dependency: RoboCasaDependency | None,
+    rolling_island_dependency: RollingIslandDependencyManifest | None = None,
 ) -> CompiledSourceModel:
     """Compile a model; every state/model mutation happens before initialization."""
 
     scenario.validate()
     if scenario.requires_real_robocasa and robocasa_dependency is None:
         raise RuntimeError("R1 review requires the real licensed RoboCasa dependency")
+    if scenario.rolling_island_scene is not None and rolling_island_dependency is None:
+        raise RuntimeError("rolling-island review requires its pinned scene dependency")
     try:
         import mujoco
     except ImportError as error:
@@ -1502,6 +1632,25 @@ def compile_source_model(
             bundle = scene_builder.build_episode(sample)
     root = ET.fromstring(bundle.xml)
     stripped = _strip_robotwin(root)
+    rolling_camera_pose: Mapping[str, Any] = {}
+    if scenario.rolling_island_scene is not None:
+        assert rolling_island_dependency is not None
+        assert robocasa_dependency is not None
+        rolling_camera_pose = install_rolling_island_scene(
+            root,
+            scenario.rolling_island_scene,
+            dependency=rolling_island_dependency,
+            robocasa=robocasa_dependency,
+            seed=int(scenario.rng_subseeds["assets"]),
+            lighting_intensity=float(sample.lighting_intensity),
+            camera_jitter=tuple(float(value) for value in sample.camera_jitter),
+            object_initial_position_m=scenario.object_initial_position_m,
+            physical_target_position_m=(
+                scenario.physical_target_position_m
+                if scenario.physical_target_position_m is not None
+                else scenario.controller_target_position_m
+            ),
+        )
     robocasa_assets: tuple[Mapping[str, Any], ...] = ()
     stripped_external_robocasa = 0
     if scenario.requires_real_robocasa:
@@ -1583,7 +1732,14 @@ def compile_source_model(
         robot_base_position_m=robot_base_position,
         robot_base_quaternion_wxyz=robot_base_quaternion,
         external_camera_metadata=_runtime_camera_metadata(
-            bundle.camera_pose if isinstance(bundle.camera_pose, Mapping) else {},
+            {
+                **(
+                    dict(bundle.camera_pose)
+                    if isinstance(bundle.camera_pose, Mapping)
+                    else {}
+                ),
+                **dict(rolling_camera_pose),
+            },
             robocasa_assets,
             removed_count=stripped_external_robocasa,
             removed_visual_work_surface_names=removed_visual_work_surfaces,

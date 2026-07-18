@@ -20,7 +20,7 @@ from ...common.rebound import (
 
 
 SOURCE_MUJOCO_PROFILE_SCHEMA = "dynamic-robot-source-mujoco-profile/v1"
-SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v10"
+SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v13"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,8 +53,13 @@ class RigidReviewProfile:
         DEFAULT_REBOUND_ACCEPTANCE.minimum_separation_duration_s
     )
     robotiq_pad_condim: int = 3
-    robotiq_pad_friction: tuple[float, float, float] = (0.9, 0.005, 0.0001)
+    robotiq_pad_friction: tuple[float, float, float] = (1.5, 0.005, 0.0001)
     robotiq_pad_solref: tuple[float, float] = (0.012, 0.7)
+    # The external prototype's 44 mm-deep invisible boxes stopped a rolling
+    # ball on their leading corners before it entered the physical jaw gap.
+    # v13 retains the measured 20 mm full pad depth and the visual mesh.
+    robotiq_pad_half_depth_m: float = 0.010
+    robotiq_passive_finger_acceleration_limit_rad_s2: float = 200.0
     # v2: the physical thick-pad midpoint replaces the historical base site.
     # 115 is the smallest tested bounded command whose fixed-review contact
     # event agrees at 600 and 1200 Hz within the 1 cm / one-frame gate.
@@ -91,23 +96,26 @@ class RigidReviewProfile:
     )
     minimum_arm_command_travel_rad: float = 0.01
     maximum_reach_arrival_distance_m: float = 0.025
-    # v10 rolling-pickup (F3b) support.  The rolling intercept keeps the same
-    # 0.44 s event horizon as the falling catches so the fixed [1.0, 1.6] s
-    # transport-evidence window stays strictly post-grasp, and the ball is
-    # released rolling without slip at a speed slow enough for the bounded
-    # 100 ms closure to capture it without per-case tuning.  The plate sits
-    # 12 mm proud of the work surface (the F2c bounce-plate construction) so
-    # the owned rolling fixture is never coplanar with external scene
-    # counters.
-    rolling_pickup_speed_m_s: float = 0.55
-    rolling_pickup_event_time_s: float = 0.44
-    # The rolling runway is a raised owned track: with the intercept directly
-    # on the work surface the Franka low-reach IK branch placed arm links in
-    # floor collision at initialization (measured 4.8e5 rad/s^2 servo
-    # explosions), so the pickup happens at a measured arm-feasible height
-    # instead of tuning any per-case quantity.
-    rolling_pickup_runway_half_xy_m: tuple[float, float] = (0.45, 0.30)
-    rolling_pickup_runway_height_m: float = 0.10
+    # v13 rolling-island pickup.  The 0.8 s horizon matches the collaborator's
+    # visible reach-and-intercept staging while leaving enough time for a
+    # limit-checked actuator trajectory.  The ball rolls without slip on the
+    # real counter top; there is no miniature runway or artificial backstop.
+    rolling_pickup_speed_m_s: float = 0.38
+    rolling_pickup_event_time_s: float = 0.95
+    # Start clearly retracted and raised, then reach through the arm actuators.
+    # These are the largest tested offsets that fit the embodiment-specific
+    # 0.80 s Robotiq / 0.895 s Panda arrival deadlines and strict limits.
+    pickup_ready_retract_x_m: float = 0.08
+    pickup_ready_raise_z_m: float = 0.12
+    robotiq_pickup_ready_retract_x_m: float = 0.05
+    robotiq_pickup_ready_raise_z_m: float = 0.09
+    robotiq_pickup_reach_arrival_before_event_s: float = 0.15
+    robotiq_pickup_closure_start_before_event_s: float = 0.08
+    robotiq_pickup_closure_duration_s: float = 0.15
+    robotiq_pickup_tendon_target: float = 140.0
+    robotiq_pickup_capture_followthrough_x_m: float = 0.035
+    robotiq_pickup_capture_start_s: float = 1.02
+    robotiq_pickup_capture_end_s: float = 1.30
     # A pickup success must exhibit contact-supported displacement, so both
     # F3b variants lift well beyond the 0.06 m transport-evidence threshold
     # (the slow transport quintic places 0.702 of the lift inside the fixed
@@ -129,12 +137,13 @@ class RigidReviewProfile:
     # the ball's upper hemisphere, which the retention evidence validates.
     robotiq_pickup_standoff_m: float = 0.022
     # The pickup transport uses the slowest feasible quintic over the whole
-    # post-grasp window (grasp is secure at the 0.44 s event; the fixed
-    # [1.0, 1.6] s displacement-evidence window still sees >= 0.10 of the
-    # lift).  The default 0.6 s falling-catch transport window measurably
-    # excited 127 rad/s^2 wrist servo transients on the deep-fold lift.
-    pickup_transport_start_s: float = 0.55
-    pickup_transport_end_s: float = 1.90
+    # post-grasp window after the 0.95 s rolling interception.  The default
+    # 0.6 s falling-catch transport window measurably excited 127 rad/s^2
+    # wrist servo transients on the deep-fold lift.
+    pickup_transport_start_s: float = 1.08
+    pickup_transport_end_s: float = 2.43
+    robotiq_pickup_transport_start_s: float = 1.30
+    robotiq_pickup_transport_end_s: float = 2.45
     maximum_gripper_penetration_m: float = 0.002
     maximum_task_surface_penetration_m: float = 0.003
     maximum_effective_restitution: float = 1.05
@@ -184,8 +193,15 @@ class RigidReviewProfile:
             )
         if self.robotiq_pad_condim != 3:
             raise ValueError("Robotiq thick pads must use condim=3")
-        if self.robotiq_pad_friction != (0.9, 0.005, 0.0001):
-            raise ValueError("Robotiq thick-pad friction changed without a profile version")
+        if not (
+            0.9 <= self.robotiq_pad_friction[0] <= 2.0
+            and self.robotiq_pad_friction[1:] == (0.005, 0.0001)
+        ):
+            raise ValueError("Robotiq thick-pad friction is outside v13 calibration")
+        if not 0.010 <= self.robotiq_pad_half_depth_m <= 0.022:
+            raise ValueError("Robotiq collision-pad half depth is outside calibration")
+        if not 100.0 <= self.robotiq_passive_finger_acceleration_limit_rad_s2 <= 250.0:
+            raise ValueError("Robotiq passive-finger acceleration limit is invalid")
         if self.robotiq_tendon_force_range_n != (-0.16, 0.16):
             raise ValueError("Robotiq calibrated tendon force range must remain +/-0.16 N")
         if not 0.0 < self.closure_duration_s <= self.closure_start_before_ballistic_s:
@@ -224,23 +240,37 @@ class RigidReviewProfile:
             raise ValueError("rolling pickup speed must be a bounded positive roll")
         if not 0.0 < self.rolling_pickup_event_time_s <= 1.0:
             raise ValueError("rolling pickup event horizon must be positive and bounded")
-        if len(self.rolling_pickup_runway_half_xy_m) != 2 or any(
-            value <= 0.0 for value in self.rolling_pickup_runway_half_xy_m
+        if not 0.0 <= self.pickup_ready_retract_x_m <= 0.20:
+            raise ValueError("pickup ready-pose retraction must be bounded")
+        if not 0.05 <= self.pickup_ready_raise_z_m <= 0.20:
+            raise ValueError("pickup ready pose must visibly rise above the intercept")
+        if not 0.0 <= self.robotiq_pickup_ready_retract_x_m <= 0.20:
+            raise ValueError("Robotiq pickup ready-pose retraction must be bounded")
+        if not 0.05 <= self.robotiq_pickup_ready_raise_z_m <= 0.20:
+            raise ValueError("Robotiq pickup ready pose must visibly rise")
+        if not 0.05 <= self.robotiq_pickup_reach_arrival_before_event_s <= 0.25:
+            raise ValueError("Robotiq pickup arrival lead must be bounded")
+        if not (
+            0.0
+            < self.robotiq_pickup_closure_start_before_event_s
+            < self.robotiq_pickup_closure_duration_s
         ):
-            raise ValueError("rolling pickup runway must have positive half extents")
-        if not 0.05 <= self.rolling_pickup_runway_height_m <= 0.30:
-            raise ValueError(
-                "rolling pickup runway must be a raised arm-feasible track"
-            )
-        run_up_m = self.rolling_pickup_speed_m_s * self.rolling_pickup_event_time_s
-        if run_up_m >= self.rolling_pickup_runway_half_xy_m[0]:
-            raise ValueError(
-                "rolling pickup runway cannot contain the run-up and the overrun"
-            )
-        if self.rolling_pickup_runway_half_xy_m[1] <= 0.135 + 0.05:
-            raise ValueError(
-                "rolling pickup runway cannot contain the declared lateral negative"
-            )
+            raise ValueError("Robotiq pickup closure must straddle the intercept")
+        if not self.closure_duration_s < self.robotiq_pickup_closure_duration_s <= 0.20:
+            raise ValueError("Robotiq pickup closure must remain smooth and bounded")
+        if not self.robotiq_tendon_target < self.robotiq_pickup_tendon_target <= 200.0:
+            raise ValueError("Robotiq pickup tendon target must add bounded retention")
+        if not 0.0 < self.robotiq_pickup_capture_followthrough_x_m <= 0.06:
+            raise ValueError("Robotiq capture follow-through must be small and positive")
+        if not (
+            self.rolling_pickup_event_time_s
+            < self.robotiq_pickup_capture_start_s
+            < self.robotiq_pickup_capture_end_s
+            <= self.robotiq_pickup_transport_start_s
+            < self.robotiq_pickup_transport_end_s
+            <= 2.5
+        ):
+            raise ValueError("Robotiq capture/lift phases are not ordered")
         if not 0.10 <= self.pickup_lift_height_m <= 0.30:
             raise ValueError(
                 "pickup lift must exceed the transport-displacement evidence floor"
@@ -256,10 +286,10 @@ class RigidReviewProfile:
         if not (
             self.rolling_pickup_event_time_s
             < self.pickup_transport_start_s
-            < 1.0
+            < 1.10
             < 1.6
             < self.pickup_transport_end_s
-            <= 2.0
+            <= 3.0
         ):
             raise ValueError(
                 "pickup transport must start after the grasp event and span "
@@ -294,6 +324,8 @@ class RigidReviewProfile:
             self.minimum_rebound_separation_duration_s,
             *self.robotiq_pad_friction,
             *self.robotiq_pad_solref,
+            self.robotiq_pad_half_depth_m,
+            self.robotiq_passive_finger_acceleration_limit_rad_s2,
             self.robotiq_tendon_target,
             *self.robotiq_tendon_force_range_n,
             self.closure_start_before_ballistic_s,
@@ -317,11 +349,22 @@ class RigidReviewProfile:
             self.robotiq_final_position_delta_m,
             self.rolling_pickup_speed_m_s,
             self.rolling_pickup_event_time_s,
-            *self.rolling_pickup_runway_half_xy_m,
-            self.rolling_pickup_runway_height_m,
+            self.pickup_ready_retract_x_m,
+            self.pickup_ready_raise_z_m,
+            self.robotiq_pickup_ready_retract_x_m,
+            self.robotiq_pickup_ready_raise_z_m,
+            self.robotiq_pickup_reach_arrival_before_event_s,
+            self.robotiq_pickup_closure_start_before_event_s,
+            self.robotiq_pickup_closure_duration_s,
+            self.robotiq_pickup_tendon_target,
+            self.robotiq_pickup_capture_followthrough_x_m,
+            self.robotiq_pickup_capture_start_s,
+            self.robotiq_pickup_capture_end_s,
             self.pickup_lift_height_m,
             self.pickup_transport_start_s,
             self.pickup_transport_end_s,
+            self.robotiq_pickup_transport_start_s,
+            self.robotiq_pickup_transport_end_s,
             self.robotiq_pickup_standoff_m,
             self.pickup_transport_lateral_m,
         )

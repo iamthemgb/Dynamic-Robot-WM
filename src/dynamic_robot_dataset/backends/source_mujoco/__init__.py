@@ -15,9 +15,11 @@ from .profiles import (
     timestep_comparison_failures,
 )
 from .provenance import (
+    PINNED_ROLLING_ISLAND_MANIFEST_SHA256,
     PINNED_SOURCE_MANIFEST_SHA256,
     SourceDependencyError,
     resolve_robocasa_dependency,
+    resolve_rolling_island_dependency,
     resolve_source_dependency,
 )
 from .source_spec import prepare_review_case
@@ -25,6 +27,7 @@ from .source_spec import prepare_review_case
 __all__ = [
     "IKDiagnostics",
     "IMPLEMENTED_REVIEW_VARIANTS",
+    "PINNED_ROLLING_ISLAND_MANIFEST_SHA256",
     "PINNED_SOURCE_MANIFEST_SHA256",
     "PhysicalSurface",
     "RIGID_REVIEW_PROFILE",
@@ -38,6 +41,7 @@ __all__ = [
     "minimum_jerk_fraction",
     "prepare_review_case",
     "resolve_robocasa_dependency",
+    "resolve_rolling_island_dependency",
     "resolve_source_dependency",
     "timestep_comparison_failures",
 ]

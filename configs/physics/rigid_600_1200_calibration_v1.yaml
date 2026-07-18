@@ -1,7 +1,7 @@
 schema_version: dynamic-robot-rigid-profile-calibration/v1
-calibration_id: source_mujoco_rigid_600_1200_candidate_v8
+calibration_id: source_mujoco_rigid_600_1200_candidate_v11
 contract_version: dynamic-robot-dataset/v2
-current_runtime_profile: source-mujoco-rigid-review-2026-07-v10
+current_runtime_profile: source-mujoco-rigid-review-2026-07-v13
 
 # This file records exploratory measurements made while repairing the owned
 # source_mujoco controller/contact path.  It is deliberately not an admission
@@ -22,14 +22,15 @@ admission:
 
 source_binding:
   backend: source_mujoco
-  compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v3
-  backend_version: 0.10.0-review
+  compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v4
+  backend_version: 0.13.0-review
   objective_evaluator_version: 1.4.0
   visibility_qc_schema: source-mujoco-visibility-qc/v3
-  background_clearance_schema: source-mujoco-background-clearance/v3
+  background_clearance_schema: source-mujoco-background-clearance/v4
   rebound_acceptance_schema: dynamic-robot-rebound-acceptance/v1
   backend_capability_registry: configs/backends/capabilities_v1.yaml
   external_dependency_manifest_sha256: 823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99
+  rolling_island_dependency_manifest_sha256: cf6a9ec045b8392f8ca6351b9d749021aab8973ed5ffff78499b51497d55d384
   evidence_artifacts_hash_bound: false
   source_trees_read_only: true
 
@@ -580,6 +581,93 @@ measurements:
         out of frame and into background furniture, failing rendered
         visibility/background-clearance QC (4 of 6 fixed cases) that the F1
         rooting was introduced to satisfy.
+    admission_claimed: false
+    formal_human_approval_recorded: false
+
+  f3b_rolling_island_repair_v13:
+    description: replace the blue runway and assisted collaborator controller with an audited real-counter scene and an owned actuator-only rolling interception
+    runtime_profile: source-mujoco-rigid-review-2026-07-v13
+    backend_version: 0.13.0-review
+    compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v4
+    fixed_seeds_preserved: true
+    external_scene_dependency:
+      root: /gpfs/radev/project/sous/mzl7/ball_roll_interception_scripts
+      manifest_sha256: cf6a9ec045b8392f8ca6351b9d749021aab8973ed5ffff78499b51497d55d384
+      usage: scene_geometry_placement_and_camera_only
+      collaborator_controller_imported: false
+      controller_py_in_allowlist: false
+    controller_contract:
+      callback_mutation_boundary: data.ctrl_only
+      object_state_writes_after_initialization: 0
+      direct_robot_state_writes_after_initialization: 0
+      mocap_writes_after_initialization: 0
+      applied_force_writes_after_initialization: 0
+      object_linked_equality_changes_after_initialization: 0
+      model_physics_mutations_after_initialization: 0
+    construction:
+      physical_task_surfaces: [supported_rolling_pickup_island_top]
+      blue_runway_removed: true
+      artificial_backstop_removed: true
+      rolling_speed_m_s: 0.38
+      event_time_s: 0.95
+      rolling_without_slip_initial_state: true
+      panda_visible_ready_retract_x_m: 0.08
+      panda_visible_ready_raise_z_m: 0.12
+      robotiq_visible_ready_retract_x_m: 0.05
+      robotiq_visible_ready_raise_z_m: 0.09
+      robotiq_pad_full_depth_m: 0.020
+      robotiq_pad_friction: [1.5, 0.005, 0.0001]
+      robotiq_capture_followthrough_x_m: 0.035
+      pickup_lift_height_m: 0.12
+    non_rendered_fixed_case_measurements:
+      leaf: F3b
+      cases: 6
+      embodiments: [franka_hand, robotiq_2f85_thick_pad]
+      intended_outcomes: [success, success, miss, miss, miss, miss]
+      all_six_strict_physics_qc_pass: true
+      all_six_background_clearance_pass: true
+      all_intended_outcomes_match_without_seed_replacement: true
+      genuine_free_contact_successes: 2
+      deterministic_physical_failures: 4
+      maximum_gripper_penetration_m: 0.000962069834148694
+      maximum_arm_joint_acceleration_rad_s2: 67.44928599582262
+      maximum_passive_finger_acceleration_rad_s2: 78.47269335029685
+      maximum_passive_finger_acceleration_limit_rad_s2: 200.0
+    remaining_gates:
+      rendered_six_case_artifacts: strict_qc_passed
+      timestep_halving_for_repaired_profile: passed
+      hash_bound_human_review: pending
+    timestep_halving_measurements:
+      rates_hz: [600, 1200]
+      cases: 6
+      all_semantic_outcomes_agree: true
+      all_strict_physics_qc_pass_at_both_rates: true
+      all_saved_artifact_objective_replays_agree: true
+      maximum_event_time_shift_s: 0.0016666666712479294
+      maximum_key_event_position_shift_m: 0.00048382059005499194
+      maximum_allowed_event_time_shift_s: 0.03333333333333333
+      maximum_allowed_key_event_position_shift_m: 0.01
+    rendered_fixed_case_artifacts:
+      dataset_root: /gpfs/radev/project/sous/zl664/dataset_generation_runs/review_F3b_rolling_island_v13
+      episode_count: 6
+      strict_qc_passed: true
+      failed_case_ids: []
+      run_plan_hash: f550ce5f7ccd672e67a89f105922703d0bcd83dd0cc0d08040deef7acc8615d6
+      dataset_report_sha256: ce7e6c6876eaa36460f6762282cf65d85bcbfacf3a18a5eb9dc2c6e2430b9142
+      complete_metadata_sha256: 873ce1d5455f283b67f9ba528e3739d6aa76693bc1b1706048d7a4d4c2b937f8
+      pending_human_ledger_sha256: c133a910b44eef93bcfe5bcbbb1c9f031ecb59384ba36d74bdc8c89931ebed8a
+    assistant_qualitative_screen:
+      status: completed_not_a_human_approval
+      reviewed_main_event_strips: 6
+      reviewed_secondary_event_strips: 6
+      blue_runway_or_artificial_backstop_visible: false
+      full_counter_support_visible: true
+      robot_and_ball_visible_at_required_checkpoints: true
+      nominal_successes_show_contact_retention_and_lift: true
+      negative_branches_remain_visible_physical_misses: true
+      obvious_fixture_floating_or_task_volume_intersection: false
+      appearance_limitation: simplified_yaml_box_geometry_and_flat_colors_are_not_pixel_identical_to_the_collaborators_native_textured_render
+      scale_decision: keep_blocked_until_hash_bound_human_review
     admission_claimed: false
     formal_human_approval_recorded: false
 

@@ -50,11 +50,15 @@ from .controller import (
 from .model import CompiledSourceModel, compile_source_model
 from .profiles import RIGID_REVIEW_PROFILE
 from .provenance import (
+    PINNED_ROLLING_ISLAND_MANIFEST_SHA256,
+    PINNED_ROLLING_ISLAND_SOURCE_FILES,
     PINNED_SOURCE_MANIFEST_SHA256,
     PINNED_SOURCE_FILES,
     RoboCasaDependency,
+    RollingIslandDependencyManifest,
     SourceDependencyManifest,
     resolve_robocasa_dependency,
+    resolve_rolling_island_dependency,
     resolve_source_dependency,
 )
 
@@ -80,7 +84,7 @@ ROBOTIQ_OPEN_Q = np.array(
 )
 
 SOURCE_MUJOCO_BACKGROUND_CLEARANCE_SCHEMA = (
-    "source-mujoco-background-clearance/v3"
+    "source-mujoco-background-clearance/v4"
 )
 SOURCE_MUJOCO_TOOL_VISIBILITY_TOPOLOGY_SCHEMA = (
     "source-mujoco-tool-visibility-topology/v1"
@@ -410,12 +414,31 @@ def _controller_for_scenario(
     # and must descend onto it through ctrl-only minimum-jerk commands.  A
     # rollout that begins at the intercept produces a stationary interception
     # that automated free-contact QC cannot distinguish from a real reach.
-    ready_target = (
-        float(scenario.controller_target_position_m[0]),
-        float(scenario.controller_target_position_m[1]),
-        float(scenario.controller_target_position_m[2])
-        + RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m,
-    )
+    if "pickup" in scenario.motion_kind:
+        ready_retract_x = (
+            RIGID_REVIEW_PROFILE.robotiq_pickup_ready_retract_x_m
+            if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
+            else RIGID_REVIEW_PROFILE.pickup_ready_retract_x_m
+        )
+        ready_raise_z = (
+            RIGID_REVIEW_PROFILE.robotiq_pickup_ready_raise_z_m
+            if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
+            else RIGID_REVIEW_PROFILE.pickup_ready_raise_z_m
+        )
+        ready_target = (
+            float(scenario.controller_target_position_m[0])
+            - ready_retract_x,
+            float(scenario.controller_target_position_m[1]),
+            float(scenario.controller_target_position_m[2])
+            + ready_raise_z,
+        )
+    else:
+        ready_target = (
+            float(scenario.controller_target_position_m[0]),
+            float(scenario.controller_target_position_m[1]),
+            float(scenario.controller_target_position_m[2])
+            + RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m,
+        )
     ready, ready_diagnostics = _solve_arm_ik(
         mujoco,
         least_squares,
@@ -423,20 +446,45 @@ def _controller_for_scenario(
         scenario,
         ready_target,
         initial_arm_q=intercept,
-        regularization_weight=0.1,
+        regularization_weight=(0.03 if "pickup" in scenario.motion_kind else 0.1),
         orientation_weight=0.1,
         hand_orientation=hand_orientation,
     )
+    robotiq_pickup = bool(
+        "pickup" in scenario.motion_kind
+        and scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
+    )
+    capture: np.ndarray | None = None
     transport: np.ndarray | None = None
     diagnostics.extend((intercept_diagnostics, ready_diagnostics))
     if scenario.controller_transport_position_m is not None:
+        transport_seed = intercept
+        if robotiq_pickup:
+            capture_target = (
+                float(scenario.controller_target_position_m[0])
+                + RIGID_REVIEW_PROFILE.robotiq_pickup_capture_followthrough_x_m,
+                float(scenario.controller_target_position_m[1]),
+                float(scenario.controller_target_position_m[2]),
+            )
+            capture, capture_diagnostics = _solve_arm_ik(
+                mujoco,
+                least_squares,
+                compiled,
+                scenario,
+                capture_target,
+                initial_arm_q=intercept,
+                regularization_weight=0.1,
+                hand_orientation=hand_orientation,
+            )
+            diagnostics.append(capture_diagnostics)
+            transport_seed = capture
         transport, transport_diagnostics = _solve_arm_ik(
             mujoco,
             least_squares,
             compiled,
             scenario,
             scenario.controller_transport_position_m,
-            initial_arm_q=intercept,
+            initial_arm_q=transport_seed,
             # The strong null-space pull keeps the transport solution in the
             # intercept's branch with the least joint travel; without it the
             # solver unfolds the wrist and the 60 Hz command steps excite
@@ -446,11 +494,24 @@ def _controller_for_scenario(
         )
         diagnostics.append(transport_diagnostics)
     event_time = float(scenario.ballistic_event_time_s)
-    closure_start = max(
-        0.0,
-        event_time - RIGID_REVIEW_PROFILE.closure_start_before_ballistic_s,
+    closure_lead_s = (
+        RIGID_REVIEW_PROFILE.robotiq_pickup_closure_start_before_event_s
+        if robotiq_pickup
+        else RIGID_REVIEW_PROFILE.closure_start_before_ballistic_s
     )
-    reach_end = event_time - RIGID_REVIEW_PROFILE.reach_arrival_before_ballistic_s
+    closure_duration_s = (
+        RIGID_REVIEW_PROFILE.robotiq_pickup_closure_duration_s
+        if robotiq_pickup
+        else RIGID_REVIEW_PROFILE.closure_duration_s
+    )
+    closure_start = max(0.0, event_time - closure_lead_s)
+    reach_arrival_lead_s = (
+        RIGID_REVIEW_PROFILE.robotiq_pickup_reach_arrival_before_event_s
+        if "pickup" in scenario.motion_kind
+        and scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
+        else RIGID_REVIEW_PROFILE.reach_arrival_before_ballistic_s
+    )
+    reach_end = event_time - reach_arrival_lead_s
     minimum_duration = feasible_reach_duration_s(intercept - ready)
     if minimum_duration > reach_end:
         raise RuntimeError(
@@ -466,7 +527,11 @@ def _controller_for_scenario(
     reach_start = 0.0
     if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD:
         open_gripper = 0.0
-        closed_gripper = RIGID_REVIEW_PROFILE.robotiq_tendon_target
+        closed_gripper = (
+            RIGID_REVIEW_PROFILE.robotiq_pickup_tendon_target
+            if robotiq_pickup
+            else RIGID_REVIEW_PROFILE.robotiq_tendon_target
+        )
         initial_robot_q = np.r_[ready, ROBOTIQ_OPEN_Q]
     else:
         open_gripper = 255.0
@@ -485,8 +550,31 @@ def _controller_for_scenario(
     # v9 reach rule does.  Falling catches keep the plan's default window.
     transport_window = (
         {
-            "transport_start_s": RIGID_REVIEW_PROFILE.pickup_transport_start_s,
-            "transport_end_s": RIGID_REVIEW_PROFILE.pickup_transport_end_s,
+            "transport_start_s": (
+                RIGID_REVIEW_PROFILE.robotiq_pickup_transport_start_s
+                if robotiq_pickup
+                else RIGID_REVIEW_PROFILE.pickup_transport_start_s
+            ),
+            "transport_end_s": (
+                RIGID_REVIEW_PROFILE.robotiq_pickup_transport_end_s
+                if robotiq_pickup
+                else RIGID_REVIEW_PROFILE.pickup_transport_end_s
+            ),
+            "capture_arm_command": (
+                None
+                if capture is None
+                else tuple(float(value) for value in capture)
+            ),
+            "capture_start_s": (
+                RIGID_REVIEW_PROFILE.robotiq_pickup_capture_start_s
+                if capture is not None
+                else 1.0
+            ),
+            "capture_end_s": (
+                RIGID_REVIEW_PROFILE.robotiq_pickup_capture_end_s
+                if capture is not None
+                else 1.0
+            ),
         }
         if "pickup" in scenario.motion_kind
         else {}
@@ -500,7 +588,7 @@ def _controller_for_scenario(
         arm_motion_start_s=reach_start,
         arm_motion_end_s=reach_end,
         closure_start_s=closure_start,
-        closure_end_s=closure_start + RIGID_REVIEW_PROFILE.closure_duration_s,
+        closure_end_s=closure_start + closure_duration_s,
         transport_arm_command=(
             None if transport is None else tuple(float(value) for value in transport)
         ),
@@ -893,7 +981,7 @@ def _projected_sphere(
 def _compiled_tool_visibility_topology(
     compiled: CompiledSourceModel,
 ) -> dict[str, Any]:
-    """Return the canonical rendered/contact topology from the compiled model."""
+    """Return canonical tool identities plus rigid robot contact proxies."""
 
     left_geom_ids = sorted(int(value) for value in compiled.ids.left_gripper_geom_ids)
     right_geom_ids = sorted(int(value) for value in compiled.ids.right_gripper_geom_ids)
@@ -903,10 +991,28 @@ def _compiled_tool_visibility_topology(
     }
     if compiled.ids.hand_body is not None:
         tool_body_ids.add(int(compiled.ids.hand_body))
+    # A failed free-contact attempt can physically strike an arm link or the
+    # pedestal after missing the fingers.  Collision shells are invisible in
+    # segmentation, so bind every geom on the robot subtree to its rigid body;
+    # visible geoms on that exact body can then serve as review proxies.  The
+    # left/right masks below still use only the declared finger-body IDs.
+    robot_body_ids: set[int] = set(tool_body_ids)
+    if compiled.ids.robot_joint_ids:
+        first_joint_body = int(
+            compiled.model.jnt_bodyid[compiled.ids.robot_joint_ids[0]]
+        )
+        robot_root_body = int(compiled.model.body_parentid[first_joint_body])
+        for body_id in range(1, int(compiled.model.nbody)):
+            cursor = body_id
+            while cursor > 0:
+                if cursor == robot_root_body:
+                    robot_body_ids.add(body_id)
+                    break
+                cursor = int(compiled.model.body_parentid[cursor])
     geom_body_ids = {
         str(geom_id): int(compiled.model.geom_bodyid[geom_id])
         for geom_id in range(int(compiled.model.ngeom))
-        if int(compiled.model.geom_bodyid[geom_id]) in tool_body_ids
+        if int(compiled.model.geom_bodyid[geom_id]) in robot_body_ids
     }
     return {
         "schema_version": SOURCE_MUJOCO_TOOL_VISIBILITY_TOPOLOGY_SCHEMA,
@@ -1768,10 +1874,30 @@ def _catch_evidence(
         stable = maximum_relative_range <= 0.01
     transport_supported = True
     if scenario.controller_transport_position_m is not None:
+        transport_start_s = (
+            RIGID_REVIEW_PROFILE.robotiq_pickup_capture_start_s
+            if "pickup" in scenario.motion_kind
+            and scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
+            else RIGID_REVIEW_PROFILE.pickup_transport_start_s
+            if "pickup" in scenario.motion_kind
+            else 1.0
+        )
+        transport_end_s = (
+            min(
+                (
+                    RIGID_REVIEW_PROFILE.robotiq_pickup_transport_end_s
+                    if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
+                    else RIGID_REVIEW_PROFILE.pickup_transport_end_s
+                ),
+                scenario.duration_s,
+            )
+            if "pickup" in scenario.motion_kind
+            else 1.6
+        )
         transport_rows = [
             row
             for row in rows
-            if 1.0 <= float(row["timestamp"]) <= 1.6
+            if transport_start_s <= float(row["timestamp"]) <= transport_end_s
         ]
         bilateral_fraction = (
             sum(row.get("contact.bilateral") is True for row in transport_rows)
@@ -1895,10 +2021,9 @@ def _rolling_evidence(
         max(segments, key=len, default=[]),
     )
     # The fixture certifies the approach roll up to the declared key event.
-    # Later same-mode surface interactions (a missed pickup compressing into
-    # the runway backstop and rebounding) measurably turned the tangent fit
-    # positive and the contact slip past its limit without any airborne gap
-    # to split the segment on.
+    # Later same-mode interactions after a missed pickup (including a real
+    # robot-pedestal or room-floor contact) are not part of the approach-roll
+    # fit and may occur without a long enough airborne gap to split the segment.
     contacted = [
         row
         for row in contacted
@@ -2108,18 +2233,27 @@ def _physics_qc(
     ]
     maximum_joint_velocity = max(joint_velocities, default=0.0)
     maximum_joint_acceleration = 0.0
+    maximum_arm_joint_acceleration = 0.0
+    maximum_passive_finger_acceleration = 0.0
     for left, right in zip(rows, rows[1:]):
         if not left["robot.joint_velocity"]:
             continue
         dt = float(right["timestamp"]) - float(left["timestamp"])
+        accelerations = [
+            abs(float(b) - float(a)) / dt
+            for a, b in zip(
+                left["robot.joint_velocity"], right["robot.joint_velocity"]
+            )
+        ]
         maximum_joint_acceleration = max(
-            maximum_joint_acceleration,
-            max(
-                abs(float(b) - float(a)) / dt
-                for a, b in zip(
-                    left["robot.joint_velocity"], right["robot.joint_velocity"]
-                )
-            ),
+            maximum_joint_acceleration, max(accelerations, default=0.0)
+        )
+        maximum_arm_joint_acceleration = max(
+            maximum_arm_joint_acceleration, max(accelerations[:7], default=0.0)
+        )
+        maximum_passive_finger_acceleration = max(
+            maximum_passive_finger_acceleration,
+            max(accelerations[7:], default=0.0),
         )
     force_ok = True
     for row in rows:
@@ -2130,7 +2264,16 @@ def _physics_qc(
                 low, high = compiled.model.actuator_forcerange[actuator_id]
                 if not float(low) - 1e-8 <= float(force) <= float(high) + 1e-8:
                     force_ok = False
-    joint_ok = maximum_joint_velocity <= 3.5 and maximum_joint_acceleration <= 80.0
+    passive_finger_limit = (
+        RIGID_REVIEW_PROFILE.robotiq_passive_finger_acceleration_limit_rad_s2
+        if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
+        else 80.0
+    )
+    joint_ok = bool(
+        maximum_joint_velocity <= 3.5
+        and maximum_arm_joint_acceleration <= 80.0
+        and maximum_passive_finger_acceleration <= passive_finger_limit
+    )
     reaching_checks: dict[str, Any] = {}
     if scenario.embodiment != "no_robot":
         # A genuine reaching catch must command real arm travel and place the
@@ -2247,6 +2390,11 @@ def _physics_qc(
         or (
             restitution["rebound_acceptance_pass"]
             if rebound_applicable
+            else (
+                float(rolling.get("maximum_mechanical_energy_gain_fraction", math.inf))
+                <= RIGID_REVIEW_PROFILE.maximum_free_flight_energy_drift_fraction
+            )
+            if "roll" in scenario.motion_kind
             else _effective_restitution_within_limit(
                 restitution.get("effective_restitution")
             )
@@ -2364,6 +2512,11 @@ def _physics_qc(
         "task_evidence_failures": tuple(task_failures),
         "maximum_joint_velocity_rad_s": maximum_joint_velocity,
         "maximum_joint_acceleration_rad_s2": maximum_joint_acceleration,
+        "maximum_arm_joint_acceleration_rad_s2": maximum_arm_joint_acceleration,
+        "maximum_passive_finger_acceleration_rad_s2": (
+            maximum_passive_finger_acceleration
+        ),
+        "passive_finger_acceleration_limit_rad_s2": passive_finger_limit,
         "thresholds": RIGID_REVIEW_PROFILE.to_dict(),
     }
     outcome = {
@@ -2766,6 +2919,23 @@ def _evaluate_background_clearance_rows(
         fixture_intersections = [
             value["fixture_id"] for value in fixture_intersection_rows
         ]
+        fixture_support_id = str(raw.get("fixture_support_id") or "")
+        classified_fixture_support = (
+            str(raw.get("classification") or "")
+            == "rolling_island_fixture_support"
+        )
+        allowed_fixture_intersections = (
+            [fixture_support_id]
+            if classified_fixture_support and fixture_support_id
+            else []
+        )
+        unexpected_fixture_intersections = sorted(
+            set(fixture_intersections) - set(allowed_fixture_intersections)
+        )
+        if classified_fixture_support and fixture_support_id not in fixture_by_id:
+            raise RuntimeError(
+                f"rolling-island visual support targets an unknown fixture: {stable_id}"
+            )
         contype = int(raw.get("contype", -1))
         conaffinity = int(raw.get("conaffinity", -1))
         body_weld_id = int(raw.get("body_weld_id", -1))
@@ -2784,6 +2954,7 @@ def _evaluate_background_clearance_rows(
                 "classification": str(raw.get("classification") or ""),
                 "source_name": raw.get("source_name"),
                 "catalog_slot": raw.get("catalog_slot"),
+                "fixture_support_id": fixture_support_id or None,
                 "body_id": int(raw.get("body_id", -1)),
                 "body_name": raw.get("body_name"),
                 "body_weld_id": body_weld_id,
@@ -2809,8 +2980,12 @@ def _evaluate_background_clearance_rows(
                         "object_position_m": list(positions[first_index]),
                     }
                 ),
-                "fixture_intersection_clear": not fixture_intersections,
+                "fixture_intersection_clear": not unexpected_fixture_intersections,
                 "intersecting_fixture_ids": fixture_intersections,
+                "allowed_fixture_intersection_ids": allowed_fixture_intersections,
+                "unexpected_fixture_intersection_ids": (
+                    unexpected_fixture_intersections
+                ),
                 "fixture_intersections": fixture_intersection_rows,
             }
         )
@@ -3276,6 +3451,7 @@ class SourceMujocoBackend:
         *,
         source_root: str | Path | None = None,
         robocasa_root: str | Path | None = None,
+        rolling_island_root: str | Path | None = None,
     ) -> None:
         self.source_dependency: SourceDependencyManifest = resolve_source_dependency(
             source_root
@@ -3285,11 +3461,23 @@ class SourceMujocoBackend:
         self.robocasa_dependency: RoboCasaDependency = resolve_robocasa_dependency(
             robocasa_root
         )
+        self.rolling_island_dependency: RollingIslandDependencyManifest = (
+            resolve_rolling_island_dependency(rolling_island_root)
+        )
+        if (
+            self.rolling_island_dependency.manifest_sha256
+            != PINNED_ROLLING_ISLAND_MANIFEST_SHA256
+        ):
+            raise RuntimeError("rolling-island dependency differs from its audited pin")
 
     def compile_case(
         self, case: Mapping[str, Any] | Any
     ) -> SourceMujocoCompiledScenario:
-        return compile_review_case(case)
+        return compile_review_case(
+            case,
+            rolling_island_dependency=self.rolling_island_dependency,
+            robocasa_dependency=self.robocasa_dependency,
+        )
 
     def run(
         self,
@@ -3306,6 +3494,11 @@ class SourceMujocoBackend:
             source_dependency=self.source_dependency,
             robocasa_dependency=(
                 self.robocasa_dependency if scenario.requires_real_robocasa else None
+            ),
+            rolling_island_dependency=(
+                self.rolling_island_dependency
+                if scenario.rolling_island_scene is not None
+                else None
             ),
         )
         controller, initial_robot_q, ik_diagnostics = _controller_for_scenario(
@@ -3628,6 +3821,21 @@ class SourceMujocoBackend:
         )
         source_hashes = {
             "external_dependency_manifest": self.source_dependency.manifest_sha256,
+            "rolling_island_dependency_manifest": (
+                self.rolling_island_dependency.manifest_sha256
+            ),
+            "rolling_island_scene_builder_py": PINNED_ROLLING_ISLAND_SOURCE_FILES[
+                "scene_builder.py"
+            ],
+            "rolling_island_utils_py": PINNED_ROLLING_ISLAND_SOURCE_FILES[
+                "utils.py"
+            ],
+            "rolling_island_variants_py": PINNED_ROLLING_ISLAND_SOURCE_FILES[
+                "variants.py"
+            ],
+            "rolling_island_yaml_scene_py": PINNED_ROLLING_ISLAND_SOURCE_FILES[
+                "yaml_scene.py"
+            ],
             "scene_builder_py": PINNED_SOURCE_FILES[
                 "scripts_mujoco/scene_builder.py"
             ],

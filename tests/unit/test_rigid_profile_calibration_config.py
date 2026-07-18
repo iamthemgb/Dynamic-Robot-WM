@@ -28,17 +28,17 @@ def test_rigid_profile_evidence_is_versioned_source_bound_and_fail_closed() -> N
 
     assert evidence["schema_version"] == "dynamic-robot-rigid-profile-calibration/v1"
     assert evidence["contract_version"] == "dynamic-robot-dataset/v2"
-    assert evidence["calibration_id"].endswith("_v8")
-    assert evidence["current_runtime_profile"].endswith("-v10")
+    assert evidence["calibration_id"].endswith("_v11")
+    assert evidence["current_runtime_profile"].endswith("-v13")
     assert evidence["evidence_status"] == "exploratory_unbound"
     assert evidence["release_state"] == "blocked"
     assert evidence["release_eligible"] is False
-    assert evidence["source_binding"]["compiled_scenario_schema"].endswith("/v3")
-    assert evidence["source_binding"]["backend_version"] == "0.10.0-review"
+    assert evidence["source_binding"]["compiled_scenario_schema"].endswith("/v4")
+    assert evidence["source_binding"]["backend_version"] == "0.13.0-review"
     assert evidence["source_binding"]["objective_evaluator_version"] == "1.4.0"
     assert evidence["source_binding"]["visibility_qc_schema"].endswith("/v3")
     assert evidence["source_binding"]["background_clearance_schema"].endswith(
-        "/v3"
+        "/v4"
     )
     assert evidence["source_binding"]["rebound_acceptance_schema"].endswith(
         "/v1"
@@ -51,6 +51,10 @@ def test_rigid_profile_evidence_is_versioned_source_bound_and_fail_closed() -> N
     assert (
         evidence["source_binding"]["external_dependency_manifest_sha256"]
         == source_mujoco["source_hashes"]["external_dependency_manifest"]
+    )
+    assert (
+        evidence["source_binding"]["rolling_island_dependency_manifest_sha256"]
+        == source_mujoco["source_hashes"]["rolling_island_dependency_manifest"]
     )
     assert all(not profile["admitted"] for profile in evidence["profiles"].values())
 
@@ -479,16 +483,12 @@ def test_v10_f2a_f3b_unblock_records_measured_design_evidence_and_no_admission()
         is True
     )
 
-    from dynamic_robot_dataset.backends.source_mujoco import RIGID_REVIEW_PROFILE
-
     f3b = evidence["f3b_construction"]
-    assert tuple(f3b["runway_half_xy_m"]) == (
-        RIGID_REVIEW_PROFILE.rolling_pickup_runway_half_xy_m
-    )
-    assert f3b["runway_height_m"] == RIGID_REVIEW_PROFILE.rolling_pickup_runway_height_m
-    assert f3b["rolling_speed_m_s"] == RIGID_REVIEW_PROFILE.rolling_pickup_speed_m_s
-    assert f3b["event_time_s"] == RIGID_REVIEW_PROFILE.rolling_pickup_event_time_s
-    assert f3b["pickup_lift_height_m"] == RIGID_REVIEW_PROFILE.pickup_lift_height_m
+    assert f3b["runway_half_xy_m"] == [0.45, 0.30]
+    assert f3b["runway_height_m"] == 0.10
+    assert f3b["rolling_speed_m_s"] == 0.55
+    assert f3b["event_time_s"] == 0.44
+    assert f3b["pickup_lift_height_m"] == 0.12
 
     f2a = evidence["f2a_construction"]
     assert f2a["deflection_gripper_never_closes"] is True
@@ -531,5 +531,91 @@ def test_v10_f2a_f3b_unblock_records_measured_design_evidence_and_no_admission()
     )
 
     assert added <= set(PROFILE.reference_rate_required_case_classes)
+    assert evidence["admission_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False
+
+
+def test_v13_f3b_uses_a_pinned_scene_but_never_the_assisted_controller() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"][
+        "f3b_rolling_island_repair_v13"
+    ]
+    assert evidence["runtime_profile"].endswith("-v13")
+    assert evidence["backend_version"] == "0.13.0-review"
+    assert evidence["compiled_scenario_schema"].endswith("/v4")
+    assert evidence["fixed_seeds_preserved"] is True
+
+    dependency = evidence["external_scene_dependency"]
+    assert dependency["controller_py_in_allowlist"] is False
+    assert dependency["collaborator_controller_imported"] is False
+    assert dependency["usage"] == "scene_geometry_placement_and_camera_only"
+
+    controller = evidence["controller_contract"]
+    assert controller["callback_mutation_boundary"] == "data.ctrl_only"
+    assert all(
+        controller[name] == 0
+        for name in (
+            "object_state_writes_after_initialization",
+            "direct_robot_state_writes_after_initialization",
+            "mocap_writes_after_initialization",
+            "applied_force_writes_after_initialization",
+            "object_linked_equality_changes_after_initialization",
+            "model_physics_mutations_after_initialization",
+        )
+    )
+
+    construction = evidence["construction"]
+    assert construction["physical_task_surfaces"] == [
+        "supported_rolling_pickup_island_top"
+    ]
+    assert construction["blue_runway_removed"] is True
+    assert construction["artificial_backstop_removed"] is True
+
+    measured = evidence["non_rendered_fixed_case_measurements"]
+    assert measured["all_six_strict_physics_qc_pass"] is True
+    assert measured["all_six_background_clearance_pass"] is True
+    assert measured["all_intended_outcomes_match_without_seed_replacement"] is True
+    assert measured["genuine_free_contact_successes"] == 2
+    assert measured["deterministic_physical_failures"] == 4
+    assert measured["maximum_gripper_penetration_m"] <= 0.002
+    assert measured["maximum_arm_joint_acceleration_rad_s2"] <= 80.0
+    assert (
+        measured["maximum_passive_finger_acceleration_rad_s2"]
+        <= measured["maximum_passive_finger_acceleration_limit_rad_s2"]
+    )
+    halving = evidence["timestep_halving_measurements"]
+    assert halving["rates_hz"] == [600, 1200]
+    assert halving["cases"] == 6
+    assert halving["all_semantic_outcomes_agree"] is True
+    assert halving["all_strict_physics_qc_pass_at_both_rates"] is True
+    assert halving["all_saved_artifact_objective_replays_agree"] is True
+    assert (
+        halving["maximum_event_time_shift_s"]
+        <= halving["maximum_allowed_event_time_shift_s"]
+    )
+    assert (
+        halving["maximum_key_event_position_shift_m"]
+        <= halving["maximum_allowed_key_event_position_shift_m"]
+    )
+    rendered = evidence["rendered_fixed_case_artifacts"]
+    assert rendered["episode_count"] == 6
+    assert rendered["strict_qc_passed"] is True
+    assert rendered["failed_case_ids"] == []
+    assert all(
+        len(rendered[name]) == 64
+        for name in (
+            "run_plan_hash",
+            "dataset_report_sha256",
+            "complete_metadata_sha256",
+            "pending_human_ledger_sha256",
+        )
+    )
+    screen = evidence["assistant_qualitative_screen"]
+    assert screen["status"] == "completed_not_a_human_approval"
+    assert screen["reviewed_main_event_strips"] == 6
+    assert screen["reviewed_secondary_event_strips"] == 6
+    assert screen["blue_runway_or_artificial_backstop_visible"] is False
+    assert screen["nominal_successes_show_contact_retention_and_lift"] is True
+    assert screen["negative_branches_remain_visible_physical_misses"] is True
+    assert screen["scale_decision"] == "keep_blocked_until_hash_bound_human_review"
     assert evidence["admission_claimed"] is False
     assert evidence["formal_human_approval_recorded"] is False

@@ -67,6 +67,9 @@ class OwnedControllerPlan:
     transport_arm_command: tuple[float, ...] | None = None
     transport_start_s: float = 1.0
     transport_end_s: float = 1.6
+    capture_arm_command: tuple[float, ...] | None = None
+    capture_start_s: float = 1.0
+    capture_end_s: float = 1.0
 
     def validate(self) -> None:
         if self.embodiment not in {FRANKA_HAND, ROBOTIQ_2F85_THICK_PAD}:
@@ -82,6 +85,11 @@ class OwnedControllerPlan:
             or any(not math.isfinite(value) for value in self.transport_arm_command)
         ):
             raise ValueError("transport arm command must contain seven finite values")
+        if self.capture_arm_command is not None and (
+            len(self.capture_arm_command) != 7
+            or any(not math.isfinite(value) for value in self.capture_arm_command)
+        ):
+            raise ValueError("capture arm command must contain seven finite values")
         if any(
             not math.isfinite(value)
             for value in (self.open_gripper_command, self.closed_gripper_command)
@@ -91,10 +99,16 @@ class OwnedControllerPlan:
             raise ValueError("arm motion interval is invalid")
         if not 0 <= self.closure_start_s < self.closure_end_s:
             raise ValueError("closure interval is invalid")
-        if abs(
-            (self.closure_end_s - self.closure_start_s)
-            - RIGID_REVIEW_PROFILE.closure_duration_s
-        ) > 1e-9:
+        closure_duration = self.closure_end_s - self.closure_start_s
+        allowed_closure_durations = {RIGID_REVIEW_PROFILE.closure_duration_s}
+        if self.embodiment == ROBOTIQ_2F85_THICK_PAD:
+            allowed_closure_durations.add(
+                RIGID_REVIEW_PROFILE.robotiq_pickup_closure_duration_s
+            )
+        if not any(
+            abs(closure_duration - allowed) <= 1e-9
+            for allowed in allowed_closure_durations
+        ):
             raise ValueError("closure duration differs from the calibrated bounded profile")
         travel = max(
             abs(left - right)
@@ -112,6 +126,13 @@ class OwnedControllerPlan:
                 raise ValueError("transport interval is invalid")
             if self.transport_start_s < self.arm_motion_end_s:
                 raise ValueError("transport cannot begin before reach arrival")
+        if self.capture_arm_command is not None:
+            if not self.arm_motion_end_s <= self.capture_start_s < self.capture_end_s:
+                raise ValueError("capture phase must follow reach arrival")
+            if self.transport_arm_command is None:
+                raise ValueError("capture phase requires a final transport command")
+            if self.transport_start_s < self.capture_end_s:
+                raise ValueError("final transport cannot begin before capture completes")
 
     def command_at(self, timestamp_s: float) -> np.ndarray:
         """Return the exact eight planned commands at one timestamp."""
@@ -126,12 +147,23 @@ class OwnedControllerPlan:
             self.arm_motion_start_s,
             self.arm_motion_end_s,
         )
+        transport_origin = intercept
+        if self.capture_arm_command is not None and timestamp >= self.capture_start_s:
+            capture = np.asarray(self.capture_arm_command, dtype=np.float64)
+            arm = _interpolate(
+                intercept,
+                capture,
+                timestamp,
+                self.capture_start_s,
+                self.capture_end_s,
+            )
+            transport_origin = capture
         if (
             self.transport_arm_command is not None
             and timestamp >= self.transport_start_s
         ):
             arm = _interpolate(
-                intercept,
+                transport_origin,
                 np.asarray(self.transport_arm_command, dtype=np.float64),
                 timestamp,
                 self.transport_start_s,

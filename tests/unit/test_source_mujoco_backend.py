@@ -8,6 +8,7 @@ import pytest
 
 from dynamic_robot_dataset.backends.source_mujoco import (
     IMPLEMENTED_REVIEW_VARIANTS,
+    PINNED_ROLLING_ISLAND_MANIFEST_SHA256,
     PINNED_SOURCE_MANIFEST_SHA256,
     RIGID_REVIEW_PROFILE,
     SourceMujocoBackend,
@@ -15,6 +16,7 @@ from dynamic_robot_dataset.backends.source_mujoco import (
     compile_review_case,
     prepare_review_case,
     resolve_source_dependency,
+    resolve_rolling_island_dependency,
     timestep_comparison_failures,
 )
 from dynamic_robot_dataset.backends.source_mujoco.compiler import (
@@ -79,17 +81,24 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
         "823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99"
     )
     assert RIGID_REVIEW_PROFILE.simulation_hz == 600
-    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v10")
+    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v13")
     assert RIGID_REVIEW_PROFILE.wall_solref == (0.012, 0.7)
     assert RIGID_REVIEW_PROFILE.table_rebound_solref == (0.0045, 0.42)
     assert RIGID_REVIEW_PROFILE.minimum_rebound_effective_restitution == 0.15
-    assert RIGID_REVIEW_PROFILE.robotiq_pad_friction == (0.9, 0.005, 0.0001)
+    assert RIGID_REVIEW_PROFILE.robotiq_pad_friction == (1.5, 0.005, 0.0001)
+    assert RIGID_REVIEW_PROFILE.robotiq_pad_half_depth_m == 0.010
+    assert RIGID_REVIEW_PROFILE.robotiq_passive_finger_acceleration_limit_rad_s2 == 200.0
     assert RIGID_REVIEW_PROFILE.robotiq_tendon_target == 115.0
     assert RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m == 0.045
     assert RIGID_REVIEW_PROFILE.reach_arrival_before_ballistic_s == 0.055
     assert RIGID_REVIEW_PROFILE.minimum_reach_duration_s == 0.18
-    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.10.0-review"
-    assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v3")
+    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.13.0-review"
+    assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v4")
+
+    rolling = resolve_rolling_island_dependency()
+    assert rolling.manifest_sha256 == PINNED_ROLLING_ISLAND_MANIFEST_SHA256
+    assert rolling.controller_imported is False
+    assert "controller.py" not in rolling.file_sha256
 
 
 def test_f1_r0_r1_share_owned_physics_base_and_planned_robot_state() -> None:
@@ -1044,7 +1053,7 @@ def test_fixed_negative_is_label_consistent_without_success_evidence() -> None:
     assert result.physics_qc["task_evidence_failures"] == ()
 
 
-def test_f3b_recipe_rolls_without_slip_onto_a_raised_backstopped_runway() -> None:
+def test_f3b_recipe_rolls_without_slip_on_the_real_counter_without_a_backstop() -> None:
     for rollout in range(6):
         scenario = compile_review_case(_case("F3b", rollout=rollout))
         assert scenario.motion_kind == "rolling_pickup_interception"
@@ -1053,19 +1062,24 @@ def test_f3b_recipe_rolls_without_slip_onto_a_raised_backstopped_runway() -> Non
         radius = scenario.object_radius_m
         assert math.hypot(vx - wy * radius, vy + wx * radius) < 1e-9
         assert vz == 0.0
-        assert [surface.role for surface in scenario.surfaces] == ["table", "wall"]
-        runway = scenario.surfaces[0]
-        runway_top = runway.position_m[2] + runway.half_size_m[2]
+        assert [surface.role for surface in scenario.surfaces] == ["table"]
+        table = scenario.surfaces[0]
+        assert table.name == "supported_rolling_pickup_island_top"
+        table_top = table.position_m[2] + table.half_size_m[2]
         assert scenario.object_initial_position_m[2] == pytest.approx(
-            runway_top + radius
+            table_top + radius
         )
         assert scenario.physical_target_position_m[2] == pytest.approx(
-            runway_top + radius
+            table_top + radius
         )
-        assert scenario.controller_transport_position_m[2] == pytest.approx(
-            scenario.physical_target_position_m[2]
-            + RIGID_REVIEW_PROFILE.pickup_lift_height_m
-        )
+        if scenario.branch_role == "nominal_success":
+            assert scenario.controller_transport_position_m is not None
+            assert scenario.controller_transport_position_m[2] == pytest.approx(
+                scenario.physical_target_position_m[2]
+                + RIGID_REVIEW_PROFILE.pickup_lift_height_m
+            )
+        else:
+            assert scenario.controller_transport_position_m is None
         standoff = (
             RIGID_REVIEW_PROFILE.robotiq_pickup_standoff_m
             if scenario.embodiment == "robotiq_2f85_thick_pad"
@@ -1074,8 +1088,10 @@ def test_f3b_recipe_rolls_without_slip_onto_a_raised_backstopped_runway() -> Non
         assert scenario.controller_target_position_m[2] == pytest.approx(
             scenario.physical_target_position_m[2] + standoff
         )
-        backstop = scenario.surfaces[1]
-        assert backstop.position_m[0] < scenario.controller_target_position_m[0]
+        if rollout == 0:
+            assert scenario.rolling_island_scene is None
+        else:
+            assert scenario.rolling_island_scene is not None
 
 
 def test_f2a_deflection_shares_the_direct_catch_ballistic_construction() -> None:
@@ -1186,3 +1202,36 @@ def test_fixed_f3b_rolling_pickup_is_a_strict_lifted_free_contact_success() -> N
     assert result.physics_qc["maximum_joint_acceleration_rad_s2"] <= 80.0
     assert result.runtime_audit["object_state_writes_after_initialization"] == 0
     assert result.runtime_audit["direct_robot_state_writes_after_initialization"] == 0
+
+
+@pytest.mark.integration
+def test_fixed_f3b_matrix_passes_the_v13_600_1200_timestep_gate() -> None:
+    backend = SourceMujocoBackend()
+    for rollout in range(6):
+        scenario = backend.compile_case(_case("F3b", rollout=rollout))
+        observations = []
+        for simulation_hz in (
+            RIGID_REVIEW_PROFILE.simulation_hz,
+            RIGID_REVIEW_PROFILE.comparison_simulation_hz,
+        ):
+            result = backend.run(
+                replace(scenario, simulation_hz=simulation_hz), render=False
+            )
+            event_time_s = float(result.outcome["key_event_time_s"])
+            event_row = min(
+                result.high_rate_rows,
+                key=lambda row: abs(float(row["timestamp"]) - event_time_s),
+            )
+            observations.append(
+                {
+                    "outcome": result.outcome["actual_outcome"],
+                    "task_success": result.outcome["task_success"],
+                    "physics_qc_pass": result.physics_qc["physics_qc_pass"],
+                    "saved_artifact_objective_replay_matches": result.outcome[
+                        "saved_artifact_objective_replay_matches"
+                    ],
+                    "key_event_time_s": event_time_s,
+                    "key_event_position_m": event_row["object.position"],
+                }
+            )
+        assert timestep_comparison_failures(*observations) == ()

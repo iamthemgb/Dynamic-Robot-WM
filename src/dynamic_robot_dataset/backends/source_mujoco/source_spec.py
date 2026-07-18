@@ -36,7 +36,7 @@ from .backend import (
 from .compiler import SourceMujocoCompiledScenario
 from .model import CompiledSourceModel, compile_source_model
 from .profiles import RIGID_REVIEW_PROFILE
-from .provenance import PINNED_SOURCE_FILES
+from .provenance import PINNED_ROLLING_ISLAND_SOURCE_FILES, PINNED_SOURCE_FILES
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
@@ -307,11 +307,29 @@ def prepare_review_case(
             if scenario.requires_real_robocasa
             else None
         ),
+        rolling_island_dependency=(
+            source_backend.rolling_island_dependency
+            if scenario.rolling_island_scene is not None
+            else None
+        ),
     )
     mujoco.mj_forward(compiled.model, compiled.data)
     catalog_raw = yaml.safe_load(_ROBOCASA_CATALOG.read_text(encoding="utf-8"))
     source_hashes = {
         "external_dependency_manifest": source_backend.source_dependency.manifest_sha256,
+        "rolling_island_dependency_manifest": (
+            source_backend.rolling_island_dependency.manifest_sha256
+        ),
+        "rolling_island_scene_builder_py": PINNED_ROLLING_ISLAND_SOURCE_FILES[
+            "scene_builder.py"
+        ],
+        "rolling_island_utils_py": PINNED_ROLLING_ISLAND_SOURCE_FILES["utils.py"],
+        "rolling_island_variants_py": PINNED_ROLLING_ISLAND_SOURCE_FILES[
+            "variants.py"
+        ],
+        "rolling_island_yaml_scene_py": PINNED_ROLLING_ISLAND_SOURCE_FILES[
+            "yaml_scene.py"
+        ],
         "scene_builder_py": PINNED_SOURCE_FILES["scripts_mujoco/scene_builder.py"],
         "variants_py": PINNED_SOURCE_FILES["scripts_mujoco/variants.py"],
         "robocasa_importer_py": PINNED_SOURCE_FILES["scripts_mujoco/robocasa_assets.py"],
@@ -402,6 +420,11 @@ def prepare_review_case(
             "scene_variant": scenario.scene_variant,
             "randomization_level": scenario.randomization_level,
             "requires_real_robocasa": scenario.requires_real_robocasa,
+            "rolling_island_scene": (
+                scenario.rolling_island_scene.to_dict()
+                if scenario.rolling_island_scene is not None
+                else None
+            ),
             "passive_variation_profile": scenario.passive_variation_profile,
             "rebound_acceptance": (
                 RIGID_REVIEW_PROFILE.rebound_acceptance().to_dict()
