@@ -29,12 +29,12 @@ def test_rigid_profile_evidence_is_versioned_source_bound_and_fail_closed() -> N
     assert evidence["schema_version"] == "dynamic-robot-rigid-profile-calibration/v1"
     assert evidence["contract_version"] == "dynamic-robot-dataset/v2"
     assert evidence["calibration_id"].endswith("_v8")
-    assert evidence["current_runtime_profile"].endswith("-v8")
+    assert evidence["current_runtime_profile"].endswith("-v9")
     assert evidence["evidence_status"] == "exploratory_unbound"
     assert evidence["release_state"] == "blocked"
     assert evidence["release_eligible"] is False
     assert evidence["source_binding"]["compiled_scenario_schema"].endswith("/v3")
-    assert evidence["source_binding"]["backend_version"] == "0.8.0-review"
+    assert evidence["source_binding"]["backend_version"] == "0.9.0-review"
     assert evidence["source_binding"]["objective_evaluator_version"] == "1.3.0"
     assert evidence["source_binding"]["visibility_qc_schema"].endswith("/v3")
     assert evidence["source_binding"]["background_clearance_schema"].endswith(
@@ -355,6 +355,57 @@ def test_v8_camera_repairs_preserve_fixed_seeds_and_bind_rendered_evidence() -> 
         assert case["secondary_final_object_area_px"] >= 100
         assert case["event_to_post_0p3_pixel_displacement_px"] >= 32
         assert case["event_to_final_pixel_displacement_px"] >= 75
+
+
+def test_v9_reaching_repair_records_defect_ctrl_only_plan_and_no_admission() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"][
+        "reaching_controller_repair_v9"
+    ]
+    assert evidence["runtime_profile"].endswith("-v9")
+    assert evidence["backend_version"] == "0.9.0-review"
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["object_physics_or_initial_state_changed"] is False
+
+    defect = evidence["defect_evidence"]
+    assert defect["runtime_profile_at_measurement"].endswith("-v8")
+    assert defect["all_seven_arm_actuator_command_ranges_rad"] == 0.0
+    assert defect["robot_initialized_at_intercept_pose"] is True
+
+    repair = evidence["repair"]
+    assert repair["ready_waypoint_hover_above_intercept_m"] == 0.045
+    assert repair["initialize_once_at_ready_pose"] is True
+    assert repair["minimum_jerk_reach_through_data_ctrl_only"] is True
+    assert repair["reach_arrival_before_ballistic_event_s"] == 0.055
+    assert repair["no_robot_or_object_state_rewrites_after_initialization"] is True
+    assert repair["no_latch_or_weld_assistance"] is True
+
+    checks = evidence["new_strict_qc_checks"]
+    assert checks["arm_command_travel_present_minimum_rad"] == 0.01
+    assert checks["arm_arrived_at_commanded_intercept_maximum_m"] == 0.025
+
+    measured = evidence["non_rendered_fixed_case_measurements"]
+    assert measured["leaves"] == ["F1a", "F1b", "F1c", "F1d"]
+    assert measured["all_24_fixed_cases_strict_physics_qc_pass"] is True
+    assert (
+        measured["all_intended_outcome_labels_matched_without_seed_changes"]
+        is True
+    )
+    assert measured["arm_command_travel_range_rad"][0] >= 0.01
+    assert measured["reach_arrival_distance_range_m"][1] <= 0.025
+    assert measured["maximum_gripper_penetration_m"] <= 0.002
+    assert measured["maximum_measured_joint_acceleration_rad_s2"] <= 80.0
+
+    divergence = evidence["robotiq_nominal_event_sampling_divergence"]
+    assert (
+        divergence["semantic_outcome_qc_and_replay_agree_at_both_rates"] is True
+    )
+    shifts = divergence["measured_first_bilateral_position_shift_mm"]
+    added = divergence["added_reference_rate_classes"]
+    for leaf, shift in shifts.items():
+        entry = f"{leaf}/robotiq_2f85_thick_pad/nominal_success"
+        assert (shift > 10.0) == (entry in added)
+    assert evidence["admission_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False
 
 
 def test_f1_r1_free_space_repair_records_failed_profile_and_required_reruns() -> None:

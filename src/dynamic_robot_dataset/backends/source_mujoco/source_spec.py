@@ -104,65 +104,72 @@ def _actuator_phases(
     plan = controller.plan
     phases: list[ActuatorPhaseSpec] = []
 
-    def append(name: str, start: float, end: float, arm: Any, gripper: float, interpolation: str) -> None:
+    def append(name: str, start: float, end: float, interpolation: str) -> None:
         if end - start <= 1e-12:
             return
+        # Non-overlapping phase declarations carry the exact planned command
+        # at each phase boundary; ``command_at`` is the same single source of
+        # truth the runtime controller executes.
+        boundary = plan.command_at(end)
         phases.append(
             ActuatorPhaseSpec(
                 name=name,
                 start_s=start,
                 end_s=end,
-                commands=_command(names, arm, gripper),
+                commands=_command(names, boundary[:7], float(boundary[7])),
                 interpolation=interpolation,
             )
         )
 
-    append(
-        "pre_intercept_hold",
-        0.0,
-        plan.closure_start_s,
-        plan.intercept_arm_command,
-        plan.open_gripper_command,
-        "hold",
+    # The reach [arm_motion_start_s, arm_motion_end_s] and the bounded closure
+    # [closure_start_s, closure_end_s] intentionally overlap: the fingers
+    # close during the final approach.  Serialize the true concurrent motion
+    # as sequential segments split at every command-profile breakpoint, named
+    # by what is actually moving inside each segment.
+    breakpoints = sorted(
+        {
+            0.0,
+            plan.arm_motion_start_s,
+            plan.arm_motion_end_s,
+            plan.closure_start_s,
+            plan.closure_end_s,
+        }
     )
-    append(
-        "bounded_closure",
-        plan.closure_start_s,
-        plan.closure_end_s,
-        plan.intercept_arm_command,
-        plan.closed_gripper_command,
-        "jerk_limited",
-    )
-    cursor = plan.closure_end_s
-    if plan.transport_arm_command is not None:
+    for start, end in zip(breakpoints, breakpoints[1:]):
+        midpoint = 0.5 * (start + end)
+        arm_moving = plan.arm_motion_start_s < midpoint < plan.arm_motion_end_s
+        gripper_closing = plan.closure_start_s < midpoint < plan.closure_end_s
+        if arm_moving and gripper_closing:
+            name = "reach_with_bounded_closure"
+        elif arm_moving:
+            name = (
+                "minimum_jerk_reach"
+                if midpoint < plan.closure_start_s
+                else "reach_completion"
+            )
+        elif gripper_closing:
+            name = "bounded_closure"
+        elif midpoint < plan.arm_motion_start_s:
+            name = "ready_hold"
+        else:
+            name = "arrival_hold"
         append(
-            "retention_hold",
-            cursor,
-            plan.transport_start_s,
-            plan.intercept_arm_command,
-            plan.closed_gripper_command,
-            "hold",
+            name,
+            start,
+            end,
+            "jerk_limited" if arm_moving or gripper_closing else "hold",
         )
+    cursor = max(plan.arm_motion_end_s, plan.closure_end_s)
+    if plan.transport_arm_command is not None:
+        append("retention_hold", cursor, plan.transport_start_s, "hold")
         append(
             "supported_transport",
             plan.transport_start_s,
             plan.transport_end_s,
-            plan.transport_arm_command,
-            plan.closed_gripper_command,
             "jerk_limited",
         )
         cursor = plan.transport_end_s
-        final_arm = plan.transport_arm_command
-    else:
-        final_arm = plan.intercept_arm_command
-    append(
-        "final_retention",
-        cursor,
-        scenario.duration_s,
-        final_arm,
-        plan.closed_gripper_command,
-        "hold",
-    )
+    append("final_retention", cursor, scenario.duration_s, "hold")
     return tuple(phases), tuple(float(value) for value in initial_robot_q)
 
 

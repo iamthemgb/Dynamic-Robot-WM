@@ -20,7 +20,7 @@ from ...common.rebound import (
 
 
 SOURCE_MUJOCO_PROFILE_SCHEMA = "dynamic-robot-source-mujoco-profile/v1"
-SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v8"
+SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v9"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +62,35 @@ class RigidReviewProfile:
     robotiq_tendon_force_range_n: tuple[float, float] = (-0.16, 0.16)
     closure_start_before_ballistic_s: float = 0.16
     closure_duration_s: float = 0.10
+    # v9 reaching-catch controller: the arm initializes at a ready waypoint
+    # hovering above the intercept and descends onto it with a minimum-jerk
+    # ctrl-only trajectory that ends before the ballistic event.  Feasibility
+    # uses the published Franka per-joint limits at a safety fraction so the
+    # recorded commands remain replayable on real hardware.
+    ready_hover_above_intercept_m: float = 0.045
+    reach_arrival_before_ballistic_s: float = 0.055
+    minimum_reach_duration_s: float = 0.18
+    reach_limit_safety_fraction: float = 0.8
+    franka_joint_velocity_limit_rad_s: tuple[float, ...] = (
+        2.175,
+        2.175,
+        2.175,
+        2.175,
+        2.610,
+        2.610,
+        2.610,
+    )
+    franka_joint_acceleration_limit_rad_s2: tuple[float, ...] = (
+        15.0,
+        7.5,
+        10.0,
+        12.5,
+        15.0,
+        20.0,
+        20.0,
+    )
+    minimum_arm_command_travel_rad: float = 0.01
+    maximum_reach_arrival_distance_m: float = 0.025
     maximum_gripper_penetration_m: float = 0.002
     maximum_task_surface_penetration_m: float = 0.003
     maximum_effective_restitution: float = 1.05
@@ -73,13 +102,19 @@ class RigidReviewProfile:
     robotiq_first_bilateral_contact_1200_s: float = 0.4366666666664955
     robotiq_final_position_delta_m: float = 0.004186892649805686
     wall_600_1200_outcome_match: bool = True
-    # Fixed review classes for which the 600 Hz candidate failed strict QC.
-    # They execute at the calibrated 1200 Hz reference rather than receiving
-    # a relaxed penetration or event-evidence threshold.
+    # Fixed review classes for which the 600 Hz candidate failed strict QC or
+    # the one-frame/1 cm timestep-halving agreement gate.  They execute at the
+    # calibrated 1200 Hz reference rather than receiving a relaxed
+    # penetration or event-evidence threshold.  The two v9 Robotiq entries
+    # measured first-bilateral-contact sample shifts of 12.3 mm and 21.8 mm
+    # under the reaching controller while outcome/QC/replay still agreed at
+    # both rates.
     reference_rate_required_case_classes: tuple[str, ...] = (
         "P0c/lower_initial_speed",
         "F1a/franka_hand/deterministic_negative_controller_timing",
         "F1b/franka_hand/deterministic_negative_controller_timing",
+        "F1a/robotiq_2f85_thick_pad/nominal_success",
+        "F1d/robotiq_2f85_thick_pad/nominal_success",
     )
     release_state: str = "blocked"
     schema_version: str = SOURCE_MUJOCO_PROFILE_SCHEMA
@@ -109,6 +144,34 @@ class RigidReviewProfile:
             raise ValueError("Robotiq calibrated tendon force range must remain +/-0.16 N")
         if not 0.0 < self.closure_duration_s <= self.closure_start_before_ballistic_s:
             raise ValueError("closure timing is not a bounded pre-intercept trajectory")
+        if not 0.0 < self.ready_hover_above_intercept_m <= 0.10:
+            raise ValueError("ready hover must place the hand slightly above the intercept")
+        if not (
+            0.0
+            < self.reach_arrival_before_ballistic_s
+            < self.closure_start_before_ballistic_s
+            + self.minimum_reach_duration_s
+        ):
+            raise ValueError(
+                "the reach must still be moving when the bounded closure starts "
+                "and must arrive before the ballistic event"
+            )
+        if not 0.0 < self.reach_limit_safety_fraction <= 1.0:
+            raise ValueError("reach limit safety fraction must lie in (0, 1]")
+        if len(self.franka_joint_velocity_limit_rad_s) != 7 or len(
+            self.franka_joint_acceleration_limit_rad_s2
+        ) != 7:
+            raise ValueError("Franka feasibility limits must cover all seven arm joints")
+        if any(
+            value <= 0.0
+            for value in (
+                *self.franka_joint_velocity_limit_rad_s,
+                *self.franka_joint_acceleration_limit_rad_s2,
+                self.minimum_arm_command_travel_rad,
+                self.maximum_reach_arrival_distance_m,
+            )
+        ):
+            raise ValueError("reaching-controller limits must be positive")
         if self.robotiq_calibration_penetration_m > self.maximum_gripper_penetration_m:
             raise ValueError("persisted Robotiq calibration exceeds the 2 mm admission limit")
         if not self.wall_600_1200_outcome_match:
@@ -117,6 +180,8 @@ class RigidReviewProfile:
             "P0c/lower_initial_speed",
             "F1a/franka_hand/deterministic_negative_controller_timing",
             "F1b/franka_hand/deterministic_negative_controller_timing",
+            "F1a/robotiq_2f85_thick_pad/nominal_success",
+            "F1d/robotiq_2f85_thick_pad/nominal_success",
         ):
             raise ValueError("reference-rate exception classes changed without calibration")
         if self.wall_effective_restitution > self.maximum_effective_restitution:
@@ -140,6 +205,14 @@ class RigidReviewProfile:
             *self.robotiq_tendon_force_range_n,
             self.closure_start_before_ballistic_s,
             self.closure_duration_s,
+            self.ready_hover_above_intercept_m,
+            self.reach_arrival_before_ballistic_s,
+            self.minimum_reach_duration_s,
+            self.reach_limit_safety_fraction,
+            *self.franka_joint_velocity_limit_rad_s,
+            *self.franka_joint_acceleration_limit_rad_s2,
+            self.minimum_arm_command_travel_rad,
+            self.maximum_reach_arrival_distance_m,
             self.maximum_gripper_penetration_m,
             self.maximum_task_surface_penetration_m,
             self.maximum_effective_restitution,

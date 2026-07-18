@@ -18,6 +18,39 @@ from ...common.embodiments import FRANKA_HAND, ROBOTIQ_2F85_THICK_PAD
 from .profiles import RIGID_REVIEW_PROFILE, minimum_jerk_fraction
 
 
+def feasible_reach_duration_s(joint_delta: Sequence[float]) -> float:
+    """Shortest replayable minimum-jerk duration for one arm joint move.
+
+    Inverts the quintic peak forms (velocity ``1.875*dq/T``, acceleration
+    ``5.7735*dq/T**2``, jerk ``60*dq/T**3``) against the published Franka
+    per-joint limits and the calibrated trajectory-guard jerk bound, each at
+    the profile safety fraction.  The binding duration is the maximum over
+    joints, floored at the profile minimum so the reach always reads as a
+    deliberate motion rather than a snap.
+    """
+
+    delta = np.abs(np.asarray(joint_delta, dtype=np.float64))
+    if delta.shape != (7,) or not np.isfinite(delta).all():
+        raise ValueError("reach feasibility requires seven finite joint deltas")
+    safety = RIGID_REVIEW_PROFILE.reach_limit_safety_fraction
+    velocity_limit = safety * np.asarray(
+        RIGID_REVIEW_PROFILE.franka_joint_velocity_limit_rad_s, dtype=np.float64
+    )
+    acceleration_limit = safety * np.asarray(
+        RIGID_REVIEW_PROFILE.franka_joint_acceleration_limit_rad_s2,
+        dtype=np.float64,
+    )
+    guard_jerk_limit = safety * np.asarray(
+        calibrated_trajectory_limits(FRANKA_HAND).maximum_jerk_per_s3[:7],
+        dtype=np.float64,
+    )
+    t_velocity = 1.875 * delta / velocity_limit
+    t_acceleration = np.sqrt(5.7735 * delta / acceleration_limit)
+    t_jerk = np.cbrt(60.0 * delta / guard_jerk_limit)
+    binding = float(np.max(np.maximum(np.maximum(t_velocity, t_acceleration), t_jerk)))
+    return max(RIGID_REVIEW_PROFILE.minimum_reach_duration_s, binding)
+
+
 @dataclass(frozen=True, slots=True)
 class OwnedControllerPlan:
     """Precomputed controls; no mutable simulator handle can enter a callback."""
@@ -63,10 +96,57 @@ class OwnedControllerPlan:
             - RIGID_REVIEW_PROFILE.closure_duration_s
         ) > 1e-9:
             raise ValueError("closure duration differs from the calibrated bounded profile")
-        if self.transport_arm_command is not None and not (
-            self.transport_start_s < self.transport_end_s
+        travel = max(
+            abs(left - right)
+            for left, right in zip(self.initial_arm_command, self.intercept_arm_command)
+        )
+        if travel < 1e-6:
+            raise ValueError(
+                "owned reaching plan commands no arm travel; a stationary "
+                "pre-positioned interception is not an acceptable catch"
+            )
+        if not self.arm_motion_start_s < self.closure_start_s:
+            raise ValueError("the reach must begin before the bounded closure")
+        if self.transport_arm_command is not None:
+            if not self.transport_start_s < self.transport_end_s:
+                raise ValueError("transport interval is invalid")
+            if self.transport_start_s < self.arm_motion_end_s:
+                raise ValueError("transport cannot begin before reach arrival")
+
+    def command_at(self, timestamp_s: float) -> np.ndarray:
+        """Return the exact eight planned commands at one timestamp."""
+
+        timestamp = float(timestamp_s)
+        initial = np.asarray(self.initial_arm_command, dtype=np.float64)
+        intercept = np.asarray(self.intercept_arm_command, dtype=np.float64)
+        arm = _interpolate(
+            initial,
+            intercept,
+            timestamp,
+            self.arm_motion_start_s,
+            self.arm_motion_end_s,
+        )
+        if (
+            self.transport_arm_command is not None
+            and timestamp >= self.transport_start_s
         ):
-            raise ValueError("transport interval is invalid")
+            arm = _interpolate(
+                intercept,
+                np.asarray(self.transport_arm_command, dtype=np.float64),
+                timestamp,
+                self.transport_start_s,
+                self.transport_end_s,
+            )
+        open_command = np.asarray((self.open_gripper_command,), dtype=np.float64)
+        closed_command = np.asarray((self.closed_gripper_command,), dtype=np.float64)
+        gripper = _interpolate(
+            open_command,
+            closed_command,
+            timestamp,
+            self.closure_start_s,
+            self.closure_end_s,
+        )
+        return np.r_[arm, gripper]
 
 
 def _interpolate(
@@ -119,34 +199,7 @@ class OwnedActuatorController:
         """Return the eight commands; this method has no simulator reference."""
 
         observation.validate()
-        timestamp = float(observation.timestamp_s)
-        initial = np.asarray(self.plan.initial_arm_command, dtype=np.float64)
-        intercept = np.asarray(self.plan.intercept_arm_command, dtype=np.float64)
-        arm = _interpolate(
-            initial,
-            intercept,
-            timestamp,
-            self.plan.arm_motion_start_s,
-            self.plan.arm_motion_end_s,
-        )
-        if self.plan.transport_arm_command is not None:
-            arm = _interpolate(
-                intercept,
-                np.asarray(self.plan.transport_arm_command, dtype=np.float64),
-                timestamp,
-                self.plan.transport_start_s,
-                self.plan.transport_end_s,
-            )
-        open_command = np.asarray((self.plan.open_gripper_command,), dtype=np.float64)
-        closed_command = np.asarray((self.plan.closed_gripper_command,), dtype=np.float64)
-        gripper = _interpolate(
-            open_command,
-            closed_command,
-            timestamp,
-            self.plan.closure_start_s,
-            self.plan.closure_end_s,
-        )
-        return np.r_[arm, gripper]
+        return self.plan.command_at(float(observation.timestamp_s))
 
     def apply(
         self,
@@ -175,4 +228,5 @@ __all__ = [
     "OwnedActuatorController",
     "OwnedControllerPlan",
     "calibrated_trajectory_limits",
+    "feasible_reach_duration_s",
 ]

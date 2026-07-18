@@ -1,7 +1,7 @@
 schema_version: dynamic-robot-rigid-profile-calibration/v1
 calibration_id: source_mujoco_rigid_600_1200_candidate_v8
 contract_version: dynamic-robot-dataset/v2
-current_runtime_profile: source-mujoco-rigid-review-2026-07-v8
+current_runtime_profile: source-mujoco-rigid-review-2026-07-v9
 
 # This file records exploratory measurements made while repairing the owned
 # source_mujoco controller/contact path.  It is deliberately not an admission
@@ -23,7 +23,7 @@ admission:
 source_binding:
   backend: source_mujoco
   compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v3
-  backend_version: 0.8.0-review
+  backend_version: 0.9.0-review
   objective_evaluator_version: 1.3.0
   visibility_qc_schema: source-mujoco-visibility-qc/v3
   background_clearance_schema: source-mujoco-background-clearance/v3
@@ -456,6 +456,55 @@ measurements:
       - removed_fixture_intersection_background_names
       - relocated_visual_backgrounds
     admission_claimed: false
+
+  reaching_controller_repair_v9:
+    description: ctrl-only minimum-jerk reaching catch replacing the static pre-positioned F1 interception
+    runtime_profile: source-mujoco-rigid-review-2026-07-v9
+    backend_version: 0.9.0-review
+    fixed_seeds_preserved: true
+    object_physics_or_initial_state_changed: false
+    defect_evidence:
+      runtime_profile_at_measurement: source-mujoco-rigid-review-2026-07-v8
+      all_seven_arm_actuator_command_ranges_rad: 0.0
+      only_gripper_command_changed: true
+      robot_initialized_at_intercept_pose: true
+    repair:
+      ready_waypoint_hover_above_intercept_m: 0.045
+      initialize_once_at_ready_pose: true
+      minimum_jerk_reach_through_data_ctrl_only: true
+      reach_arrival_before_ballistic_event_s: 0.055
+      reach_fills_full_pre_arrival_window: true
+      franka_feasibility_limits_per_joint_with_safety_fraction: 0.8
+      ready_ik_null_space_regularization_weight: 0.1
+      ready_ik_orientation_weight: 0.1
+      panda_hand_finger_predictive_contact_margin_m: 0.004
+      no_robot_or_object_state_rewrites_after_initialization: true
+      no_latch_or_weld_assistance: true
+    new_strict_qc_checks:
+      arm_command_travel_present_minimum_rad: 0.01
+      arm_arrived_at_commanded_intercept_maximum_m: 0.025
+    non_rendered_fixed_case_measurements:
+      leaves: [F1a, F1b, F1c, F1d]
+      cases_per_leaf: 6
+      all_24_fixed_cases_strict_physics_qc_pass: true
+      all_intended_outcome_labels_matched_without_seed_changes: true
+      arm_command_travel_range_rad: [0.0537, 0.4156]
+      reach_arrival_distance_range_m: [0.0021, 0.0066]
+      maximum_gripper_penetration_m: 0.00159
+      maximum_measured_joint_acceleration_rad_s2: 78.9
+    robotiq_nominal_event_sampling_divergence:
+      gate: one_frame_and_1cm_first_bilateral_sample_shift
+      semantic_outcome_qc_and_replay_agree_at_both_rates: true
+      measured_first_bilateral_position_shift_mm:
+        F1a: 12.32
+        F1b: 7.49
+        F1c: 3.62
+        F1d: 21.83
+      added_reference_rate_classes:
+        - F1a/robotiq_2f85_thick_pad/nominal_success
+        - F1d/robotiq_2f85_thick_pad/nominal_success
+    admission_claimed: false
+    formal_human_approval_recorded: false
 
 required_before_admission:
   - persist_exact_source_scenario_specs

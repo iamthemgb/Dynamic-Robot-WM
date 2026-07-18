@@ -966,7 +966,13 @@ def _patch_calibrated_model(
                 geom.set("solref", "0.003 1")
                 geom.set("solimp", "0.94 0.995 0.001")
                 geom.set("priority", "2")
-                geom.set("margin", "0.002")
+                # A deflected interception can clip the rigid hand shell at
+                # full ballistic speed.  Like the room floor's failed-catch
+                # profile, four millimetres of predictive contact margin keeps
+                # the geometric depth of that corner graze below the 2 mm
+                # gripper admission limit without moving or scripting the
+                # object.
+                geom.set("margin", "0.004")
     if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD:
         for name in (
             "rq_left_pad_thick_collision_pad",

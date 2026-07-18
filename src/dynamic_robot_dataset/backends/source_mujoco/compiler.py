@@ -17,7 +17,7 @@ from .profiles import RIGID_REVIEW_PROFILE
 
 
 SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v3"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.8.0-review"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.9.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):
@@ -996,16 +996,27 @@ def compile_review_case(
     # The 600 Hz candidate is admitted only for fixed cases that preserve the
     # strict contact/rebound result at the 1200 Hz reference.  The lower-speed
     # P0c wall case exceeds 3 mm at 600 Hz, and the Panda F1a/F1b
-    # negative-timing drops reach the room floor at about 5 m/s.  Compile only
+    # negative-timing drops reach the room floor at about 5 m/s.  Under the
+    # v9 reaching controller the F1a/F1d Robotiq nominal catches keep
+    # outcome/QC/replay agreement but shift the first-bilateral-contact
+    # sample past the 1 cm gate (12.3 mm and 21.8 mm measured).  Compile only
     # those measured exception classes directly at the calibrated reference
     # rate instead of weakening QC.
     requires_reference_rate = (
-        leaf_id == "P0c"
-        and passive_variation_profile == "lower_initial_speed"
-    ) or (
-        leaf_id in {"F1a", "F1b"}
-        and embodiment == FRANKA_HAND
-        and "controller" in branch_role
+        (
+            leaf_id == "P0c"
+            and passive_variation_profile == "lower_initial_speed"
+        )
+        or (
+            leaf_id in {"F1a", "F1b"}
+            and embodiment == FRANKA_HAND
+            and "controller" in branch_role
+        )
+        or (
+            leaf_id in {"F1a", "F1d"}
+            and embodiment == ROBOTIQ_2F85_THICK_PAD
+            and branch_role == "nominal_success"
+        )
     )
     result = SourceMujocoCompiledScenario(
         case_id=str(value.get("case_id") or ""),

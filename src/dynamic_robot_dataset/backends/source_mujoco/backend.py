@@ -42,7 +42,11 @@ from .compiler import (
     SourceMujocoCompiledScenario,
     compile_review_case,
 )
-from .controller import OwnedActuatorController, OwnedControllerPlan
+from .controller import (
+    OwnedActuatorController,
+    OwnedControllerPlan,
+    feasible_reach_duration_s,
+)
 from .model import CompiledSourceModel, compile_source_model
 from .profiles import RIGID_REVIEW_PROFILE
 from .provenance import (
@@ -237,8 +241,19 @@ def _solve_arm_ik(
     target_position: Sequence[float],
     *,
     initial_arm_q: np.ndarray | None = None,
+    regularization_weight: float | None = None,
+    orientation_weight: float | None = None,
 ) -> tuple[np.ndarray, IKDiagnostics]:
-    """Solve and reject failed IK; Panda uses measured fingertip correction."""
+    """Solve and reject failed IK; Panda uses measured fingertip correction.
+
+    ``regularization_weight`` and ``orientation_weight`` override the default
+    null-space pull and palm-alignment pull.  Waypoints that must stay in the
+    seed's arm branch (the ready hover above an intercept) use a strong
+    null-space pull and a weak orientation pull: the catch posture is
+    inherited from the seed, and re-optimizing residual palm alignment for a
+    target only millimetres away drags the base/elbow joints into a distant
+    configuration.
+    """
 
     model, data, ids = compiled.model, compiled.data, compiled.ids
     target = np.asarray(target_position, dtype=np.float64)
@@ -291,12 +306,24 @@ def _solve_arm_ik(
                 np.asarray(data.xquat[ids.hand_body], dtype=np.float64),
                 target_quaternion,
             )
-            orientation_weight = 0.8 if scenario.embodiment == FRANKA_HAND else 0.25
-            regularization_weight = 0.005 if scenario.embodiment == FRANKA_HAND else 0.02
+            alignment_weight = (
+                orientation_weight
+                if orientation_weight is not None
+                else 0.8
+                if scenario.embodiment == FRANKA_HAND
+                else 0.25
+            )
+            null_space_weight = (
+                regularization_weight
+                if regularization_weight is not None
+                else 0.005
+                if scenario.embodiment == FRANKA_HAND
+                else 0.02
+            )
             return np.r_[
                 4.0 * position_error,
-                orientation_weight * orientation_error,
-                regularization_weight * (q - initial),
+                alignment_weight * orientation_error,
+                null_space_weight * (q - initial),
             ]
 
         result = least_squares(
@@ -359,8 +386,28 @@ def _controller_for_scenario(
         scenario,
         scenario.controller_target_position_m,
     )
+    # The robot initializes at a ready waypoint hovering above the intercept
+    # and must descend onto it through ctrl-only minimum-jerk commands.  A
+    # rollout that begins at the intercept produces a stationary interception
+    # that automated free-contact QC cannot distinguish from a real reach.
+    ready_target = (
+        float(scenario.controller_target_position_m[0]),
+        float(scenario.controller_target_position_m[1]),
+        float(scenario.controller_target_position_m[2])
+        + RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m,
+    )
+    ready, ready_diagnostics = _solve_arm_ik(
+        mujoco,
+        least_squares,
+        compiled,
+        scenario,
+        ready_target,
+        initial_arm_q=intercept,
+        regularization_weight=0.1,
+        orientation_weight=0.1,
+    )
     transport: np.ndarray | None = None
-    diagnostics = [intercept_diagnostics]
+    diagnostics = [intercept_diagnostics, ready_diagnostics]
     if scenario.controller_transport_position_m is not None:
         transport, transport_diagnostics = _solve_arm_ik(
             mujoco,
@@ -376,23 +423,37 @@ def _controller_for_scenario(
         0.0,
         event_time - RIGID_REVIEW_PROFILE.closure_start_before_ballistic_s,
     )
+    reach_end = event_time - RIGID_REVIEW_PROFILE.reach_arrival_before_ballistic_s
+    minimum_duration = feasible_reach_duration_s(intercept - ready)
+    if minimum_duration > reach_end:
+        raise RuntimeError(
+            f"reaching catch for {scenario.case_id} is infeasible: the "
+            f"{minimum_duration:.3f} s Franka-feasible reach does not fit before "
+            f"the {reach_end:.3f} s arrival deadline"
+        )
+    # Use the slowest feasible quintic: fill the whole pre-arrival window.
+    # 60 Hz zero-order-hold position-servo tracking excites measured joint
+    # accelerations proportional to the per-tick command increment, so the
+    # longest admissible duration both minimizes that excitation and lets the
+    # servo settle before the ballistic impact.
+    reach_start = 0.0
     if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD:
         open_gripper = 0.0
         closed_gripper = RIGID_REVIEW_PROFILE.robotiq_tendon_target
-        initial_robot_q = np.r_[intercept, ROBOTIQ_OPEN_Q]
+        initial_robot_q = np.r_[ready, ROBOTIQ_OPEN_Q]
     else:
         open_gripper = 255.0
         desired_finger_q = 0.85 * scenario.object_radius_m
         closed_gripper = 255.0 * desired_finger_q / 0.04
-        initial_robot_q = np.r_[intercept, (0.04, 0.04)]
+        initial_robot_q = np.r_[ready, (0.04, 0.04)]
     plan = OwnedControllerPlan(
         embodiment=scenario.embodiment,
-        initial_arm_command=tuple(float(value) for value in intercept),
+        initial_arm_command=tuple(float(value) for value in ready),
         intercept_arm_command=tuple(float(value) for value in intercept),
         open_gripper_command=open_gripper,
         closed_gripper_command=closed_gripper,
-        arm_motion_start_s=0.0,
-        arm_motion_end_s=max(0.05, closure_start),
+        arm_motion_start_s=reach_start,
+        arm_motion_end_s=reach_end,
         closure_start_s=closure_start,
         closure_end_s=closure_start + RIGID_REVIEW_PROFILE.closure_duration_s,
         transport_arm_command=(
@@ -1916,7 +1977,54 @@ def _physics_qc(
                 if not float(low) - 1e-8 <= float(force) <= float(high) + 1e-8:
                     force_ok = False
     joint_ok = maximum_joint_velocity <= 3.5 and maximum_joint_acceleration <= 80.0
+    reaching_checks: dict[str, Any] = {}
+    if scenario.embodiment != "no_robot":
+        # A genuine reaching catch must command real arm travel and place the
+        # measured grasp center at the commanded intercept before the ballistic
+        # event.  The stationary pre-positioned v8 interception had exactly
+        # zero arm-command travel and would fail both checks.
+        arm_commands = np.asarray(
+            [row[ACTION_FIELD][:7] for row in rows], dtype=np.float64
+        )
+        arm_travel = float(np.max(np.ptp(arm_commands, axis=0)))
+        assert scenario.ballistic_event_time_s is not None
+        assert scenario.controller_target_position_m is not None
+        reach_end = (
+            float(scenario.ballistic_event_time_s)
+            - RIGID_REVIEW_PROFILE.reach_arrival_before_ballistic_s
+        )
+        commanded_intercept = np.asarray(
+            scenario.controller_target_position_m, dtype=np.float64
+        )
+        arrival_distances = [
+            float(
+                np.linalg.norm(
+                    np.asarray(row["grasp.center_position"], dtype=np.float64)
+                    - commanded_intercept
+                )
+            )
+            for row in rows
+            if row.get("grasp.center_position") is not None
+            and reach_end
+            <= float(row["timestamp"])
+            <= float(scenario.ballistic_event_time_s)
+        ]
+        arrival_distance = min(arrival_distances, default=math.inf)
+        reaching_checks = {
+            "arm_command_travel_rad": arm_travel,
+            "arm_command_travel_present": bool(
+                arm_travel >= RIGID_REVIEW_PROFILE.minimum_arm_command_travel_rad
+            ),
+            "reach_arrival_distance_m": (
+                None if not math.isfinite(arrival_distance) else arrival_distance
+            ),
+            "arm_arrived_at_commanded_intercept": bool(
+                arrival_distance
+                <= RIGID_REVIEW_PROFILE.maximum_reach_arrival_distance_m
+            ),
+        }
     checks = {
+        **reaching_checks,
         "finite_state": finite,
         "no_solver_warnings": int(runtime_audit["solver_warning_count"]) == 0,
         "no_tunneling": int(runtime_audit["tunneling_event_count"]) == 0,
@@ -1957,20 +2065,25 @@ def _physics_qc(
             RIGID_REVIEW_PROFILE.minimum_rebound_separation_duration_s
         ),
     }
-    common_pass = all(
-        bool(checks[name])
-        for name in (
-            "finite_state",
-            "no_solver_warnings",
-            "no_tunneling",
-            "no_unexplained_velocity_discontinuity",
-            "no_mutation_boundary_violation",
-            "no_applied_forces",
-            "no_object_linked_equality_or_latch_assistance",
-            "actuator_forces_within_model_limits",
-            "joint_motion_within_model_limits",
+    common_check_names = [
+        "finite_state",
+        "no_solver_warnings",
+        "no_tunneling",
+        "no_unexplained_velocity_discontinuity",
+        "no_mutation_boundary_violation",
+        "no_applied_forces",
+        "no_object_linked_equality_or_latch_assistance",
+        "actuator_forces_within_model_limits",
+        "joint_motion_within_model_limits",
+    ]
+    if scenario.embodiment != "no_robot":
+        common_check_names.extend(
+            (
+                "arm_command_travel_present",
+                "arm_arrived_at_commanded_intercept",
+            )
         )
-    )
+    common_pass = all(bool(checks[name]) for name in common_check_names)
     energy_pass = (
         not energy_applicable
         or _energy_drift_within_limit(energy_drift)
