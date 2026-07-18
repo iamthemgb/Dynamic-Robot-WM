@@ -36,7 +36,7 @@ from .review_suite import (
 )
 from .run_orchestration import finalize_run, plan_run
 from .schema import DatasetInfo, TimeBase
-from .source_execution import prepare_source_review_declaration, source_finalization_rows
+from .source_execution import source_finalization_rows
 from .source_scenario import SourceScenarioSpec
 from .video_writer import VideoSpec
 
@@ -44,6 +44,9 @@ from .video_writer import VideoSpec
 SOURCE_PREVIEW_RUN_SCHEMA = "dynamic-robot-source-preview-run/v2"
 SOURCE_REVIEW_INPUT_PROVENANCE_SCHEMA = (
     "dynamic-robot-source-review-input-provenance/v1"
+)
+SOURCE_PREVIEW_PREPARE_REQUEST_SCHEMA = (
+    "dynamic-robot-source-preview-prepare-request/v1"
 )
 
 
@@ -262,6 +265,102 @@ def _run_preview_shards_isolated(root: Path, shard_count: int) -> None:
             )
 
 
+def _prepare_source_review_declarations_isolated(
+    cases: Sequence[ReviewSuiteCase],
+    *,
+    generator_git_commit: str,
+) -> list[dict[str, Any]]:
+    """Prepare each model-backed declaration in its own short-lived process.
+
+    MuJoCo and RoboCasa retain native model allocations beyond Python object
+    lifetime.  Eagerly preparing six F1 cases in the preview parent can leave
+    more than 1.5 GiB resident before the first render worker starts, causing
+    the parent to be killed while otherwise valid shards are committing.  A
+    one-case worker preserves the exact declaration contract while bounding
+    native lifetime independently from both planning and execution.
+    """
+
+    if not cases:
+        raise ValueError("source preview requires at least one declaration")
+    if not generator_git_commit:
+        raise ValueError("source preview declaration preparation lacks a commit")
+    repository_root = Path(__file__).resolve().parents[3]
+    declarations: list[dict[str, Any]] = []
+    for episode_index, case in enumerate(cases):
+        request = {
+            "schema_version": SOURCE_PREVIEW_PREPARE_REQUEST_SCHEMA,
+            "review_case": case.to_dict(),
+            "episode_index": episode_index,
+            "generator_git_commit": generator_git_commit,
+        }
+        completed = subprocess.run(
+            (
+                sys.executable,
+                "-m",
+                "dynamic_robot_dataset.common.source_preview_prepare_worker",
+            ),
+            cwd=repository_root,
+            input=json.dumps(
+                request,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout)[-4000:]
+            raise RuntimeError(
+                "isolated source preview declaration preparation failed for "
+                f"{case.case_id}: {detail}"
+            )
+        try:
+            value = json.loads(completed.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                "isolated source preview declaration preparation returned "
+                f"malformed JSON for {case.case_id}"
+            ) from error
+        if not isinstance(value, Mapping):
+            raise RuntimeError(
+                "isolated source preview declaration preparation returned a "
+                f"non-mapping for {case.case_id}"
+            )
+        declaration = dict(value)
+        raw_case = declaration.get("review_case")
+        if (
+            declaration.get("episode_index") != episode_index
+            or declaration.get("episode_uuid") != case.episode_uuid
+            or declaration.get("review_suite_episode_index") != case.episode_index
+            or declaration.get("review_case_sha256") != case.case_sha256
+            or declaration.get("generator_git_commit") != generator_git_commit
+            or raw_case != case.to_dict()
+        ):
+            raise RuntimeError(
+                "isolated source preview declaration identity differs for "
+                f"{case.case_id}"
+            )
+        raw_spec = declaration.get("source_scenario_spec")
+        if not isinstance(raw_spec, Mapping):
+            raise RuntimeError(
+                f"isolated source preview declaration lacks a spec for {case.case_id}"
+            )
+        scenario = SourceScenarioSpec.from_dict(raw_spec)
+        if (
+            scenario.scenario_id != case.case_id
+            or declaration.get("source_scenario_spec_sha256") != scenario.spec_hash
+        ):
+            raise RuntimeError(
+                "isolated source preview declaration scenario binding differs for "
+                f"{case.case_id}"
+            )
+        declarations.append(declaration)
+    return declarations
+
+
 def execute_source_review_preview(
     review_suite_root: str | Path,
     dataset_root: str | Path,
@@ -283,14 +382,10 @@ def execute_source_review_preview(
     )
     root = ensure_not_source_path(dataset_root)
     generator_git_commit = get_git_commit(Path(__file__).resolve().parents[3])
-    declarations = [
-        prepare_source_review_declaration(
-            case,
-            episode_index=index,
-            generator_git_commit=generator_git_commit,
-        )
-        for index, case in enumerate(cases)
-    ]
+    declarations = _prepare_source_review_declarations_isolated(
+        cases,
+        generator_git_commit=generator_git_commit,
+    )
     simulation_rates = sorted(
         {
             int(declaration["source_scenario_spec"]["physics"]["simulation_hz"])
@@ -517,6 +612,7 @@ def execute_source_review_preview(
 __all__ = [
     "SOURCE_PREVIEW_RUN_SCHEMA",
     "SourcePreviewResult",
+    "_prepare_source_review_declarations_isolated",
     "execute_source_review_preview",
     "select_source_review_cases",
 ]

@@ -7,6 +7,7 @@ import pytest
 
 from dynamic_robot_dataset.common.review_suite import write_review_suite_bundle
 from dynamic_robot_dataset.common.source_preview import (
+    _prepare_source_review_declarations_isolated,
     _run_preview_shards_isolated,
     select_source_review_cases,
 )
@@ -90,3 +91,126 @@ def test_source_preview_isolated_worker_fails_closed(tmp_path, monkeypatch) -> N
     )
     with pytest.raises(RuntimeError, match="incomplete isolated shard"):
         _run_preview_shards_isolated(tmp_path, 1)
+
+
+def test_source_preview_prepares_one_declaration_per_isolated_process(
+    tmp_path, monkeypatch
+) -> None:
+    bundle = write_review_suite_bundle(tmp_path / "suite")
+    cases = select_source_review_cases(bundle, leaf_ids=("F1a",))[:3]
+    commands = []
+
+    def fake_run(command, **options):
+        request = json.loads(options["input"])
+        case = request["review_case"]
+        commands.append((tuple(command), options, request))
+        return SimpleNamespace(
+            returncode=0,
+            stderr="",
+            stdout=json.dumps(
+                {
+                    "episode_index": request["episode_index"],
+                    "episode_uuid": case["episode_uuid"],
+                    "review_suite_episode_index": case["episode_index"],
+                    "review_case": case,
+                    "review_case_sha256": case["case_sha256"],
+                    "generator_git_commit": request["generator_git_commit"],
+                    "source_scenario_spec": {"scenario_id": case["case_id"]},
+                    "source_scenario_spec_sha256": f"spec-{case['case_id']}",
+                }
+            ),
+        )
+
+    monkeypatch.setattr(
+        "dynamic_robot_dataset.common.source_preview.subprocess.run", fake_run
+    )
+    monkeypatch.setattr(
+        "dynamic_robot_dataset.common.source_preview.SourceScenarioSpec.from_dict",
+        lambda value: SimpleNamespace(
+            scenario_id=value["scenario_id"],
+            spec_hash=f"spec-{value['scenario_id']}",
+        ),
+    )
+
+    declarations = _prepare_source_review_declarations_isolated(
+        cases,
+        generator_git_commit="a" * 40,
+    )
+
+    assert len(declarations) == len(cases) == len(commands)
+    assert [value["episode_index"] for value in declarations] == [0, 1, 2]
+    for index, (command, options, request) in enumerate(commands):
+        assert command[-2:] == (
+            "-m",
+            "dynamic_robot_dataset.common.source_preview_prepare_worker",
+        )
+        assert options["capture_output"] is True
+        assert options["check"] is False
+        assert request["episode_index"] == index
+        assert request["review_case"] == cases[index].to_dict()
+        assert request["generator_git_commit"] == "a" * 40
+
+
+@pytest.mark.parametrize(
+    ("completed", "failure"),
+    (
+        (
+            SimpleNamespace(returncode=7, stderr="worker failed", stdout=""),
+            "preparation failed",
+        ),
+        (
+            SimpleNamespace(returncode=0, stderr="", stdout="not-json"),
+            "malformed JSON",
+        ),
+        (
+            SimpleNamespace(returncode=0, stderr="", stdout="[]"),
+            "non-mapping",
+        ),
+    ),
+)
+def test_source_preview_isolated_declaration_worker_fails_closed(
+    tmp_path, monkeypatch, completed, failure
+) -> None:
+    bundle = write_review_suite_bundle(tmp_path / "suite")
+    case = select_source_review_cases(bundle, case_ids=("F1a-review-00",))
+    monkeypatch.setattr(
+        "dynamic_robot_dataset.common.source_preview.subprocess.run",
+        lambda *args, **kwargs: completed,
+    )
+
+    with pytest.raises(RuntimeError, match=failure):
+        _prepare_source_review_declarations_isolated(
+            case,
+            generator_git_commit="a" * 40,
+        )
+
+
+def test_source_preview_isolated_declaration_rejects_identity_change(
+    tmp_path, monkeypatch
+) -> None:
+    bundle = write_review_suite_bundle(tmp_path / "suite")
+    case = select_source_review_cases(bundle, case_ids=("F1a-review-00",))[0]
+    declaration = {
+        "episode_index": 1,
+        "episode_uuid": case.episode_uuid,
+        "review_suite_episode_index": case.episode_index,
+        "review_case": case.to_dict(),
+        "review_case_sha256": case.case_sha256,
+        "generator_git_commit": "a" * 40,
+        "source_scenario_spec": {"scenario_id": case.case_id},
+        "source_scenario_spec_sha256": "spec",
+    }
+    monkeypatch.setattr(
+        "dynamic_robot_dataset.common.source_preview.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stderr="",
+            stdout=json.dumps(declaration),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="identity differs"):
+        _prepare_source_review_declarations_isolated(
+            (case,),
+            generator_git_commit="a" * 40,
+        )
