@@ -26,9 +26,11 @@ from dynamic_robot_dataset.backends.source_mujoco.provenance import (
     referenced_asset_manifest,
 )
 from dynamic_robot_dataset.backends.source_mujoco.backend import (
+    _deflection_evidence,
     _effective_restitution_within_limit,
     _energy_drift_within_limit,
     _restitution_evidence,
+    _rolling_evidence,
 )
 from dynamic_robot_dataset.common.review import event_strip_frame_indices
 from dynamic_robot_dataset.common.review_suite import build_review_suite_plan
@@ -77,7 +79,7 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
         "823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99"
     )
     assert RIGID_REVIEW_PROFILE.simulation_hz == 600
-    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v9")
+    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v10")
     assert RIGID_REVIEW_PROFILE.wall_solref == (0.012, 0.7)
     assert RIGID_REVIEW_PROFILE.table_rebound_solref == (0.0045, 0.42)
     assert RIGID_REVIEW_PROFILE.minimum_rebound_effective_restitution == 0.15
@@ -86,7 +88,7 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
     assert RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m == 0.045
     assert RIGID_REVIEW_PROFILE.reach_arrival_before_ballistic_s == 0.055
     assert RIGID_REVIEW_PROFILE.minimum_reach_duration_s == 0.18
-    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.9.0-review"
+    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.10.0-review"
     assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v3")
 
 
@@ -691,6 +693,16 @@ def test_reference_rate_is_selected_only_for_failed_fixed_case_classes() -> None
     assert compile_review_case(_case("F1c", rollout=1)).simulation_hz == 600
     assert compile_review_case(_case("F1d", rollout=1)).simulation_hz == 1200
     assert compile_review_case(_case("F1a", rollout=3)).simulation_hz == 600
+    # v10 measured classes: the F2a Robotiq nominal catch (21.8 mm) and the
+    # F2a Panda negative-timing graze (32.7 mm) shift past the 1 cm gate
+    # with full semantic and strict-QC agreement at both rates.  The F3b
+    # rolling cases stay within the gate or have no contact event at all.
+    assert compile_review_case(_case("F2a", rollout=1)).simulation_hz == 1200
+    assert compile_review_case(_case("F2a", rollout=4)).simulation_hz == 1200
+    assert compile_review_case(_case("F2a", rollout=0)).simulation_hz == 600
+    assert compile_review_case(_case("F2a", rollout=2)).simulation_hz == 600
+    for rollout in range(6):
+        assert compile_review_case(_case("F3b", rollout=rollout)).simulation_hz == 600
 
 
 def test_unaccepted_f2c_and_all_f3_paths_fail_closed() -> None:
@@ -1030,3 +1042,147 @@ def test_fixed_negative_is_label_consistent_without_success_evidence() -> None:
     assert evidence["measured_failure_matches_persisted_label"] is True
     assert evidence["saved_artifact_objective_replay_matches"] is True
     assert result.physics_qc["task_evidence_failures"] == ()
+
+
+def test_f3b_recipe_rolls_without_slip_onto_a_raised_backstopped_runway() -> None:
+    for rollout in range(6):
+        scenario = compile_review_case(_case("F3b", rollout=rollout))
+        assert scenario.motion_kind == "rolling_pickup_interception"
+        vx, vy, vz = scenario.object_initial_linear_velocity_m_s
+        wx, wy, wz = scenario.object_initial_angular_velocity_rad_s
+        radius = scenario.object_radius_m
+        assert math.hypot(vx - wy * radius, vy + wx * radius) < 1e-9
+        assert vz == 0.0
+        assert [surface.role for surface in scenario.surfaces] == ["table", "wall"]
+        runway = scenario.surfaces[0]
+        runway_top = runway.position_m[2] + runway.half_size_m[2]
+        assert scenario.object_initial_position_m[2] == pytest.approx(
+            runway_top + radius
+        )
+        assert scenario.physical_target_position_m[2] == pytest.approx(
+            runway_top + radius
+        )
+        assert scenario.controller_transport_position_m[2] == pytest.approx(
+            scenario.physical_target_position_m[2]
+            + RIGID_REVIEW_PROFILE.pickup_lift_height_m
+        )
+        standoff = (
+            RIGID_REVIEW_PROFILE.robotiq_pickup_standoff_m
+            if scenario.embodiment == "robotiq_2f85_thick_pad"
+            else 0.0
+        )
+        assert scenario.controller_target_position_m[2] == pytest.approx(
+            scenario.physical_target_position_m[2] + standoff
+        )
+        backstop = scenario.surfaces[1]
+        assert backstop.position_m[0] < scenario.controller_target_position_m[0]
+
+
+def test_f2a_deflection_shares_the_direct_catch_ballistic_construction() -> None:
+    catch = compile_review_case(_case("F2a", rollout=0))
+    deflection = compile_review_case(_case("F2a", rollout=2))
+    assert catch.task_variant == "direct_catch"
+    assert deflection.task_variant == "direct_deflection"
+    assert (
+        catch.motion_kind
+        == deflection.motion_kind
+        == "direct_free_contact_interception"
+    )
+    assert deflection.controller_transport_position_m is None
+
+
+def test_deflection_evidence_requires_measured_contact_for_impulse() -> None:
+    scenario = compile_review_case(_case("F2a", rollout=2))
+    dt = 1.0 / scenario.simulation_hz
+
+    def _row(index, velocity, mode="free_flight", contacts=0):
+        return {
+            "timestamp": index * dt,
+            "object.linear_velocity": list(velocity),
+            "object.motion_mode": mode,
+            "contact.count": contacts,
+        }
+
+    falling = [_row(i, (0.0, 0.0, -9.81 * i * dt)) for i in range(200)]
+    clean = _deflection_evidence(falling, scenario)
+    assert clean["deflection_contact_occurred"] is False
+    assert clean["object_redirected_by_hand_contact"] is False
+    assert clean["velocity_change_matches_measured_contact_impulse"] is True
+
+    jumped = list(falling)
+    jumped[100] = _row(100, (0.9, 0.0, -9.81 * 100 * dt))
+    tampered = _deflection_evidence(jumped, scenario)
+    assert tampered["velocity_change_matches_measured_contact_impulse"] is False
+
+    rows = [_row(i, (0.0, 0.0, -2.0)) for i in range(50)]
+    for i in range(50, 80):
+        blend = (i - 50) / 30.0
+        rows.append(
+            _row(i, (0.0, 0.0, -2.0 + 3.5 * blend), mode="gripper_contact", contacts=1)
+        )
+    rows.extend(_row(i, (0.0, 0.0, 1.5)) for i in range(80, 200))
+    deflected = _deflection_evidence(rows, scenario)
+    assert deflected["deflection_contact_occurred"] is True
+    assert deflected["object_redirected_by_hand_contact"] is True
+    assert deflected["velocity_change_matches_measured_contact_impulse"] is True
+    assert deflected["deflection_redirect_angle_deg"] > 90.0
+
+
+def test_rolling_evidence_uses_only_the_first_sustained_surface_segment() -> None:
+    scenario = compile_review_case(_case("F3b", rollout=2))
+    radius = scenario.object_radius_m
+    dt = 1.0 / scenario.simulation_hz
+
+    def _row(index, x, vx, mode):
+        return {
+            "timestamp": index * dt,
+            "object.position": [x, 0.0, radius],
+            "object.linear_velocity": [vx, 0.0, 0.0],
+            "object.angular_velocity": [0.0, vx / radius, 0.0],
+            "object.motion_mode": mode,
+        }
+
+    rows = [_row(i, 0.7 - 0.55 * i * dt, -0.55, "surface_contact") for i in range(300)]
+    rows.extend(_row(300 + i, 0.05, -3.0, "free_flight") for i in range(60))
+    # A wild second surface segment (post-fall floor skid) that would break
+    # both the deceleration fit and the slip limit if it were included.
+    rows.extend(_row(360 + i, 0.0, 3.0, "gripper_contact") for i in range(200))
+    evidence = _rolling_evidence(rows, scenario)
+    assert evidence["rolling_or_sliding_slip_within_limit"] is True
+    assert evidence["friction_deceleration_consistent"] is True
+    assert abs(evidence["measured_tangent_acceleration_m_s2"]) < 0.05
+
+
+def test_fixed_f2a_deflection_negative_is_a_clean_declared_miss() -> None:
+    result = SourceMujocoBackend().run(_case("F2a", rollout=2), render=False)
+    assert result.outcome["task_success"] is False
+    assert result.outcome["intended_outcome_match"] is True
+    assert result.physics_qc["physics_qc_pass"] is True
+    evidence = result.physics_qc["task_evidence"]
+    assert evidence["deflection_contact_occurred"] is False
+    assert evidence["object_redirected_by_hand_contact"] is False
+    assert evidence["velocity_change_matches_measured_contact_impulse"] is True
+    gripper_commands = {
+        round(float(row["action.actuator_command"][7]), 9)
+        for row in result.high_rate_rows
+    }
+    assert len(gripper_commands) == 1
+
+
+def test_fixed_f3b_rolling_pickup_is_a_strict_lifted_free_contact_success() -> None:
+    result = SourceMujocoBackend().run(_case("F3b", rollout=0), render=False)
+    assert result.outcome["task_success"] is True
+    assert result.outcome["intended_outcome_match"] is True
+    assert result.physics_qc["physics_qc_pass"] is True
+    evidence = result.physics_qc["task_evidence"]
+    assert evidence["sustained_opposing_bilateral_contacts"] is True
+    assert evidence["stable_object_to_grasp_transform"] is True
+    assert evidence["displacement_physically_supported_by_contacts"] is True
+    assert evidence["rolling_or_sliding_slip_within_limit"] is True
+    assert evidence["friction_deceleration_consistent"] is True
+    checks = result.physics_qc["checks"]
+    assert checks["arm_command_travel_present"] is True
+    assert checks["arm_arrived_at_commanded_intercept"] is True
+    assert result.physics_qc["maximum_joint_acceleration_rad_s2"] <= 80.0
+    assert result.runtime_audit["object_state_writes_after_initialization"] == 0
+    assert result.runtime_audit["direct_robot_state_writes_after_initialization"] == 0

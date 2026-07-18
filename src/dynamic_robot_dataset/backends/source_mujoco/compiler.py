@@ -17,7 +17,7 @@ from .profiles import RIGID_REVIEW_PROFILE
 
 
 SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v3"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.9.0-review"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.10.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):
@@ -66,8 +66,9 @@ IMPLEMENTED_REVIEW_VARIANTS: Mapping[str, tuple[str, ...]] = {
     "F1b": ("off_center_catch", "off_center_near_miss"),
     "F1c": ("drift_catch", "drift_near_miss"),
     "F1d": ("mild_projectile_catch", "mild_projectile_near_miss"),
-    "F2a": ("direct_catch",),
+    "F2a": ("direct_catch", "direct_deflection"),
     "F2d": ("wall_rebound",),
+    "F3b": ("rolling_pickup", "rolling_pickup_transport"),
 }
 
 
@@ -217,8 +218,6 @@ class SourceMujocoCompiledScenario:
             raise SourceMujocoUnsupported(
                 "actuated review cannot claim a passive variation profile"
             )
-        if self.corpus_leaf_id.startswith("F3"):
-            raise SourceMujocoUnsupported("F3 scenes are not implemented by this rigid review backend")
         if (
             self.simulation_hz
             not in {
@@ -750,6 +749,94 @@ def _recipe(
             controller_transport_position_m=transport,
             surfaces=(),
         )
+    elif leaf_id == "F3b":
+        event_time = RIGID_REVIEW_PROFILE.rolling_pickup_event_time_s
+        speed = RIGID_REVIEW_PROFILE.rolling_pickup_speed_m_s
+        runway_half_xy = RIGID_REVIEW_PROFILE.rolling_pickup_runway_half_xy_m
+        runway_height = RIGID_REVIEW_PROFILE.rolling_pickup_runway_height_m
+        plate_half = (*runway_half_xy, runway_height / 2.0)
+        plate_center_z = tabletop_height_m + runway_height / 2.0
+        plate_top_z = tabletop_height_m + runway_height
+        # The intercept sits on the rolling path at ball-center height; the
+        # ball is released rolling without slip toward the robot and must be
+        # captured by the bounded closure exactly like a falling catch, then
+        # lifted so the pickup exhibits genuine contact-supported
+        # displacement.  The raised runway keeps the reach arm-feasible and
+        # is long enough to contain the run-up plus the overrun of every
+        # declared negative.
+        target = np.array((0.47, 0.0, plate_top_z + radius), dtype=np.float64)
+        start_xy = np.array((float(target[0]) + speed * event_time, 0.0))
+        controller_target = target.copy()
+        if embodiment == ROBOTIQ_2F85_THICK_PAD:
+            # The 2f85 finger structure extends below the thick-pad midpoint;
+            # commanding the midpoint to ball-center height bottoms the
+            # knuckles out on the runway.  Stand off by the measured
+            # clearance and pinch the upper hemisphere instead.
+            controller_target[2] += RIGID_REVIEW_PROFILE.robotiq_pickup_standoff_m
+        if negative:
+            # Keep the physical rolling state and intended difficult seed;
+            # negatives change only their declared intervention stream.
+            if "initial_state" in branch_role:
+                # The declared lateral perturbation is the same clean 135 mm
+                # physical miss the falling-catch negatives use.
+                start_xy[1] += 0.135
+            elif "controller" in branch_role:
+                controller_target[1] += 0.10
+            else:
+                controller_target[0] -= 0.10
+        lift_x = (
+            float(controller_target[0])
+            if task_variant == "rolling_pickup"
+            else float(
+                controller_target[0]
+                + RIGID_REVIEW_PROFILE.pickup_transport_lateral_m
+            )
+        )
+        transport = (
+            lift_x,
+            float(controller_target[1]),
+            float(target[2]) + RIGID_REVIEW_PROFILE.pickup_lift_height_m,
+        )
+        plate_center_x = float(target[0]) + 0.5 * speed * event_time
+        # A missed ball must finish on the declared fixture: without the
+        # backstop it rolled off the runway end and struck the robot
+        # pedestal, producing strictly-rejected unclassified contacts.  The
+        # backstop is an owned wall at the far end of the runway, well past
+        # the intercept, so every miss overruns visibly and stops on the
+        # runway.
+        backstop_center_x = plate_center_x - plate_half[0] + 0.03
+        backstop_half_z = 0.05
+        base.update(
+            key_event_time_s=event_time,
+            motion_kind="rolling_pickup_interception",
+            object_initial_position_m=(
+                float(start_xy[0]),
+                float(start_xy[1]),
+                float(plate_top_z + radius),
+            ),
+            object_initial_linear_velocity_m_s=(-speed, 0.0, 0.0),
+            object_initial_angular_velocity_rad_s=(0.0, -speed / radius, 0.0),
+            ballistic_event_time_s=event_time,
+            physical_target_position_m=tuple(float(value) for value in target),
+            controller_target_position_m=tuple(
+                float(value) for value in controller_target
+            ),
+            controller_transport_position_m=transport,
+            surfaces=(
+                _surface(
+                    "supported_rolling_pickup_plate",
+                    "table",
+                    (plate_center_x, 0.0, plate_center_z),
+                    plate_half,
+                ),
+                _surface(
+                    "supported_rolling_pickup_backstop",
+                    "wall",
+                    (backstop_center_x, 0.0, plate_top_z + backstop_half_z),
+                    (0.02, plate_half[1], backstop_half_z),
+                ),
+            ),
+        )
     elif leaf_id == "F2c":
         event_time = 0.68
         bounce_time = 0.25
@@ -932,10 +1019,6 @@ def compile_review_case(
     leaf_id = str(value.get("corpus_leaf_id") or "")
     task_variant = str(value.get("task_variant") or "")
     embodiment = str(value.get("embodiment") or "")
-    if leaf_id.startswith("F3"):
-        raise SourceMujocoUnsupported(
-            f"{leaf_id} requires a dedicated dynamic-handoff/fluid implementation"
-        )
     allowed = IMPLEMENTED_REVIEW_VARIANTS.get(leaf_id)
     if allowed is None or task_variant not in allowed:
         raise SourceMujocoUnsupported(
@@ -1008,12 +1091,12 @@ def compile_review_case(
             and passive_variation_profile == "lower_initial_speed"
         )
         or (
-            leaf_id in {"F1a", "F1b"}
+            leaf_id in {"F1a", "F1b", "F2a"}
             and embodiment == FRANKA_HAND
             and "controller" in branch_role
         )
         or (
-            leaf_id in {"F1a", "F1d"}
+            leaf_id in {"F1a", "F1d", "F2a"}
             and embodiment == ROBOTIQ_2F85_THICK_PAD
             and branch_role == "nominal_success"
         )

@@ -123,11 +123,13 @@ def test_default_review_quota_is_per_leaf_without_production_release() -> None:
         "F1b",
         "F1c",
         "F1d",
+        "F2a",
+        "F3b",
     }
 
     # Content-bound candidates admit R1 attempts for review, while backend and
     # corpus release states remain independently blocked.
-    assert plan.executable_case_count == 48
+    assert plan.executable_case_count == 60
     assert plan.leaf_execution_quota() == {
         leaf_id: (6 if leaf_id in review_leaves else 0)
         for leaf_id in sorted({case.corpus_leaf_id for case in plan.cases})
@@ -183,7 +185,7 @@ def test_default_review_quota_is_per_leaf_without_production_release() -> None:
         corpus_registry=corpus,
         robocasa_catalog=unavailable_review_catalog,
     )
-    assert unavailable_plan.executable_case_count == 8
+    assert unavailable_plan.executable_case_count == 10
     assert unavailable_plan.leaf_execution_quota() == {
         leaf_id: (1 if leaf_id in review_leaves else 0)
         for leaf_id in sorted({case.corpus_leaf_id for case in unavailable_plan.cases})
@@ -287,8 +289,8 @@ def test_review_suite_cli_writes_then_validates_bundle(tmp_path, capsys) -> None
     summary = json.loads(capsys.readouterr().out)
     assert summary["planned_case_count"] == 120
     assert summary["required_video_count"] == 240
-    assert summary["executable_case_count"] == 48
-    assert summary["blocked_leaf_count"] == 12
+    assert summary["executable_case_count"] == 60
+    assert summary["blocked_leaf_count"] == 10
 
     assert main(["review-suite", "--output", str(output), "--validate-only"]) == 0
     validated = json.loads(capsys.readouterr().out)

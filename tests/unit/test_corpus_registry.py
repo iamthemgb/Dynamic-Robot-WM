@@ -73,10 +73,12 @@ def test_review_execution_is_per_leaf_and_does_not_release_production() -> None:
         "P0c",
         "P0d",
         "F1a",
-            "F1b",
-            "F1c",
-            "F1d",
-        }
+        "F1b",
+        "F1c",
+        "F1d",
+        "F2a",
+        "F3b",
+    }
 
     review_support = {
         support.corpus_id
@@ -170,6 +172,7 @@ def test_review_execution_rejects_partial_variant_coverage() -> None:
     incomplete_review = replace(
         direct,
         execution_state=ExecutionState.REVIEW,
+        implemented_task_variants=("direct_catch",),
         blockers=(),
     )
     mutated_mujoco = replace(

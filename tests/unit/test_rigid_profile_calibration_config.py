@@ -29,12 +29,12 @@ def test_rigid_profile_evidence_is_versioned_source_bound_and_fail_closed() -> N
     assert evidence["schema_version"] == "dynamic-robot-rigid-profile-calibration/v1"
     assert evidence["contract_version"] == "dynamic-robot-dataset/v2"
     assert evidence["calibration_id"].endswith("_v8")
-    assert evidence["current_runtime_profile"].endswith("-v9")
+    assert evidence["current_runtime_profile"].endswith("-v10")
     assert evidence["evidence_status"] == "exploratory_unbound"
     assert evidence["release_state"] == "blocked"
     assert evidence["release_eligible"] is False
     assert evidence["source_binding"]["compiled_scenario_schema"].endswith("/v3")
-    assert evidence["source_binding"]["backend_version"] == "0.9.0-review"
+    assert evidence["source_binding"]["backend_version"] == "0.10.0-review"
     assert evidence["source_binding"]["objective_evaluator_version"] == "1.3.0"
     assert evidence["source_binding"]["visibility_qc_schema"].endswith("/v3")
     assert evidence["source_binding"]["background_clearance_schema"].endswith(
@@ -442,3 +442,94 @@ def test_operator_guide_names_the_canonical_lifecycle_and_scale_gates() -> None:
     for gate in ("100-episode pilot", "10-unique-hour gate", "100-unique-hour gate"):
         assert gate in guide
     assert "remain fail-closed historical gate" in guide
+
+
+def test_v10_f2a_f3b_unblock_records_measured_design_evidence_and_no_admission() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"]["f2a_f3b_unblock_v10"]
+    assert evidence["runtime_profile"].endswith("-v10")
+    assert evidence["backend_version"] == "0.10.0-review"
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["f1_and_p0_constructions_unchanged"] is True
+
+    design = evidence["measured_design_evidence"]
+    assert (
+        max(
+            design["palm_up_catch_posture_infeasible_at_pickup_height"][
+                "franka_wrist_link_z_below_floor_m"
+            ]
+        )
+        < 0.0
+    )
+    assert (
+        design["robotiq_knuckles_bottom_out_on_runway"]["shoulder_slam_rad_s2"]
+        > 80.0
+    )
+    assert (
+        design["wrist_servo_transients_during_transport"][
+            "lift_0p15_default_window_rad_s2"
+        ]
+        > 80.0
+    )
+    assert (
+        design["missed_ball_struck_robot_pedestal"]["unclassified_contact_count"]
+        > 0
+    )
+    assert (
+        design["rolling_evidence_restricted_to_first_sustained_surface_segment"]
+        is True
+    )
+
+    from dynamic_robot_dataset.backends.source_mujoco import RIGID_REVIEW_PROFILE
+
+    f3b = evidence["f3b_construction"]
+    assert tuple(f3b["runway_half_xy_m"]) == (
+        RIGID_REVIEW_PROFILE.rolling_pickup_runway_half_xy_m
+    )
+    assert f3b["runway_height_m"] == RIGID_REVIEW_PROFILE.rolling_pickup_runway_height_m
+    assert f3b["rolling_speed_m_s"] == RIGID_REVIEW_PROFILE.rolling_pickup_speed_m_s
+    assert f3b["event_time_s"] == RIGID_REVIEW_PROFILE.rolling_pickup_event_time_s
+    assert f3b["pickup_lift_height_m"] == RIGID_REVIEW_PROFILE.pickup_lift_height_m
+
+    f2a = evidence["f2a_construction"]
+    assert f2a["deflection_gripper_never_closes"] is True
+    assert f2a["deflection_outcome_requires_measured_contact_and_redirect"] is True
+
+    measured = evidence["non_rendered_fixed_case_measurements"]
+    assert measured["leaves"] == ["F2a", "F3b"]
+    assert measured["all_12_fixed_cases_strict_physics_qc_pass"] is True
+    assert (
+        measured["all_intended_outcome_labels_matched_without_seed_changes"]
+        is True
+    )
+    assert measured["reach_arrival_distance_range_m"][1] <= 0.025
+    assert measured["maximum_gripper_penetration_m"] <= 0.002
+    assert measured["maximum_measured_joint_acceleration_rad_s2"] <= 80.0
+
+    halving = evidence["timestep_halving_calibration"]
+    assert (
+        halving["semantic_outcomes_agree_at_both_rates_for_all_12_cases"] is True
+    )
+    added = set(halving["added_reference_rate_classes"])
+    assert added == {
+        "F2a/robotiq_2f85_thick_pad/nominal_success",
+        "F2a/franka_hand/deterministic_negative_controller_timing",
+    }
+    assert all(
+        shift > 10.0
+        for shift in halving["added_class_measured_shift_mm"].values()
+    )
+    assert halving["added_classes_pass_strict_qc_at_1200hz"] is True
+    divergence = halving[
+        "comparison_rate_divergence_without_contact_event_or_600hz_defect"
+    ]
+    assert divergence["compiled_rate_hz"] == 600
+    assert divergence["compiled_rate_strict_qc_pass"] is True
+    assert divergence["semantic_outcome_match_at_1200hz"] is True
+
+    from dynamic_robot_dataset.backends.source_mujoco import (
+        RIGID_REVIEW_PROFILE as PROFILE,
+    )
+
+    assert added <= set(PROFILE.reference_rate_required_case_classes)
+    assert evidence["admission_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False

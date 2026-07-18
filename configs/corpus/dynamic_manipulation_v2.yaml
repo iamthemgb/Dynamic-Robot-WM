@@ -78,7 +78,7 @@ leaves:
     evaluator: rigid_catch_v2
     required_metadata: [release_state, object_properties, robot_control, grasp_contacts, source_hashes]
     release_state: blocked
-    blockers: [state_rewrite_controller_not_replaced, free_contact_grasp_not_accepted, six_review_rollouts_pending]
+    blockers: [six_review_rollouts_pending]
   - id: F1b
     slug: off_center_drop
     title: Off-center vertical drop
@@ -91,7 +91,7 @@ leaves:
     evaluator: rigid_catch_v2
     required_metadata: [release_state, object_properties, robot_control, grasp_contacts, source_hashes]
     release_state: blocked
-    blockers: [actuator_only_controller_pending, free_contact_grasp_not_accepted, six_review_rollouts_pending]
+    blockers: [six_review_rollouts_pending]
   - id: F1c
     slug: freefall_lateral_drift
     title: Freefall with lateral drift
@@ -104,7 +104,7 @@ leaves:
     evaluator: rigid_catch_v2
     required_metadata: [release_state, object_properties, robot_control, grasp_contacts, source_hashes]
     release_state: blocked
-    blockers: [actuator_only_controller_pending, free_contact_grasp_not_accepted, six_review_rollouts_pending]
+    blockers: [six_review_rollouts_pending]
   - id: F1d
     slug: mild_projectile
     title: Mild projectile release
@@ -117,7 +117,7 @@ leaves:
     evaluator: rigid_catch_v2
     required_metadata: [launch_state, object_properties, robot_control, grasp_contacts, source_hashes]
     release_state: blocked
-    blockers: [actuator_only_controller_pending, free_contact_grasp_not_accepted, six_review_rollouts_pending]
+    blockers: [six_review_rollouts_pending]
 
   - id: F2a
     slug: direct_interception
@@ -131,7 +131,7 @@ leaves:
     evaluator: rigid_projectile_interception_v2
     required_metadata: [launch_state, surfaces, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [actuator_only_controller_pending, collision_profile_not_accepted, six_review_rollouts_pending]
+    blockers: [six_review_rollouts_pending]
   - id: F2b
     slug: ramp_launched
     title: Ramp-launched projectile
@@ -223,7 +223,7 @@ leaves:
     evaluator: rigid_rolling_pickup_v1
     required_metadata: [release_state, surfaces, object_properties, robot_control, grasp_contacts, source_hashes]
     release_state: blocked
-    blockers: [actuator_only_controller_pending, free_contact_grasp_not_accepted, six_review_rollouts_pending]
+    blockers: [six_review_rollouts_pending]
   - id: F3c
     slug: water_current_pickup
     title: Ball on water current, arm picks it up

@@ -243,6 +243,7 @@ def _solve_arm_ik(
     initial_arm_q: np.ndarray | None = None,
     regularization_weight: float | None = None,
     orientation_weight: float | None = None,
+    hand_orientation: str = "catch_up",
 ) -> tuple[np.ndarray, IKDiagnostics]:
     """Solve and reject failed IK; Panda uses measured fingertip correction.
 
@@ -270,12 +271,20 @@ def _solve_arm_ik(
     mujoco.mj_forward(model, data)
     assert ids.hand_body is not None
     target_quaternion = np.asarray(data.xquat[ids.hand_body], dtype=np.float64).copy()
+    if hand_orientation not in {"catch_up", "pick_down"}:
+        raise ValueError(f"unsupported hand orientation {hand_orientation!r}")
     if scenario.embodiment == FRANKA_HAND:
         # Upward-facing catch posture: the Panda fingertip center is +Z in the
         # hand frame.  Preserving the arbitrary home orientation instead put
         # the palm/link6 above the grasp point and directly in the falling
-        # object's path.
-        target_quaternion = np.array((1.0, 0.0, 0.0, 0.0), dtype=np.float64)
+        # object's path.  Surface pickups flip 180 degrees about X so the
+        # fingers descend onto the object from above; palm-up at pickup
+        # height would place the wrist inside the floor.
+        target_quaternion = (
+            np.array((1.0, 0.0, 0.0, 0.0), dtype=np.float64)
+            if hand_orientation == "catch_up"
+            else np.array((0.0, 1.0, 0.0, 0.0), dtype=np.float64)
+        )
     measured_offset: np.ndarray | None = None
     hand_target = target.copy()
     correction_passes = 0
@@ -379,12 +388,23 @@ def _controller_for_scenario(
     if scenario.embodiment == "no_robot":
         return None, np.empty(0, dtype=np.float64), ()
     assert scenario.controller_target_position_m is not None
+    diagnostics: list[IKDiagnostics] = []
+    # A ballistic catch cups the falling object with the Panda fingers
+    # pointing up; a surface pickup must instead descend onto the object
+    # from above.  A palm-up posture at pickup height is geometrically
+    # impossible (the wrist would sit 10 cm below the fingertips, inside
+    # the floor — measured on every IK branch), so the pickup motion kinds
+    # command the top-down grasp orientation.
+    hand_orientation = (
+        "pick_down" if "pickup" in scenario.motion_kind else "catch_up"
+    )
     intercept, intercept_diagnostics = _solve_arm_ik(
         mujoco,
         least_squares,
         compiled,
         scenario,
         scenario.controller_target_position_m,
+        hand_orientation=hand_orientation,
     )
     # The robot initializes at a ready waypoint hovering above the intercept
     # and must descend onto it through ctrl-only minimum-jerk commands.  A
@@ -405,9 +425,10 @@ def _controller_for_scenario(
         initial_arm_q=intercept,
         regularization_weight=0.1,
         orientation_weight=0.1,
+        hand_orientation=hand_orientation,
     )
     transport: np.ndarray | None = None
-    diagnostics = [intercept_diagnostics, ready_diagnostics]
+    diagnostics.extend((intercept_diagnostics, ready_diagnostics))
     if scenario.controller_transport_position_m is not None:
         transport, transport_diagnostics = _solve_arm_ik(
             mujoco,
@@ -416,6 +437,12 @@ def _controller_for_scenario(
             scenario,
             scenario.controller_transport_position_m,
             initial_arm_q=intercept,
+            # The strong null-space pull keeps the transport solution in the
+            # intercept's branch with the least joint travel; without it the
+            # solver unfolds the wrist and the 60 Hz command steps excite
+            # measured servo transients past the 80 rad/s^2 limit.
+            regularization_weight=0.1,
+            hand_orientation=hand_orientation,
         )
         diagnostics.append(transport_diagnostics)
     event_time = float(scenario.ballistic_event_time_s)
@@ -446,6 +473,24 @@ def _controller_for_scenario(
         desired_finger_q = 0.85 * scenario.object_radius_m
         closed_gripper = 255.0 * desired_finger_q / 0.04
         initial_robot_q = np.r_[ready, (0.04, 0.04)]
+    if "deflection" in scenario.task_variant:
+        # An open-hand deflection uses the identical reach, but the gripper
+        # must never close: the bounded closure phase commands the open value
+        # it already holds, so the recorded actions stay actuator-only and
+        # trivially within the trajectory guard.
+        closed_gripper = open_gripper
+    # Slowest-feasible pickup transport: the grasp is secure at the event,
+    # so the lift fills the whole post-grasp window instead of the 0.6 s
+    # falling-catch default, minimizing ZOH servo excitation exactly as the
+    # v9 reach rule does.  Falling catches keep the plan's default window.
+    transport_window = (
+        {
+            "transport_start_s": RIGID_REVIEW_PROFILE.pickup_transport_start_s,
+            "transport_end_s": RIGID_REVIEW_PROFILE.pickup_transport_end_s,
+        }
+        if "pickup" in scenario.motion_kind
+        else {}
+    )
     plan = OwnedControllerPlan(
         embodiment=scenario.embodiment,
         initial_arm_command=tuple(float(value) for value in ready),
@@ -459,6 +504,7 @@ def _controller_for_scenario(
         transport_arm_command=(
             None if transport is None else tuple(float(value) for value in transport)
         ),
+        **transport_window,
     )
     return OwnedActuatorController(plan), initial_robot_q, tuple(diagnostics)
 
@@ -1753,11 +1799,101 @@ def _catch_evidence(
     }
 
 
+def _deflection_evidence(
+    rows: Sequence[Mapping[str, Any]],
+    scenario: SourceMujocoCompiledScenario,
+) -> dict[str, Any]:
+    """Measure an open-hand deflection from the persisted state rows.
+
+    A successful deflection is free contact that redirects the object; it is
+    never a grasp.  Every velocity discontinuity beyond gravity must coincide
+    with a measured contact sample (the same physics as the runtime
+    discontinuity audit), so a scripted redirect without contact evidence can
+    never pass.
+    """
+
+    hand_indices = [
+        index
+        for index, row in enumerate(rows)
+        if row.get("object.motion_mode") == "gripper_contact"
+    ]
+    evidence: dict[str, Any] = {
+        "deflection_contact_occurred": bool(hand_indices),
+        "object_redirected_by_hand_contact": False,
+        "velocity_change_matches_measured_contact_impulse": True,
+        "deflection_redirect_angle_deg": None,
+    }
+    for left, right in zip(rows, rows[1:]):
+        dt = float(right["timestamp"]) - float(left["timestamp"])
+        expected = np.asarray(scenario.gravity_m_s2, dtype=np.float64) * dt
+        residual = float(
+            np.linalg.norm(
+                np.asarray(right["object.linear_velocity"], dtype=np.float64)
+                - np.asarray(left["object.linear_velocity"], dtype=np.float64)
+                - expected
+            )
+        )
+        if residual > 0.35 and not (
+            int(left["contact.count"]) or int(right["contact.count"])
+        ):
+            evidence["velocity_change_matches_measured_contact_impulse"] = False
+    if not hand_indices or hand_indices[0] == 0:
+        return evidence
+    first = hand_indices[0]
+    pre = np.asarray(rows[first - 1]["object.linear_velocity"], dtype=np.float64)
+    separation_run = max(1, int(round(0.05 * scenario.simulation_hz)))
+    hand_set = set(hand_indices)
+    post_index = None
+    for index in range(first + 1, len(rows) - separation_run):
+        if all(
+            offset not in hand_set
+            for offset in range(index, index + separation_run)
+        ):
+            post_index = index
+            break
+    if post_index is None:
+        return evidence
+    post = np.asarray(rows[post_index]["object.linear_velocity"], dtype=np.float64)
+    pre_speed = float(np.linalg.norm(pre))
+    post_speed = float(np.linalg.norm(post))
+    if pre_speed < 1e-6 or post_speed < 0.15:
+        return evidence
+    cosine = float(np.clip(np.dot(pre, post) / (pre_speed * post_speed), -1.0, 1.0))
+    evidence["deflection_redirect_angle_deg"] = math.degrees(math.acos(cosine))
+    evidence["object_redirected_by_hand_contact"] = bool(cosine < 0.7)
+    return evidence
+
+
 def _rolling_evidence(
     rows: Sequence[Mapping[str, Any]],
     scenario: SourceMujocoCompiledScenario,
 ) -> dict[str, Any]:
-    contacted = [row for row in rows if row.get("object.motion_mode") == "surface_contact"]
+    # Evaluate only the first sustained surface-contact segment: that is the
+    # roll the launch fixture certifies.  A missed pickup that later leaves
+    # the runway and resumes rolling on the room support would otherwise mix
+    # two different surfaces (and the intervening bounce) into one fit, and
+    # settling chatter from a release millimetres above the fixture must not
+    # be mistaken for the roll itself.
+    segments: list[list[Mapping[str, Any]]] = []
+    current: list[Mapping[str, Any]] = []
+    airborne_gap = 0
+    for row in rows:
+        if row.get("object.motion_mode") == "surface_contact":
+            current.append(row)
+            airborne_gap = 0
+        elif current:
+            airborne_gap += 1
+            if airborne_gap > 3:
+                segments.append(current)
+                current = []
+                airborne_gap = 0
+    if current:
+        segments.append(current)
+    sustained_samples = int(round(0.10 * scenario.simulation_hz))
+    contacted = next(
+        (segment for segment in segments if len(segment) >= sustained_samples),
+        max(segments, key=len, default=[]),
+    )
     if len(contacted) < 3 or not scenario.surfaces:
         return {
             "rolling_or_sliding_slip_within_limit": False,
@@ -1895,12 +2031,20 @@ def _physics_qc(
         if "roll" in scenario.motion_kind
         else {}
     )
+    deflection_applicable = (
+        scenario.embodiment != "no_robot" and "deflection" in scenario.task_variant
+    )
+    deflection = (
+        _deflection_evidence(rows, scenario) if deflection_applicable else {}
+    )
     task_evidence: dict[str, Any] = {}
     rebound_applicable = (
         "rebound" in scenario.motion_kind or "bounce" in scenario.motion_kind
     )
     if scenario.embodiment != "no_robot":
         task_evidence.update(catch)
+    if deflection_applicable:
+        task_evidence.update(deflection)
     if rebound_applicable:
         task_evidence.update(
             {
@@ -2110,6 +2254,15 @@ def _physics_qc(
             and energy_pass
             and restitution_pass
         )
+    elif deflection_applicable:
+        # A deflection succeeds through measured free contact that redirects
+        # the object; grasp retention is neither required nor accepted as a
+        # substitute.
+        outcome_success = bool(
+            deflection.get("deflection_contact_occurred")
+            and deflection.get("object_redirected_by_hand_contact")
+            and deflection.get("velocity_change_matches_measured_contact_impulse")
+        )
     else:
         outcome_success = bool(
             catch.get("sustained_opposing_bilateral_contacts")
@@ -2121,15 +2274,23 @@ def _physics_qc(
         if scenario.embodiment != "no_robot"
         else {}
     )
-    replayed_success = (
-        outcome_success
-        if scenario.embodiment == "no_robot"
-        else bool(
+    if scenario.embodiment == "no_robot":
+        replayed_success = outcome_success
+    elif deflection_applicable:
+        replayed_deflection = _deflection_evidence(tuple(rows), scenario)
+        replayed_success = bool(
+            replayed_deflection.get("deflection_contact_occurred")
+            and replayed_deflection.get("object_redirected_by_hand_contact")
+            and replayed_deflection.get(
+                "velocity_change_matches_measured_contact_impulse"
+            )
+        )
+    else:
+        replayed_success = bool(
             replayed_catch.get("sustained_opposing_bilateral_contacts")
             and replayed_catch.get("stable_object_to_grasp_transform")
             and replayed_catch.get("displacement_physically_supported_by_contacts", True)
         )
-    )
     intended_outcome_match = (
         scenario.intended_outcome == "passive_observation"
         if scenario.embodiment == "no_robot"
@@ -2163,10 +2324,18 @@ def _physics_qc(
     # must retain free-contact grasp evidence; failures use the replay-bound
     # negative evidence selected above.
     if scenario.embodiment != "no_robot" and outcome_success:
-        for name in (
-            "sustained_opposing_bilateral_contacts",
-            "stable_object_to_grasp_transform",
-        ):
+        required_success_evidence = (
+            (
+                "deflection_contact_occurred",
+                "object_redirected_by_hand_contact",
+            )
+            if deflection_applicable
+            else (
+                "sustained_opposing_bilateral_contacts",
+                "stable_object_to_grasp_transform",
+            )
+        )
+        for name in required_success_evidence:
             if task_evidence.get(name) is not True:
                 task_failures.append(
                     f"rigid task evidence is absent or false: {name}"

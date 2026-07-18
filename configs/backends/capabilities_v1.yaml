@@ -78,9 +78,9 @@ backends:
         family: projectile_rebound
         subfamily: direct_interception
         embodiments: [franka_hand, robotiq_2f85_thick_pad]
-        implemented_task_variants: [direct_catch]
-        execution_state: blocked
-        blockers: [direct_deflection_not_implemented]
+        implemented_task_variants: [direct_catch, direct_deflection]
+        execution_state: review
+        blockers: []
       - leaf: F2b
         family: projectile_rebound
         subfamily: ramp_launch
@@ -127,9 +127,9 @@ backends:
         family: dynamic_handoff
         subfamily: rolling_pickup
         embodiments: [franka_hand, robotiq_2f85_thick_pad]
-        implemented_task_variants: []
-        execution_state: blocked
-        blockers: [rolling_pickup_variants_not_implemented]
+        implemented_task_variants: [rolling_pickup, rolling_pickup_transport]
+        execution_state: review
+        blockers: []
       - leaf: F3d
         family: dynamic_handoff
         subfamily: moving_base_catch
