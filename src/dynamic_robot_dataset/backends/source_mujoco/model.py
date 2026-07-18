@@ -102,6 +102,17 @@ class CompiledSourceModel:
     external_camera_metadata: Mapping[str, Any]
 
 
+def _is_floor_rooted_interception(corpus_leaf_id: str) -> bool:
+    """Leaves whose task/base stays on the room floor in R0 and R1.
+
+    All of F1, plus F2a since its v10 floor rooting: these are fixtureless
+    ballistic interceptions, so the procedural central robot table is false
+    appearance and the camera frame anchors at local height zero.
+    """
+
+    return corpus_leaf_id.startswith("F1") or corpus_leaf_id == "F2a"
+
+
 @contextmanager
 def _temporary_environment(values: Mapping[str, str]) -> Iterator[None]:
     previous = {name: os.environ.get(name) for name in values}
@@ -202,10 +213,10 @@ def _build_external_sample(scene_builder: Any, scenario: SourceMujocoCompiledSce
         float(value)
         for value in camera_rng.normal(0.0, (0.035, 0.035, 0.025))
     )
-    # F2a currently shares the direct interception controller, but remains a
-    # table-height catch.  Only the F1 family is the owned floor-rooted,
-    # fixture-free task whose procedural center table must be omitted.
-    free_space_f1 = scenario.corpus_leaf_id.startswith("F1")
+    # The floor-rooted, fixture-free interceptions (all of F1, and F2a since
+    # its v10 floor rooting) omit the procedural center table; F2c/F2d remain
+    # table-height tasks whose worktop physically supports the robot.
+    free_space_f1 = _is_floor_rooted_interception(scenario.corpus_leaf_id)
     tabletop_height = (
         None
         if free_space_f1
@@ -302,10 +313,11 @@ def _remove_external_visual_work_surfaces(
     world = root.find("worldbody")
     if world is None:
         raise RuntimeError("external scene lacks worldbody")
-    if scenario.corpus_leaf_id.startswith("F1"):
-        # The F1 task/base stays on the room floor in both R0 and R1.  Every
-        # central support-table component is therefore false appearance: the
-        # object may legitimately miss and fall through its former volume.
+    if _is_floor_rooted_interception(scenario.corpus_leaf_id):
+        # The F1/F2a task/base stays on the room floor in both R0 and R1.
+        # Every central support-table component is therefore false
+        # appearance: the object may legitimately miss and fall through its
+        # former volume.
         # Remove the entire named family, not only its collision-disabled top,
         # and bind the exact variant-dependent set into runtime metadata.
         candidates = tuple(
@@ -1004,13 +1016,14 @@ def _patch_calibrated_model(
         actuator.set("ctrlrange", "0 255")
         actuator.set("ctrllimited", "true")
 
-    # Camera height follows the owned task coordinate frame.  F1 is explicitly
-    # anchored above from its physical/controller target and remains at local
-    # height zero in R0 and R1; other current recipes retain their declared
-    # table/support frame.
+    # Camera height follows the owned task coordinate frame.  The
+    # floor-rooted interceptions (F1, F2a) are explicitly anchored from
+    # their physical/controller targets and remain at local height zero in
+    # R0 and R1; other current recipes retain their declared table/support
+    # frame.
     height_offset = (
         0.0
-        if scenario.corpus_leaf_id.startswith("F1")
+        if _is_floor_rooted_interception(scenario.corpus_leaf_id)
         else 0.74
         if scenario.requires_real_robocasa
         else 0.0
