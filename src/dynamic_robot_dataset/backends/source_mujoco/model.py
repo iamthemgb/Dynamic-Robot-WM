@@ -720,6 +720,24 @@ def _add_secondary_camera(
                 target_m=(0.90, -0.90, 0.65),
                 fovy_deg=72.0,
             )
+        elif scenario.motion_kind == "rolling_pickup_interception":
+            # The folded arm occludes whichever rolling lane lies behind it:
+            # with both views on the -Y side the declared +0.135 m lateral
+            # negatives measured 60%/67% per-view visible fractions, while a
+            # +Y secondary lost the arm-shifted timing negatives instead.
+            # The secondary therefore sits on the side of the declared lane
+            # away from the commanded arm, derived from the same fixed
+            # intervention the scenario declares.
+            lane_offset_y = float(scenario.object_initial_position_m[1]) - float(
+                scenario.controller_target_position_m[1]
+            )
+            secondary_y = 0.55 if lane_offset_y > 0.025 else -0.35
+            _set_camera_look_at(
+                camera,
+                position_m=(anchor[0] + 1.05, anchor[1] + secondary_y, anchor[2] + 0.45),
+                target_m=(anchor[0], anchor[1], anchor[2] + 0.05),
+                fovy_deg=55.0,
+            )
         else:
             # The close right-side angle resolves the key-event target and
             # both opposed finger pads when the main view looks nearly along
