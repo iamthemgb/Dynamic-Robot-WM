@@ -1,7 +1,7 @@
 schema_version: dynamic-robot-rigid-profile-calibration/v1
-calibration_id: source_mujoco_rigid_600_1200_candidate_v7
+calibration_id: source_mujoco_rigid_600_1200_candidate_v8
 contract_version: dynamic-robot-dataset/v2
-current_runtime_profile: source-mujoco-rigid-review-2026-07-v7
+current_runtime_profile: source-mujoco-rigid-review-2026-07-v8
 
 # This file records exploratory measurements made while repairing the owned
 # source_mujoco controller/contact path.  It is deliberately not an admission
@@ -23,9 +23,9 @@ admission:
 source_binding:
   backend: source_mujoco
   compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v3
-  backend_version: 0.7.0-review
+  backend_version: 0.8.0-review
   objective_evaluator_version: 1.3.0
-  visibility_qc_schema: source-mujoco-visibility-qc/v2
+  visibility_qc_schema: source-mujoco-visibility-qc/v3
   background_clearance_schema: source-mujoco-background-clearance/v3
   rebound_acceptance_schema: dynamic-robot-rebound-acceptance/v1
   backend_capability_registry: configs/backends/capabilities_v1.yaml
@@ -275,6 +275,120 @@ measurements:
       strict_persisted_artifact_qc_pass: true
       object_visible_in_all_main_event_strip_panels: true
       formal_human_approval_recorded: false
+
+  camera_framing_repairs_v8:
+    description: fixed-seed P0b main-apex and P0c wall-normal secondary repair
+    runtime_profile: source-mujoco-rigid-review-2026-07-v8
+    backend_version: 0.8.0-review
+    fixed_seeds_preserved: true
+    physics_or_initial_state_changed: false
+    p0b_main_projectile_envelope:
+      fixed_review_case_ids:
+        - P0b-review-00
+        - P0b-review-01
+        - P0b-review-02
+        - P0b-review-03
+        - P0b-review-04
+        - P0b-review-05
+      failure_evidence:
+        review_case_id: P0b-review-02
+        failure: external_main_camera_clipped_projectile_radius_at_apex
+        failed_minimum_projected_sphere_margin_px: -20.63
+      repair:
+        camera_position_m_relative_to_support: [1.20, -1.15, 1.15]
+        look_at_target_m_relative_to_support: [0.05, -0.10, 0.85]
+        vertical_fov_deg: 58.0
+        required_minimum_edge_margin_px: 8.0
+      rendered_runtime_measurements:
+        visibility_qc_schema_at_measurement: source-mujoco-visibility-qc/v2
+        main_all_canonical_checkpoints_visible: true
+        both_views_all_canonical_checkpoints_visible: true
+        both_views_target_visible_frame_fraction: 1.0
+        physics_qc_pass: true
+        intended_outcome_match: true
+        background_clearance_pass: true
+        maximum_overexposed_fraction: 0.0
+        maximum_underexposed_fraction: 0.05309995993589744
+        cases:
+          - review_case_id: P0b-review-00
+            main_minimum_projected_sphere_margin_px: 75.06096584322495
+            main_minimum_segmentation_bbox_margin_px: 77.0
+            main_minimum_object_area_px: 78
+            main_key_event_object_area_px: 120
+          - review_case_id: P0b-review-01
+            main_minimum_projected_sphere_margin_px: 56.86604883622209
+            main_minimum_segmentation_bbox_margin_px: 57.0
+            main_minimum_object_area_px: 78
+            main_key_event_object_area_px: 94
+          - review_case_id: P0b-review-02
+            main_minimum_projected_sphere_margin_px: 80.41578199121443
+            main_minimum_segmentation_bbox_margin_px: 80.0
+            main_minimum_object_area_px: 78
+            main_key_event_object_area_px: 152
+          - review_case_id: P0b-review-03
+            main_minimum_projected_sphere_margin_px: 99.76441225250899
+            main_minimum_segmentation_bbox_margin_px: 101.0
+            main_minimum_object_area_px: 78
+            main_key_event_object_area_px: 107
+          - review_case_id: P0b-review-04
+            main_minimum_projected_sphere_margin_px: 75.06096584322495
+            main_minimum_segmentation_bbox_margin_px: 18.0
+            main_minimum_object_area_px: 84
+            main_key_event_object_area_px: 126
+          - review_case_id: P0b-review-05
+            main_minimum_projected_sphere_margin_px: 99.76441225250899
+            main_minimum_segmentation_bbox_margin_px: 101.0
+            main_minimum_object_area_px: 78
+            main_key_event_object_area_px: 107
+    p0c_wall_secondary_normal_view:
+      fixed_review_case_ids:
+        - P0c-review-01
+        - P0c-review-03
+        - P0c-review-05
+      table_rebound_secondary_serialization_unchanged: true
+      repair:
+        camera_position_m_relative_to_R1_support: [-0.05, -1.70, 0.76]
+        look_at_target_m_relative_to_R1_support: [-0.05, 0.0, 0.76]
+        vertical_fov_deg: 58.0
+        required_minimum_edge_margin_px: 8.0
+        applied_motion_kind: passive_wall_rebound
+      rendered_runtime_measurements:
+        visibility_qc_schema_at_measurement: source-mujoco-visibility-qc/v2
+        physics_qc_pass: true
+        background_clearance_pass: true
+        strict_visibility_qc_pass: true
+        cases:
+          - review_case_id: P0c-review-01
+            secondary_minimum_projected_sphere_margin_px: 39.695
+            secondary_minimum_segmentation_bbox_margin_px: 39.0
+            secondary_minimum_object_area_px: 121
+            secondary_key_event_object_area_px: 126
+            secondary_final_object_area_px: 132
+            event_to_post_0p3_pixel_displacement_px: 52.422
+            event_to_final_pixel_displacement_px: 78.995
+          - review_case_id: P0c-review-03
+            secondary_minimum_projected_sphere_margin_px: 44.042
+            secondary_minimum_segmentation_bbox_margin_px: 43.0
+            secondary_minimum_object_area_px: 121
+            secondary_key_event_object_area_px: 125
+            secondary_final_object_area_px: 138
+            event_to_post_0p3_pixel_displacement_px: 38.205
+            event_to_final_pixel_displacement_px: 97.425
+          - review_case_id: P0c-review-05
+            secondary_minimum_projected_sphere_margin_px: 45.816
+            secondary_minimum_segmentation_bbox_margin_px: 46.0
+            secondary_minimum_object_area_px: 121
+            secondary_key_event_object_area_px: 124
+            secondary_final_object_area_px: 131
+            event_to_post_0p3_pixel_displacement_px: 37.183
+            event_to_final_pixel_displacement_px: 96.564
+    evidence_artifacts_hash_bound: false
+    formal_human_approval_recorded: false
+    admission_claimed: false
+    required_reruns:
+      - full_fixed_six_P0b_and_P0c_finalized_artifacts
+      - strict_persisted_visibility_v3_replay
+      - hash_bound_human_review
 
   f1_r1_free_space_scene_repair:
     fixed_review_case_ids:

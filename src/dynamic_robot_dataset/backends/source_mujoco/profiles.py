@@ -20,7 +20,7 @@ from ...common.rebound import (
 
 
 SOURCE_MUJOCO_PROFILE_SCHEMA = "dynamic-robot-source-mujoco-profile/v1"
-SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v7"
+SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v8"
 
 
 @dataclass(frozen=True, slots=True)

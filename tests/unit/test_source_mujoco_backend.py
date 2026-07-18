@@ -46,6 +46,30 @@ def _case(leaf: str, rollout: int = 0):
     )
 
 
+def _camera_spec(leaf: str, rollout: int, name: str):
+    spec = prepare_review_case(_case(leaf, rollout=rollout))
+    return next(camera for camera in spec.cameras if camera.name == name)
+
+
+def _minimum_projected_sphere_margin_px(result, view: str) -> float:
+    calibration = result.camera_calibrations[view]
+    focal_px = float(calibration.intrinsic_matrix[0])
+    minimum = math.inf
+    for row in result.frame_rows:
+        pixel_x, pixel_y, depth_m = calibration.project_world(
+            row["object.position"]
+        )
+        radius_px = focal_px * result.scenario.object_radius_m / depth_m
+        minimum = min(
+            minimum,
+            pixel_x - radius_px,
+            calibration.width - pixel_x - radius_px,
+            pixel_y - radius_px,
+            calibration.height - pixel_y - radius_px,
+        )
+    return minimum
+
+
 def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
     dependency = resolve_source_dependency()
     assert dependency.manifest_sha256 == PINNED_SOURCE_MANIFEST_SHA256
@@ -53,13 +77,13 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
         "823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99"
     )
     assert RIGID_REVIEW_PROFILE.simulation_hz == 600
-    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v7")
+    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v8")
     assert RIGID_REVIEW_PROFILE.wall_solref == (0.012, 0.7)
     assert RIGID_REVIEW_PROFILE.table_rebound_solref == (0.0045, 0.42)
     assert RIGID_REVIEW_PROFILE.minimum_rebound_effective_restitution == 0.15
     assert RIGID_REVIEW_PROFILE.robotiq_pad_friction == (0.9, 0.005, 0.0001)
     assert RIGID_REVIEW_PROFILE.robotiq_tendon_target == 115.0
-    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.7.0-review"
+    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.8.0-review"
     assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v3")
 
 
@@ -372,6 +396,81 @@ def test_wall_rebound_main_camera_stays_on_visible_incoming_side() -> None:
     assert main.fovy_deg == 64.0
 
 
+def test_p0b_main_camera_has_exact_owned_projectile_serialization() -> None:
+    expected_quaternion = (
+        0.705512384115837,
+        0.5825692730020547,
+        0.25695922448486036,
+        0.311186881094278,
+    )
+    for rollout in range(6):
+        height_offset = 0.0 if rollout == 0 else 0.74
+        main = _camera_spec("P0b", rollout, "main")
+
+        assert main.role == "main_three_quarter_external"
+        assert main.pose.position_m == pytest.approx(
+            (1.20, -1.15, height_offset + 1.15)
+        )
+        assert main.pose.quaternion_wxyz == pytest.approx(expected_quaternion)
+        assert main.look_at_m == pytest.approx(
+            (
+                0.4748483396525184,
+                -0.487905005855077,
+                height_offset + 0.9608300017880067,
+            )
+        )
+        assert (main.width, main.height, main.fps) == (832, 480, 30)
+        assert main.fovy_deg == 58.0
+
+
+def test_p0c_wall_secondary_has_exact_side_on_serialization() -> None:
+    for rollout in (1, 3, 5):
+        secondary = _camera_spec("P0c", rollout, "secondary")
+
+        assert secondary.role == "task_specific_secondary"
+        assert secondary.pose.position_m == pytest.approx((-0.05, -1.70, 1.50))
+        assert secondary.pose.quaternion_wxyz == pytest.approx(
+            (math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0)
+        )
+        assert secondary.look_at_m == pytest.approx((-0.05, -0.70, 1.50))
+        assert (secondary.width, secondary.height, secondary.fps) == (
+            832,
+            480,
+            30,
+        )
+        assert secondary.fovy_deg == 58.0
+
+
+def test_p0c_table_secondary_serialization_is_unchanged() -> None:
+    expected_quaternion = (
+        0.8218820310890158,
+        0.5009891177522585,
+        -0.14112776965890958,
+        -0.23152274941765338,
+    )
+    for rollout in (0, 2, 4):
+        height_offset = 0.0 if rollout == 0 else 0.74
+        secondary = _camera_spec("P0c", rollout, "secondary")
+
+        assert secondary.pose.position_m == pytest.approx(
+            (-0.72, -1.18, height_offset + 1.10)
+        )
+        assert secondary.pose.quaternion_wxyz == pytest.approx(expected_quaternion)
+        assert secondary.look_at_m == pytest.approx(
+            (
+                -0.25603848811869045,
+                -0.42184067119778335,
+                height_offset + 0.6418142869501693,
+            )
+        )
+        assert (secondary.width, secondary.height, secondary.fps) == (
+            832,
+            480,
+            30,
+        )
+        assert secondary.fovy_deg == 52.0
+
+
 def test_owned_passive_secondary_overview_presets_cover_outcome_classes() -> None:
     projectile = prepare_review_case(_case("P0b", rollout=2))
     projectile_secondary = next(
@@ -418,28 +517,103 @@ def test_owned_passive_secondary_overviews_contain_complete_fixed_trajectories()
 
 
 @pytest.mark.integration
-def test_wall_rebound_main_camera_contains_complete_fixed_trajectories() -> None:
+def test_p0b_main_camera_contains_all_six_fixed_trajectories() -> None:
     backend = SourceMujocoBackend()
-    minimum_edge_margin_px = 8.0
+    robust_minimum_margin_px = 32.0
+
+    for rollout in range(6):
+        result = backend.run(_case("P0b", rollout=rollout), render=False)
+
+        assert result.physics_qc["physics_qc_pass"] is True
+        assert result.background_clearance["clearance_pass"] is True
+        assert (
+            _minimum_projected_sphere_margin_px(result, "main")
+            >= robust_minimum_margin_px
+        )
+
+
+@pytest.mark.integration
+def test_p0b_review_02_rendered_main_view_preserves_review_evidence() -> None:
+    result = SourceMujocoBackend().run(_case("P0b", rollout=2), render=True)
+    visibility = result.visibility_qc
+    main = visibility["views"]["main"]
+
+    assert result.physics_qc["physics_qc_pass"] is True
+    assert result.outcome["intended_outcome_match"] is True
+    assert result.outcome["key_event_name"] == "projectile_apex"
+    assert result.outcome["key_event_source"] == "persisted_free_flight_apex"
+    assert result.background_clearance["clearance_pass"] is True
+    assert visibility["critically_cropped"] is False
+    assert visibility["maximum_underexposed_fraction"] <= 0.10
+    assert visibility["maximum_overexposed_fraction"] <= 0.10
+    assert main["target_visible_frame_fraction"] == 1.0
+    assert main["minimum_object_area_px"] >= 64
+    assert main["minimum_segmentation_bbox_margin_px"] >= 48.0
+    assert main["key_event_object_pixel_count"] >= 100
+    for checkpoint in ("initial", "apex", "key_event", "final"):
+        assert main["checkpoints"][checkpoint]["visible"] is True
+        assert main["checkpoints"][checkpoint]["object_pixel_count"] >= 64
+
+
+@pytest.mark.integration
+def test_wall_rebound_views_preserve_framing_and_side_on_separation() -> None:
+    backend = SourceMujocoBackend()
+    main_minimum_edge_margin_px = 8.0
+    secondary_minimum_edge_margin_px = 32.0
+    minimum_post_event_separation_px = 32.0
+    minimum_final_separation_px = 75.0
     for rollout in (1, 3, 5):
         result = backend.run(_case("P0c", rollout=rollout), render=False)
-        calibration = result.camera_calibrations["main"]
-        focal_px = float(calibration.intrinsic_matrix[0])
-        for row in result.frame_rows:
-            pixel_x, pixel_y, depth_m = calibration.project_world(
-                row["object.position"]
+        assert result.physics_qc["physics_qc_pass"] is True
+        assert result.background_clearance["clearance_pass"] is True
+        assert (
+            _minimum_projected_sphere_margin_px(result, "main")
+            >= main_minimum_edge_margin_px
+        )
+        assert (
+            _minimum_projected_sphere_margin_px(result, "secondary")
+            >= secondary_minimum_edge_margin_px
+        )
+
+        calibration = result.camera_calibrations["secondary"]
+        # CameraCalibration stores forward in the third column.  A side-on
+        # view of this X-normal wall must look along Y, not along the rebound.
+        view_forward = (
+            calibration.camera_to_world[2],
+            calibration.camera_to_world[6],
+            calibration.camera_to_world[10],
+        )
+        assert abs(view_forward[0]) <= 0.05
+
+        timestamps = [float(row["timestamp"]) for row in result.frame_rows]
+        event_time_s = float(result.outcome["key_event_time_s"])
+        event_index = min(
+            range(len(timestamps)),
+            key=lambda index: abs(timestamps[index] - event_time_s),
+        )
+        post_index = min(
+            range(len(timestamps)),
+            key=lambda index: abs(timestamps[index] - (event_time_s + 0.3)),
+        )
+        event_position = tuple(result.frame_rows[event_index]["object.position"])
+        event_pixel = calibration.project_world(event_position)
+
+        def wall_normal_separation_px(index: int) -> tuple[float, float]:
+            position = result.frame_rows[index]["object.position"]
+            normal_only_position = (
+                position[0],
+                event_position[1],
+                event_position[2],
             )
-            projected_radius_px = (
-                focal_px * result.scenario.object_radius_m / depth_m
-            )
-            assert pixel_x - projected_radius_px >= minimum_edge_margin_px
-            assert pixel_x + projected_radius_px <= (
-                calibration.width - minimum_edge_margin_px
-            )
-            assert pixel_y - projected_radius_px >= minimum_edge_margin_px
-            assert pixel_y + projected_radius_px <= (
-                calibration.height - minimum_edge_margin_px
-            )
+            pixel = calibration.project_world(normal_only_position)
+            return pixel[0] - event_pixel[0], pixel[1] - event_pixel[1]
+
+        post_dx, post_dy = wall_normal_separation_px(post_index)
+        final_dx, final_dy = wall_normal_separation_px(len(result.frame_rows) - 1)
+        assert math.hypot(post_dx, post_dy) >= minimum_post_event_separation_px
+        assert math.hypot(final_dx, final_dy) >= minimum_final_separation_px
+        assert abs(post_dy) <= 1e-6
+        assert abs(final_dy) <= 1e-6
 
 
 def test_negative_initial_state_does_not_retarget_velocity_to_the_gripper() -> None:

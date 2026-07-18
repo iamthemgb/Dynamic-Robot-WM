@@ -735,9 +735,20 @@ def _add_secondary_camera(
             target_m=(0.10, 0.0, height_offset + 0.04),
             fovy_deg=58.0,
         )
+    elif scenario.motion_kind == "passive_wall_rebound":
+        # A wall-normal complementary view makes the separated post-contact
+        # trajectory legible instead of compressing it into the wall plane.
+        # Keep this preset wall-only: the table-rebound secondary serialization
+        # is already accepted and must not change as a side effect.
+        _set_camera_look_at(
+            camera,
+            position_m=(-0.05, -1.70, height_offset + 0.76),
+            target_m=(-0.05, 0.0, height_offset + 0.76),
+            fovy_deg=58.0,
+        )
     else:
         # Preserve the already-reviewed complementary view for other tasks,
-        # including the separately repaired P0c wall-rebound camera.
+        # including P0c table rebounds.
         camera.set("pos", f"-0.72 -1.18 {1.10 + height_offset:.8g}")
         camera.set("xyaxes", "0.853  -0.522 0 0.239 0.391 0.889")
         camera.set("fovy", "52")
@@ -777,6 +788,7 @@ def _repair_task_camera(
 
     if scenario.motion_kind not in {
         "direct_free_contact_interception",
+        "passive_projectile",
         "passive_wall_rebound",
     }:
         return
@@ -792,6 +804,19 @@ def _repair_task_camera(
             position_m=(anchor[0] - 1.15, anchor[1] - 1.18, anchor[2] + 0.65),
             target_m=(anchor[0], anchor[1], anchor[2] + 0.17),
             fovy_deg=62.0,
+        )
+        return
+    if scenario.motion_kind == "passive_projectile":
+        # The external main camera clips the higher-speed fixed projectile at
+        # its measured apex.  This deterministic task-envelope view preserves
+        # at least an eight-pixel projected-radius margin for every canonical
+        # 30 Hz frame in all six P0b review trajectories while retaining a
+        # distinct azimuth from the owned secondary overview.
+        _set_camera_look_at(
+            main,
+            position_m=(1.20, -1.15, height_offset + 1.15),
+            target_m=(0.05, -0.10, height_offset + 0.85),
+            fovy_deg=58.0,
         )
         return
     # The external main camera sits on the far side of supported_wall, making

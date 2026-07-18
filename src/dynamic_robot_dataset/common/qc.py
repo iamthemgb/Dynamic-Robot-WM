@@ -54,7 +54,9 @@ from .visual_qc import (
     NATIVE_VISUAL_THRESHOLDS,
     SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA,
     SOURCE_MUJOCO_VISIBILITY_MEDIA_BINDING_SCHEMA,
+    SOURCE_MUJOCO_TASK_VISIBILITY_CONTRACT_SCHEMA,
     SOURCE_MUJOCO_VISUAL_THRESHOLDS,
+    source_mujoco_task_visibility_requirement,
     source_mujoco_visibility_media_binding,
 )
 
@@ -501,6 +503,292 @@ def _visibility_number(
     if maximum is not None and value > maximum:
         result.fail(f"source_mujoco visibility QC {name} exceeds {maximum}")
     return int(value) if integer else value
+
+
+def _source_visibility_vector(
+    value: Any,
+    *,
+    width: int,
+    label: str,
+) -> tuple[float, ...]:
+    """Parse a finite vector from an untrusted saved SourceScenarioSpec."""
+
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes, bytearray))
+        or len(value) != width
+    ):
+        raise ValueError(f"{label} must contain {width} values")
+    try:
+        parsed = tuple(float(item) for item in value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{label} must contain numeric values") from error
+    if any(not math.isfinite(item) for item in parsed):
+        raise ValueError(f"{label} contains a non-finite value")
+    return parsed
+
+
+def _source_visibility_unit_vector(
+    value: Sequence[float],
+    *,
+    label: str,
+) -> tuple[float, float, float]:
+    norm = math.sqrt(sum(float(item) ** 2 for item in value))
+    if not math.isfinite(norm) or norm <= 1e-12:
+        raise ValueError(f"{label} has zero or invalid length")
+    normalized = tuple(float(item) / norm for item in value)
+    if len(normalized) != 3:
+        raise ValueError(f"{label} must contain three values")
+    return normalized[0], normalized[1], normalized[2]
+
+
+def _rotate_source_visibility_axis(
+    quaternion_wxyz: Sequence[float],
+    local_axis: int,
+) -> tuple[float, float, float]:
+    """Rotate one local box axis by a normalized WXYZ quaternion."""
+
+    if local_axis not in {0, 1, 2}:
+        raise ValueError("wall local normal axis is invalid")
+    w, x, y, z = _source_visibility_vector(
+        quaternion_wxyz,
+        width=4,
+        label="physical wall quaternion",
+    )
+    norm = math.sqrt(w * w + x * x + y * y + z * z)
+    if abs(norm - 1.0) > 1e-5:
+        raise ValueError("physical wall quaternion is not normalized")
+    w, x, y, z = (value / norm for value in (w, x, y, z))
+    rotation = (
+        (
+            1.0 - 2.0 * (y * y + z * z),
+            2.0 * (x * y - w * z),
+            2.0 * (x * z + w * y),
+        ),
+        (
+            2.0 * (x * y + w * z),
+            1.0 - 2.0 * (x * x + z * z),
+            2.0 * (y * z - w * x),
+        ),
+        (
+            2.0 * (x * z - w * y),
+            2.0 * (y * z + w * x),
+            1.0 - 2.0 * (x * x + y * y),
+        ),
+    )
+    return _source_visibility_unit_vector(
+        tuple(rotation[row][local_axis] for row in range(3)),
+        label="physical wall normal",
+    )
+
+
+def _p0c_wall_side_on_evidence(
+    source_scenario: Mapping[str, Any],
+    *,
+    required_view: str,
+    maximum_alignment: float,
+) -> dict[str, Any]:
+    """Recompute the saved review camera's alignment to the physical wall."""
+
+    cameras = source_scenario.get("cameras")
+    if not isinstance(cameras, Sequence) or isinstance(
+        cameras, (str, bytes, bytearray)
+    ):
+        raise ValueError("P0c wall SourceScenarioSpec lacks canonical cameras")
+    selected_cameras = [
+        camera
+        for camera in cameras
+        if isinstance(camera, Mapping) and camera.get("name") == required_view
+    ]
+    if len(selected_cameras) != 1:
+        raise ValueError(
+            f"P0c wall SourceScenarioSpec must contain one {required_view} camera"
+        )
+    camera = selected_cameras[0]
+    if camera.get("role") != "task_specific_secondary":
+        raise ValueError("P0c wall secondary camera role is not canonical")
+    camera_pose = camera.get("pose")
+    if not isinstance(camera_pose, Mapping):
+        raise ValueError("P0c wall secondary camera lacks a pose")
+    camera_position = _source_visibility_vector(
+        camera_pose.get("position_m"),
+        width=3,
+        label="P0c wall secondary camera position",
+    )
+    camera_target = _source_visibility_vector(
+        camera.get("look_at_m"),
+        width=3,
+        label="P0c wall secondary camera look-at",
+    )
+    view_direction = _source_visibility_unit_vector(
+        tuple(
+            target - position
+            for target, position in zip(camera_target, camera_position)
+        ),
+        label="P0c wall secondary camera view direction",
+    )
+
+    fixtures = source_scenario.get("fixtures")
+    if not isinstance(fixtures, Sequence) or isinstance(
+        fixtures, (str, bytes, bytearray)
+    ):
+        raise ValueError("P0c wall SourceScenarioSpec lacks physical fixtures")
+    wall_fixtures = []
+    for fixture in fixtures:
+        if not isinstance(fixture, Mapping) or fixture.get("fixture_type") != "wall":
+            continue
+        parameters = fixture.get("parameters")
+        if not isinstance(parameters, Mapping):
+            raise ValueError("P0c wall fixture parameters are malformed")
+        if (
+            fixture.get("physical") is not True
+            or fixture.get("anchored") is not True
+            or parameters.get("expected_task_contact") is not True
+            or parameters.get("collision_enabled") is not True
+        ):
+            raise ValueError("P0c wall fixture is not an anchored physical contact surface")
+        wall_fixtures.append((fixture, parameters))
+    if len(wall_fixtures) != 1:
+        raise ValueError("P0c wall SourceScenarioSpec must contain one physical task wall")
+    wall, wall_parameters = wall_fixtures[0]
+    half_size = _source_visibility_vector(
+        wall_parameters.get("half_size_m"),
+        width=3,
+        label="physical wall half-size",
+    )
+    if any(value <= 0.0 for value in half_size):
+        raise ValueError("physical wall half-size must be positive")
+    ordered_axes = sorted(range(3), key=lambda axis: half_size[axis])
+    normal_axis = ordered_axes[0]
+    if half_size[ordered_axes[1]] - half_size[normal_axis] <= 1e-9:
+        raise ValueError("physical wall has no unique thin normal axis")
+    wall_pose = wall.get("pose")
+    if not isinstance(wall_pose, Mapping):
+        raise ValueError("physical wall lacks a pose")
+    wall_normal = _rotate_source_visibility_axis(
+        wall_pose.get("quaternion_wxyz"),
+        normal_axis,
+    )
+    alignment = abs(
+        sum(
+            view_component * normal_component
+            for view_component, normal_component in zip(
+                view_direction, wall_normal
+            )
+        )
+    )
+    side_on = alignment <= maximum_alignment + 1e-12
+    return {
+        "wall_fixture_id": str(wall.get("fixture_id") or ""),
+        "wall_local_normal_axis": normal_axis,
+        "wall_normal_world": list(wall_normal),
+        "camera_view_direction_world": list(view_direction),
+        "absolute_view_wall_normal_dot": alignment,
+        "maximum_absolute_view_wall_normal_dot": maximum_alignment,
+        "side_on": side_on,
+    }
+
+
+def _validate_source_mujoco_task_visibility_contract(
+    result: EpisodeQC,
+    *,
+    source_scenario: Mapping[str, Any] | None,
+    recomputed_checkpoints: Mapping[str, Mapping[str, bool]],
+    thresholds: Mapping[str, Any],
+) -> None:
+    """Apply task-specific required-view checks to independently replayed data."""
+
+    metrics: dict[str, Any] = {
+        "schema_version": SOURCE_MUJOCO_TASK_VISIBILITY_CONTRACT_SCHEMA,
+        "applicable": False,
+        "source_scenario_valid": False,
+    }
+    try:
+        requirement = source_mujoco_task_visibility_requirement(source_scenario)
+    except (TypeError, ValueError) as error:
+        metrics["source_scenario_error"] = str(error)
+        result.metrics["source_mujoco_task_visibility"] = metrics
+        result.fail(
+            "source_mujoco task-specific visibility SourceScenarioSpec is malformed: "
+            f"{error}"
+        )
+        return
+    metrics["source_scenario_valid"] = True
+    if requirement is None:
+        result.metrics["source_mujoco_task_visibility"] = metrics
+        return
+
+    required_view = str(requirement.get("required_view") or "")
+    raw_checkpoints = requirement.get("required_checkpoints")
+    if (
+        required_view not in {"main", "secondary"}
+        or not isinstance(raw_checkpoints, Sequence)
+        or isinstance(raw_checkpoints, (str, bytes, bytearray))
+    ):
+        metrics["contract_error"] = "internal required-view contract is malformed"
+        result.metrics["source_mujoco_task_visibility"] = metrics
+        result.fail("source_mujoco task-specific visibility contract is malformed")
+        return
+    required_checkpoints = tuple(str(value) for value in raw_checkpoints)
+    checkpoint_visibility = {
+        checkpoint: bool(
+            recomputed_checkpoints.get(required_view, {}).get(checkpoint, False)
+        )
+        for checkpoint in required_checkpoints
+    }
+    metrics.update(
+        {
+            "applicable": True,
+            "contract_id": str(requirement.get("contract_id") or ""),
+            "required_view": required_view,
+            "required_checkpoints": list(required_checkpoints),
+            "required_checkpoint_visibility": checkpoint_visibility,
+            "all_required_checkpoints_visible": all(
+                checkpoint_visibility.values()
+            ),
+        }
+    )
+    for checkpoint, visible in checkpoint_visibility.items():
+        if not visible:
+            result.fail(
+                "source_mujoco task-specific visibility requires "
+                f"{required_view}/{checkpoint} to be visible"
+            )
+
+    if requirement.get("require_side_on_wall_normal") is True:
+        maximum_alignment_raw = thresholds.get("maximum_side_on_wall_normal_dot")
+        if (
+            not isinstance(maximum_alignment_raw, (int, float))
+            or isinstance(maximum_alignment_raw, bool)
+            or not math.isfinite(float(maximum_alignment_raw))
+            or not 0.0 <= float(maximum_alignment_raw) < 1.0
+        ):
+            metrics["side_on_wall_error"] = "side-on threshold is malformed"
+            result.fail("source_mujoco P0c wall side-on threshold is malformed")
+        elif not isinstance(source_scenario, Mapping):
+            metrics["side_on_wall_error"] = "SourceScenarioSpec is unavailable"
+            result.fail("source_mujoco P0c wall SourceScenarioSpec is unavailable")
+        else:
+            try:
+                side_on_evidence = _p0c_wall_side_on_evidence(
+                    source_scenario,
+                    required_view=required_view,
+                    maximum_alignment=float(maximum_alignment_raw),
+                )
+            except (TypeError, ValueError) as error:
+                metrics["side_on_wall_error"] = str(error)
+                result.fail(
+                    "source_mujoco P0c wall camera/fixture specification is malformed: "
+                    f"{error}"
+                )
+            else:
+                metrics["side_on_wall"] = side_on_evidence
+                if side_on_evidence["side_on"] is not True:
+                    result.fail(
+                        "source_mujoco P0c wall secondary view is not side-on "
+                        "to the physical wall normal"
+                    )
+    result.metrics["source_mujoco_task_visibility"] = metrics
 
 
 def _validate_source_mujoco_visibility_qc(
@@ -1215,6 +1503,12 @@ def _validate_source_mujoco_visibility_qc(
             result.fail(
                 f"source_mujoco visibility QC aggregate {checkpoint_name} visibility changed"
             )
+    _validate_source_mujoco_task_visibility_contract(
+        result,
+        source_scenario=source_scenario,
+        recomputed_checkpoints=recomputed_checkpoints,
+        thresholds=thresholds,
+    )
     expected_critically_cropped = not recomputed_checkpoint_aggregates.get(
         "key_event", False
     )

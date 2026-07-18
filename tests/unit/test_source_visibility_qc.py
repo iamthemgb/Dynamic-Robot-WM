@@ -78,6 +78,57 @@ def _source_scenario(*, actuated: bool, topology: dict | None = None) -> dict:
     }
 
 
+def _p0b_source_scenario() -> dict:
+    scenario = _source_scenario(actuated=False)
+    scenario.update(
+        corpus_leaf_id="P0b",
+        task_variant="ballistic_projectile",
+        initial_state={"motion_kind": "passive_projectile"},
+    )
+    return scenario
+
+
+def _p0c_wall_source_scenario() -> dict:
+    scenario = _source_scenario(actuated=False)
+    scenario.update(
+        corpus_leaf_id="P0c",
+        task_variant="wall_rebound",
+        initial_state={"motion_kind": "passive_wall_rebound"},
+        cameras=[
+            {
+                "name": "main",
+                "role": "main_three_quarter_external",
+                "pose": {"position_m": [-0.9, 0.95, 1.79]},
+                "look_at_m": [-0.2292, 0.2258, 1.6299],
+            },
+            {
+                "name": "secondary",
+                "role": "task_specific_secondary",
+                "pose": {"position_m": [-0.05, -1.7, 1.5]},
+                "look_at_m": [-0.05, -0.7, 1.5],
+            },
+        ],
+        fixtures=[
+            {
+                "fixture_id": "supported_wall",
+                "fixture_type": "wall",
+                "pose": {
+                    "position_m": [0.35, 0.0, 1.36],
+                    "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                },
+                "physical": True,
+                "anchored": True,
+                "parameters": {
+                    "half_size_m": [0.02, 0.16, 0.62],
+                    "expected_task_contact": True,
+                    "collision_enabled": True,
+                },
+            }
+        ],
+    )
+    return scenario
+
+
 def _passing_visibility(*, actuated: bool) -> dict:
     planned_key_event_time_s = 4 / 30.0
     actual_key_event_time_s = 5 / 30.0 if actuated else planned_key_event_time_s
@@ -206,6 +257,24 @@ def _passing_visibility(*, actuated: bool) -> dict:
     }
 
 
+def _hide_view_checkpoint(
+    visibility: dict,
+    *,
+    view_name: str,
+    checkpoint_name: str,
+) -> None:
+    view = visibility["views"][view_name]
+    frame_index = view["checkpoints"][checkpoint_name]["frame_index"]
+    frame = view["frames"][frame_index]
+    frame["object_pixel_count"] = 0
+    frame["target_present"] = False
+    view["checkpoints"][checkpoint_name] = {**frame, "visible": False}
+    view["target_visible_frame_fraction"] = 0.9
+    view["minimum_object_area_px"] = 0
+    if checkpoint_name == "key_event":
+        view["key_event_object_pixel_count"] = 0
+
+
 def _passing_frame_rows() -> list[dict]:
     return [
         {
@@ -332,6 +401,186 @@ def test_strict_source_visibility_is_counterpart_applicability_aware(
         source_scenario=_source_scenario(actuated=actuated),
     )
     assert result.passed
+
+
+@pytest.mark.parametrize(
+    "checkpoint_name", ("initial", "apex", "key_event", "final")
+)
+def test_p0b_required_main_checkpoint_cannot_be_hidden_by_secondary(
+    checkpoint_name: str,
+) -> None:
+    visibility = _passing_visibility(actuated=False)
+    _hide_view_checkpoint(
+        visibility,
+        view_name="main",
+        checkpoint_name=checkpoint_name,
+    )
+
+    result = _replay_visibility(
+        visibility,
+        actuated=False,
+        source_scenario=_p0b_source_scenario(),
+    )
+
+    assert any(
+        f"requires main/{checkpoint_name} to be visible" in failure
+        for failure in result.hard_failures
+    )
+    contract = result.metrics["source_mujoco_task_visibility"]
+    assert contract["required_view"] == "main"
+    assert contract["required_checkpoint_visibility"][checkpoint_name] is False
+    assert visibility["checkpoints"][checkpoint_name]["visible_in_any_view"] is True
+
+
+@pytest.mark.parametrize(
+    "checkpoint_name", ("initial", "apex", "key_event", "final")
+)
+def test_p0c_wall_required_secondary_checkpoint_cannot_be_hidden_by_main(
+    checkpoint_name: str,
+) -> None:
+    visibility = _passing_visibility(actuated=False)
+    _hide_view_checkpoint(
+        visibility,
+        view_name="secondary",
+        checkpoint_name=checkpoint_name,
+    )
+
+    result = _replay_visibility(
+        visibility,
+        actuated=False,
+        source_scenario=_p0c_wall_source_scenario(),
+    )
+
+    assert any(
+        f"requires secondary/{checkpoint_name} to be visible" in failure
+        for failure in result.hard_failures
+    )
+    contract = result.metrics["source_mujoco_task_visibility"]
+    assert contract["required_view"] == "secondary"
+    assert contract["required_checkpoint_visibility"][checkpoint_name] is False
+    assert contract["side_on_wall"]["side_on"] is True
+    assert visibility["checkpoints"][checkpoint_name]["visible_in_any_view"] is True
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_failure"),
+    (
+        (
+            "oblique_camera",
+            "secondary view is not side-on to the physical wall normal",
+        ),
+        ("camera_role", "secondary camera role is not canonical"),
+        ("collision_disabled_wall", "anchored physical contact surface"),
+    ),
+)
+def test_p0c_wall_camera_orientation_and_spec_tamper_fail_closed(
+    tamper: str,
+    expected_failure: str,
+) -> None:
+    scenario = _p0c_wall_source_scenario()
+    secondary = next(
+        camera for camera in scenario["cameras"] if camera["name"] == "secondary"
+    )
+    if tamper == "oblique_camera":
+        secondary["look_at_m"] = [0.95, -1.7, 1.5]
+    elif tamper == "camera_role":
+        secondary["role"] = "main_three_quarter_external"
+    else:
+        scenario["fixtures"][0]["parameters"]["collision_enabled"] = False
+
+    result = _replay_visibility(
+        _passing_visibility(actuated=False),
+        actuated=False,
+        source_scenario=scenario,
+    )
+
+    assert any(expected_failure in failure for failure in result.hard_failures)
+
+
+@pytest.mark.parametrize(
+    "source_scenario",
+    (
+        {
+            "corpus_leaf_id": "P0b",
+            "task_variant": "ballistic_projectile",
+        },
+        {
+            "corpus_leaf_id": "P0b",
+            "task_variant": "wall_rebound",
+            "initial_state": {"motion_kind": "passive_projectile"},
+        },
+        {
+            "corpus_leaf_id": "P0a",
+            "task_variant": "ballistic_projectile",
+            "initial_state": {"motion_kind": "passive_projectile"},
+        },
+        {
+            "corpus_leaf_id": "P0c",
+            "task_variant": "wall_rebound",
+            "initial_state": {"motion_kind": "passive_table_bounce"},
+        },
+        {
+            "corpus_leaf_id": "P0c",
+            "initial_state": {"motion_kind": "passive_wall_rebound"},
+        },
+        {
+            "corpus_leaf_id": "P0a",
+            "task_variant": "lateral_freefall",
+            "initial_state": {"motion_kind": "passive_wall_rebound"},
+        },
+    ),
+)
+def test_task_specific_visibility_rejects_inconsistent_source_identity(
+    source_scenario: dict,
+) -> None:
+    scenario = _source_scenario(actuated=False)
+    scenario.update(deepcopy(source_scenario))
+
+    result = _replay_visibility(
+        _passing_visibility(actuated=False),
+        actuated=False,
+        source_scenario=scenario,
+    )
+
+    assert any(
+        "task-specific visibility SourceScenarioSpec is malformed" in failure
+        for failure in result.hard_failures
+    )
+    assert result.metrics["source_mujoco_task_visibility"][
+        "source_scenario_valid"
+    ] is False
+
+
+@pytest.mark.parametrize("scenario_kind", ("generic", "p0c_table", "f1"))
+def test_task_specific_visibility_leaves_non_applicable_scenarios_unchanged(
+    scenario_kind: str,
+) -> None:
+    scenario = _source_scenario(actuated=False)
+    if scenario_kind == "p0c_table":
+        scenario.update(
+            corpus_leaf_id="P0c",
+            task_variant="table_bounce",
+            initial_state={"motion_kind": "passive_table_bounce"},
+        )
+    elif scenario_kind == "f1":
+        scenario.update(
+            corpus_leaf_id="F1a",
+            task_variant="catch_retain",
+            initial_state={"motion_kind": "direct_free_contact_interception"},
+        )
+
+    result = _replay_visibility(
+        _passing_visibility(actuated=False),
+        actuated=False,
+        source_scenario=scenario,
+    )
+
+    assert result.passed, result.hard_failures
+    assert result.metrics["source_mujoco_task_visibility"] == {
+        "schema_version": "source-mujoco-task-visibility-contract/v1",
+        "applicable": False,
+        "source_scenario_valid": True,
+    }
 
 
 def test_strict_source_visibility_rejects_missing_final_and_apex() -> None:

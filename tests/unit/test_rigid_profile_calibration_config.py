@@ -28,15 +28,15 @@ def test_rigid_profile_evidence_is_versioned_source_bound_and_fail_closed() -> N
 
     assert evidence["schema_version"] == "dynamic-robot-rigid-profile-calibration/v1"
     assert evidence["contract_version"] == "dynamic-robot-dataset/v2"
-    assert evidence["calibration_id"].endswith("_v7")
-    assert evidence["current_runtime_profile"].endswith("-v7")
+    assert evidence["calibration_id"].endswith("_v8")
+    assert evidence["current_runtime_profile"].endswith("-v8")
     assert evidence["evidence_status"] == "exploratory_unbound"
     assert evidence["release_state"] == "blocked"
     assert evidence["release_eligible"] is False
     assert evidence["source_binding"]["compiled_scenario_schema"].endswith("/v3")
-    assert evidence["source_binding"]["backend_version"] == "0.7.0-review"
+    assert evidence["source_binding"]["backend_version"] == "0.8.0-review"
     assert evidence["source_binding"]["objective_evaluator_version"] == "1.3.0"
-    assert evidence["source_binding"]["visibility_qc_schema"].endswith("/v2")
+    assert evidence["source_binding"]["visibility_qc_schema"].endswith("/v3")
     assert evidence["source_binding"]["background_clearance_schema"].endswith(
         "/v3"
     )
@@ -273,6 +273,88 @@ def test_wall_camera_repair_keeps_fixed_seeds_and_full_object_in_frame() -> None
     assert rendered["strict_persisted_artifact_qc_pass"] is True
     assert rendered["object_visible_in_all_main_event_strip_panels"] is True
     assert rendered["formal_human_approval_recorded"] is False
+
+
+def test_v8_camera_repairs_preserve_fixed_seeds_and_bind_rendered_evidence() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"][
+        "camera_framing_repairs_v8"
+    ]
+    assert evidence["runtime_profile"].endswith("-v8")
+    assert evidence["backend_version"] == "0.8.0-review"
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["physics_or_initial_state_changed"] is False
+    assert evidence["evidence_artifacts_hash_bound"] is False
+    assert evidence["formal_human_approval_recorded"] is False
+    assert evidence["admission_claimed"] is False
+
+    projectile = evidence["p0b_main_projectile_envelope"]
+    assert projectile["fixed_review_case_ids"] == [
+        f"P0b-review-{index:02d}" for index in range(6)
+    ]
+    assert projectile["failure_evidence"]["review_case_id"] == "P0b-review-02"
+    assert (
+        projectile["failure_evidence"][
+            "failed_minimum_projected_sphere_margin_px"
+        ]
+        < 0.0
+    )
+    assert projectile["repair"] == {
+        "camera_position_m_relative_to_support": [1.2, -1.15, 1.15],
+        "look_at_target_m_relative_to_support": [0.05, -0.1, 0.85],
+        "vertical_fov_deg": 58.0,
+        "required_minimum_edge_margin_px": 8.0,
+    }
+    projectile_runtime = projectile["rendered_runtime_measurements"]
+    assert projectile_runtime["visibility_qc_schema_at_measurement"].endswith(
+        "/v2"
+    )
+    assert projectile_runtime["main_all_canonical_checkpoints_visible"] is True
+    assert projectile_runtime["both_views_all_canonical_checkpoints_visible"] is True
+    assert projectile_runtime["both_views_target_visible_frame_fraction"] == 1.0
+    assert projectile_runtime["physics_qc_pass"] is True
+    assert projectile_runtime["intended_outcome_match"] is True
+    assert projectile_runtime["background_clearance_pass"] is True
+    required_margin = projectile["repair"]["required_minimum_edge_margin_px"]
+    for case in projectile_runtime["cases"]:
+        assert case["main_minimum_projected_sphere_margin_px"] >= required_margin
+        assert case["main_minimum_segmentation_bbox_margin_px"] >= required_margin
+        assert case["main_minimum_object_area_px"] >= 64
+        assert case["main_key_event_object_area_px"] >= 64
+
+    wall = evidence["p0c_wall_secondary_normal_view"]
+    assert wall["fixed_review_case_ids"] == [
+        "P0c-review-01",
+        "P0c-review-03",
+        "P0c-review-05",
+    ]
+    assert wall["table_rebound_secondary_serialization_unchanged"] is True
+    assert wall["repair"] == {
+        "camera_position_m_relative_to_R1_support": [-0.05, -1.7, 0.76],
+        "look_at_target_m_relative_to_R1_support": [-0.05, 0.0, 0.76],
+        "vertical_fov_deg": 58.0,
+        "required_minimum_edge_margin_px": 8.0,
+        "applied_motion_kind": "passive_wall_rebound",
+    }
+    wall_runtime = wall["rendered_runtime_measurements"]
+    assert wall_runtime["visibility_qc_schema_at_measurement"].endswith("/v2")
+    assert wall_runtime["physics_qc_pass"] is True
+    assert wall_runtime["background_clearance_pass"] is True
+    assert wall_runtime["strict_visibility_qc_pass"] is True
+    required_margin = wall["repair"]["required_minimum_edge_margin_px"]
+    for case in wall_runtime["cases"]:
+        assert (
+            case["secondary_minimum_projected_sphere_margin_px"]
+            >= required_margin
+        )
+        assert (
+            case["secondary_minimum_segmentation_bbox_margin_px"]
+            >= required_margin
+        )
+        assert case["secondary_minimum_object_area_px"] >= 100
+        assert case["secondary_key_event_object_area_px"] >= 100
+        assert case["secondary_final_object_area_px"] >= 100
+        assert case["event_to_post_0p3_pixel_displacement_px"] >= 32
+        assert case["event_to_final_pixel_displacement_px"] >= 75
 
 
 def test_f1_r1_free_space_repair_records_failed_profile_and_required_reruns() -> None:
