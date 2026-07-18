@@ -18,7 +18,7 @@ from .rebound import (
 from .schema import ActualOutcomeClass
 
 
-SOURCE_OBJECTIVE_EVALUATOR_VERSION = "1.3.0"
+SOURCE_OBJECTIVE_EVALUATOR_VERSION = "1.4.0"
 SOURCE_OBJECTIVE_EVALUATOR_IDS = (
     "passive_freeflight_v1",
     "passive_projectile_v1",
@@ -27,6 +27,7 @@ SOURCE_OBJECTIVE_EVALUATOR_IDS = (
     "rigid_catch_v2",
     "rigid_projectile_interception_v2",
     "rigid_rebound_v2",
+    "rigid_rolling_pickup_v1",
 )
 
 PASSIVE_EVENT_TASK_SURFACE_CONTACT = "task_surface_contact"
@@ -500,7 +501,10 @@ def evaluate_source_rows(
         )
         stable = relative_range <= 0.01
     transport_supported = True
-    if "transport" in task_variant:
+    # A pickup is only complete when the grasp physically carries the object:
+    # both rolling-pickup variants lift, so displacement evidence is required
+    # for the pickup evaluator, not just for "transport" task variants.
+    if "transport" in task_variant or evaluator_id == "rigid_rolling_pickup_v1":
         supported = [
             row
             for row in state_rows

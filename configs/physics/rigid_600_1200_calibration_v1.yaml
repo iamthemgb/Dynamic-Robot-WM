@@ -24,7 +24,7 @@ source_binding:
   backend: source_mujoco
   compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v3
   backend_version: 0.10.0-review
-  objective_evaluator_version: 1.3.0
+  objective_evaluator_version: 1.4.0
   visibility_qc_schema: source-mujoco-visibility-qc/v3
   background_clearance_schema: source-mujoco-background-clearance/v3
   rebound_acceptance_schema: dynamic-robot-rebound-acceptance/v1

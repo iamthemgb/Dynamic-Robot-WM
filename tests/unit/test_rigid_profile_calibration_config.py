@@ -35,7 +35,7 @@ def test_rigid_profile_evidence_is_versioned_source_bound_and_fail_closed() -> N
     assert evidence["release_eligible"] is False
     assert evidence["source_binding"]["compiled_scenario_schema"].endswith("/v3")
     assert evidence["source_binding"]["backend_version"] == "0.10.0-review"
-    assert evidence["source_binding"]["objective_evaluator_version"] == "1.3.0"
+    assert evidence["source_binding"]["objective_evaluator_version"] == "1.4.0"
     assert evidence["source_binding"]["visibility_qc_schema"].endswith("/v3")
     assert evidence["source_binding"]["background_clearance_schema"].endswith(
         "/v3"
