@@ -19,7 +19,7 @@ from typing import Any
 from .hashing import sha256_json
 
 
-ARROW_SIDECAR_SCHEMA_VERSION = "dynamic-robot-arrow-sidecars/v1"
+ARROW_SIDECAR_SCHEMA_VERSION = "dynamic-robot-arrow-sidecars/v2"
 TABLE_KINDS = ("frame", "high_rate", "events", "transitions", "objects")
 
 _TYPE_NAMES = frozenset(
@@ -75,6 +75,7 @@ _CORE_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
         ("normal_world", "list<float64>"),
         ("penetration_depth_m", "float64"),
         ("contact_category", "string"),
+        ("counterpart_geom_id", "int64"),
         ("normal_force_n", "float64"),
         ("normal_impulse_n_s", "float64"),
         ("relative_velocity_world_m_s", "list<float64>"),
@@ -99,7 +100,7 @@ _CORE_FIELDS: dict[str, tuple[tuple[str, str], ...]] = {
 _CONTRACTS = {
     "frame": "dynamic-robot-frames/v1",
     "high_rate": "dynamic-robot-high-rate/v1",
-    "events": "dynamic-robot-contact-events/v1",
+    "events": "dynamic-robot-contact-events/v2",
     "transitions": "dynamic-robot-transitions/v1",
     "objects": "dynamic-robot-object-states/v1",
 }

@@ -711,19 +711,20 @@ class ObjectiveEvaluatorRegistry:
 
             register_common_objective_evaluator()
             evaluator = self._evaluators.get(key)
-        if evaluator is None and evaluator_version == "1.0.0" and evaluator_id in {
-            "passive_freeflight_v1",
-            "passive_projectile_v1",
-            "passive_rebound_v1",
-            "passive_rolling_v1",
-            "rigid_catch_v2",
-            "rigid_projectile_interception_v2",
-            "rigid_rebound_v2",
-        }:
-            from .source_evaluators import register_source_objective_evaluators
+        if evaluator is None:
+            # Source evaluators are versioned independently of this registry.
+            # Load their current built-in registrations by evaluator identity,
+            # then retain the exact-version lookup above/below.  Hard-coding a
+            # former version here silently disabled replay when the evaluator
+            # advanced from 1.0.0 to 1.1.0.
+            from .source_evaluators import (
+                SOURCE_OBJECTIVE_EVALUATOR_IDS,
+                register_source_objective_evaluators,
+            )
 
-            register_source_objective_evaluators()
-            evaluator = self._evaluators.get(key)
+            if evaluator_id in SOURCE_OBJECTIVE_EVALUATOR_IDS:
+                register_source_objective_evaluators()
+                evaluator = self._evaluators.get(key)
         return evaluator
 
     def decorator(

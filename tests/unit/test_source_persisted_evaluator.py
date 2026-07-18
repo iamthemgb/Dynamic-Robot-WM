@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dynamic_robot_dataset.common.schema import ActualOutcomeClass
-from dynamic_robot_dataset.common.source_evaluators import evaluate_source_rows
+from dynamic_robot_dataset.common.source_evaluators import (
+    evaluate_source_rows,
+    select_source_key_event,
+)
 
 
 def _spec() -> dict:
@@ -42,6 +45,26 @@ def test_persisted_catch_evaluator_accepts_only_sustained_stable_bilateral_grasp
     assert result.evidence["measured_key_event_source"] == (
         "persisted_bilateral_contact"
     )
+
+
+def test_bilateral_selector_binds_both_saved_contact_geom_ids() -> None:
+    selected = select_source_key_event(
+        planned_key_event_name="interception",
+        planned_key_event_time_s=0.5,
+        state_rows=[{"timestamp": 0.12, "contact.bilateral": True}],
+        event_rows=[
+            {
+                "timestamp": 0.12,
+                "contact_category": "gripper",
+                "counterpart_geom_id": geom_id,
+            }
+            for geom_id in (17, 23)
+        ],
+        passive=False,
+        contact_time_tolerance_s=0.01,
+    )
+
+    assert selected["contact_counterpart_geom_ids"] == [17, 23]
 
 
 def test_persisted_contact_failure_uses_measured_tool_contact_time() -> None:

@@ -171,6 +171,54 @@ def test_persisted_artifact_repair_keeps_the_failed_seed() -> None:
     assert repaired["strict_persisted_artifact_qc_pass"] is True
 
 
+def test_wall_camera_repair_keeps_fixed_seeds_and_full_object_in_frame() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"]["camera_framing_repairs"]
+    assert evidence["fixed_review_case_ids"] == [
+        "P0c-review-01",
+        "P0c-review-03",
+        "P0c-review-05",
+    ]
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["failed_profile"].endswith("-v4")
+    assert evidence["repaired_profile"].endswith("-v5")
+    assert evidence["repair"]["physics_or_seed_changed"] is False
+    projection = evidence["full_trajectory_projection"]
+    assert projection["includes_object_radius"] is True
+    assert projection["evaluated_at_every_canonical_30hz_timestamp"] is True
+    required_margin = projection["required_minimum_edge_margin_px"]
+    assert required_margin == 8.0
+    assert all(
+        case["minimum_edge_margin_px"] >= required_margin
+        for case in projection["cases"]
+    )
+    rendered = evidence["rendered_confirmation"]
+    assert rendered["strict_persisted_artifact_qc_pass"] is True
+    assert rendered["object_visible_in_all_main_event_strip_panels"] is True
+    assert rendered["formal_human_approval_recorded"] is False
+
+
+def test_f1_r1_free_space_repair_records_failed_profile_and_required_reruns() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"][
+        "f1_r1_free_space_scene_repair"
+    ]
+    assert evidence["fixed_review_case_ids"] == [
+        "F1a-review-00",
+        "F1a-review-02",
+        "F1d-review-03",
+    ]
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["failed_profile"].endswith("-v5")
+    assert evidence["repaired_profile"].endswith("-v6")
+    assert evidence["failure_evidence"]["failed_objects_crossed_visible_table_volume"] is True
+    contract = evidence["repair_contract"]
+    assert contract["local_f1_task_height_m"] == 0.0
+    assert contract["robot_base_position_m"] == [0.0, 0.0, 0.0]
+    assert contract["remove_all_named_elements_with_prefix"] == "robot_table_"
+    assert contract["source_compiled_scenario_schema"].endswith("/v2")
+    assert evidence["admission_claimed"] is False
+    assert "full_F1_fixed_six_matrix" in evidence["required_reruns"]
+
+
 def test_operator_guide_names_the_canonical_lifecycle_and_scale_gates() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     guide = (ROOT / "docs/unified_generator_operator_guide.md").read_text(

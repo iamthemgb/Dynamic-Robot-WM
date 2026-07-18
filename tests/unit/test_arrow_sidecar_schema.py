@@ -77,8 +77,24 @@ def test_contact_penetration_and_category_have_stable_types_when_empty() -> None
 
     assert str(table.schema.field("penetration_depth_m").type) == "double"
     assert str(table.schema.field("contact_category").type) == "string"
+    assert str(table.schema.field("counterpart_geom_id").type) == "int64"
     assert str(table.schema.field("normal_world").type) == "list<item: double>"
-    assert table.schema.metadata[b"contract"] == b"dynamic-robot-contact-events/v1"
+    assert table.schema.metadata[b"contract"] == b"dynamic-robot-contact-events/v2"
+
+
+def test_contact_counterpart_geom_id_round_trips_as_nullable_int64() -> None:
+    pa = pytest.importorskip("pyarrow")
+    table = canonical_sidecar_table(
+        pa,
+        "events",
+        [
+            {"episode_index": 0, "timestamp": 0.1, "counterpart_geom_id": 17},
+            {"episode_index": 0, "timestamp": 0.2, "counterpart_geom_id": None},
+        ],
+    )
+
+    assert str(table.schema.field("counterpart_geom_id").type) == "int64"
+    assert table.column("counterpart_geom_id").to_pylist() == [17, None]
 
 
 def test_all_null_extension_requires_a_bound_declaration() -> None:

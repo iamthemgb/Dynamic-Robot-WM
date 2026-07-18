@@ -18,7 +18,8 @@ import numpy as np
 from ..actuator_only import ACTION_FIELD, ACTION_SEMANTICS, ControlObservation
 from ...common.cameras import CameraCalibration
 from ...common.embodiments import FRANKA_HAND, ROBOTIQ_2F85_THICK_PAD
-from ...common.hashing import combined_manifest_hash, sha256_file
+from ...common.hashing import combined_manifest_hash, sha256_file, sha256_json
+from ...common.source_evaluators import select_source_key_event
 from ...common.physics_contract import (
     STRICT_RIGID_QC_SCHEMA,
     rigid_task_evidence_failures,
@@ -27,6 +28,10 @@ from ...common.physics_contract import (
 from ...common.synchronization import (
     fixed_duration_frame_timestamps,
     validate_persisted_render_schedule,
+)
+from ...common.visual_qc import (
+    SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA,
+    SOURCE_MUJOCO_VISUAL_THRESHOLDS,
 )
 from .compiler import (
     SOURCE_MUJOCO_BACKEND_VERSION,
@@ -66,6 +71,13 @@ ROBOTIQ_OPEN_Q = np.array(
     dtype=np.float64,
 )
 
+SOURCE_MUJOCO_BACKGROUND_CLEARANCE_SCHEMA = (
+    "source-mujoco-background-clearance/v2"
+)
+SOURCE_MUJOCO_TOOL_VISIBILITY_TOPOLOGY_SCHEMA = (
+    "source-mujoco-tool-visibility-topology/v1"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class IKDiagnostics:
@@ -92,6 +104,8 @@ class SourceMujocoRunResult:
     contact_rows: Sequence[Mapping[str, Any]]
     outcome: Mapping[str, Any]
     physics_qc: Mapping[str, Any]
+    visibility_qc: Mapping[str, Any]
+    background_clearance: Mapping[str, Any]
     runtime_audit: Mapping[str, Any]
     backend_provenance: Mapping[str, Any]
     source_hashes: Mapping[str, str]
@@ -116,6 +130,8 @@ class SourceMujocoRunResult:
             "production_eligible": False,
             "quality_flags": list(self.quality_flags),
             "physics_qc": dict(self.physics_qc),
+            "visibility_qc": dict(self.visibility_qc),
+            "background_clearance": dict(self.background_clearance),
             "runtime_audit": dict(self.runtime_audit),
             "source_hashes": dict(self.source_hashes),
             "robocasa_asset_manifest": list(self.robocasa_asset_manifest),
@@ -512,6 +528,7 @@ def _contacts_at_state(
                 "geom_a": "catch_ball_geom",
                 "geom_b": other_name,
                 "counterpart": other_name,
+                "counterpart_geom_id": other,
                 "contact_category": category,
                 "counterpart_body": other_body_name,
                 "penetration_depth_m": max(0.0, -float(contact.dist)),
@@ -650,6 +667,758 @@ def _camera_calibration(
     )
     calibration.validate()
     return calibration
+
+
+def _segmentation_mask_summary(mask: np.ndarray) -> dict[str, Any]:
+    ys, xs = np.nonzero(mask)
+    if not len(xs):
+        return {"pixel_count": 0, "bbox_xyxy": None}
+    return {
+        "pixel_count": int(len(xs)),
+        "bbox_xyxy": [
+            int(xs.min()),
+            int(ys.min()),
+            int(xs.max()) + 1,
+            int(ys.max()) + 1,
+        ],
+    }
+
+
+def _render_segmentation_observation(
+    mujoco: Any,
+    renderer: Any,
+    rgb: np.ndarray,
+    *,
+    object_geom_id: int,
+    left_tool_geom_ids: Sequence[int],
+    right_tool_geom_ids: Sequence[int],
+    fixture_geom_ids: Sequence[int],
+) -> dict[str, Any]:
+    """Render target/counterpart IDs from the exact persisted RGB scene."""
+
+    renderer.enable_segmentation_rendering()
+    try:
+        segmentation = np.asarray(renderer.render(), dtype=np.int32).copy()
+    finally:
+        renderer.disable_segmentation_rendering()
+    if segmentation.ndim != 3 or segmentation.shape[2] != 2:
+        raise RuntimeError(
+            "MuJoCo segmentation rendering did not return HxWx2 object IDs"
+        )
+    geom_ids = segmentation[:, :, 0]
+    geom_type = segmentation[:, :, 1] == int(mujoco.mjtObj.mjOBJ_GEOM)
+    object_mask = geom_type & (geom_ids == int(object_geom_id))
+    left_tool_ids = tuple(int(value) for value in left_tool_geom_ids)
+    right_tool_ids = tuple(int(value) for value in right_tool_geom_ids)
+    tool_ids = (*left_tool_ids, *right_tool_ids)
+    left_tool_mask = geom_type & np.isin(geom_ids, left_tool_ids)
+    right_tool_mask = geom_type & np.isin(geom_ids, right_tool_ids)
+    tool_mask = geom_type & np.isin(geom_ids, tool_ids)
+    fixture_mask = geom_type & np.isin(
+        geom_ids, tuple(int(value) for value in fixture_geom_ids)
+    )
+    visible_geom_ids, visible_geom_counts = np.unique(
+        geom_ids[geom_type], return_counts=True
+    )
+    luminance = rgb.astype(np.float32).mean(axis=2)
+    return {
+        "object": _segmentation_mask_summary(object_mask),
+        "tool": _segmentation_mask_summary(tool_mask),
+        "tool_left": _segmentation_mask_summary(left_tool_mask),
+        "tool_right": _segmentation_mask_summary(right_tool_mask),
+        "fixture": _segmentation_mask_summary(fixture_mask),
+        "geom_pixel_counts": {
+            str(int(geom_id)): int(count)
+            for geom_id, count in zip(
+                visible_geom_ids.tolist(), visible_geom_counts.tolist()
+            )
+        },
+        "mean_luminance": float(luminance.mean()),
+        "underexposed_fraction": float(np.mean(luminance <= 3.0)),
+        "overexposed_fraction": float(np.mean(luminance >= 252.0)),
+    }
+
+
+def _bbox_margin_px(
+    summary: Mapping[str, Any], calibration: CameraCalibration
+) -> float:
+    bbox = summary.get("bbox_xyxy")
+    if not isinstance(bbox, Sequence) or isinstance(bbox, (str, bytes)) or len(bbox) != 4:
+        return -1.0
+    return float(
+        min(
+            int(bbox[0]),
+            int(bbox[1]),
+            calibration.width - int(bbox[2]),
+            calibration.height - int(bbox[3]),
+        )
+    )
+
+
+def _projected_sphere(
+    calibration: CameraCalibration,
+    position_m: Sequence[float],
+    radius_m: float,
+) -> tuple[float, float, float, float]:
+    """Return ``x, y, depth, edge_margin`` for the complete target sphere."""
+
+    pixel_x, pixel_y, depth_m = calibration.project_world(position_m)
+    focal_px = float(calibration.intrinsic_matrix[0])
+    projected_radius_px = focal_px * float(radius_m) / depth_m
+    margin = min(
+        pixel_x - projected_radius_px,
+        pixel_y - projected_radius_px,
+        calibration.width - pixel_x - projected_radius_px,
+        calibration.height - pixel_y - projected_radius_px,
+    )
+    return pixel_x, pixel_y, depth_m, float(margin)
+
+
+def _compiled_tool_visibility_topology(
+    compiled: CompiledSourceModel,
+) -> dict[str, Any]:
+    """Return the canonical rendered/contact topology from the compiled model."""
+
+    left_geom_ids = sorted(int(value) for value in compiled.ids.left_gripper_geom_ids)
+    right_geom_ids = sorted(int(value) for value in compiled.ids.right_gripper_geom_ids)
+    tool_body_ids = {
+        int(compiled.model.geom_bodyid[geom_id])
+        for geom_id in (*left_geom_ids, *right_geom_ids)
+    }
+    if compiled.ids.hand_body is not None:
+        tool_body_ids.add(int(compiled.ids.hand_body))
+    geom_body_ids = {
+        str(geom_id): int(compiled.model.geom_bodyid[geom_id])
+        for geom_id in range(int(compiled.model.ngeom))
+        if int(compiled.model.geom_bodyid[geom_id]) in tool_body_ids
+    }
+    return {
+        "schema_version": SOURCE_MUJOCO_TOOL_VISIBILITY_TOPOLOGY_SCHEMA,
+        "tool_geom_body_ids": geom_body_ids,
+        "left_tool_geom_ids": left_geom_ids,
+        "right_tool_geom_ids": right_geom_ids,
+        "left_tool_body_id": (
+            None
+            if compiled.ids.left_gripper_body is None
+            else int(compiled.ids.left_gripper_body)
+        ),
+        "right_tool_body_id": (
+            None
+            if compiled.ids.right_gripper_body is None
+            else int(compiled.ids.right_gripper_body)
+        ),
+    }
+
+
+def _measured_visibility_key_event(
+    scenario: SourceMujocoCompiledScenario,
+    state_rows: Sequence[Mapping[str, Any]],
+    contact_rows: Sequence[Mapping[str, Any]],
+    *,
+    left_tool_geom_ids: Sequence[int] = (),
+    right_tool_geom_ids: Sequence[int] = (),
+    tool_geom_body_ids: Mapping[int, int] | None = None,
+    left_tool_body_id: int | None = None,
+    right_tool_body_id: int | None = None,
+    tool_visibility_topology_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Select the same measured F1 event used by persisted objective replay."""
+
+    planned_time_s = float(scenario.key_event_time_s)
+    selected = select_source_key_event(
+        planned_key_event_name="task_interaction",
+        planned_key_event_time_s=planned_time_s,
+        state_rows=state_rows,
+        event_rows=contact_rows,
+        passive=scenario.embodiment == "no_robot",
+        contact_time_tolerance_s=1.0 / scenario.simulation_hz,
+    )
+    physical_contact_applicable = selected["physical_contact_applicable"]
+    counterpart_geom_ids = list(selected["contact_counterpart_geom_ids"])
+    if scenario.embodiment == "no_robot":
+        nearby_fixture_contacts = [
+            row
+            for row in contact_rows
+            if row.get("contact_category") == "task_surface"
+            and isinstance(row.get("timestamp"), (int, float))
+            and not isinstance(row.get("timestamp"), bool)
+            and abs(float(row["timestamp"]) - planned_time_s)
+            <= 1.0 / scenario.video_hz + 1e-12
+        ]
+        physical_contact_applicable = bool(nearby_fixture_contacts)
+        counterpart_geom_ids = sorted(
+            {
+                int(row["counterpart_geom_id"])
+                for row in nearby_fixture_contacts
+                if isinstance(row.get("counterpart_geom_id"), int)
+                and not isinstance(row.get("counterpart_geom_id"), bool)
+            }
+        )
+    return {
+        "planned_key_event_time_s": planned_time_s,
+        "planned_key_event_name": "task_interaction",
+        "actual_key_event_time_s": selected["key_event_time_s"],
+        "actual_key_event_name": selected["key_event_name"],
+        "actual_key_event_source": selected["key_event_source"],
+        "physical_contact_applicable": physical_contact_applicable,
+        "contact_counterpart_geom_ids": counterpart_geom_ids,
+        "left_tool_geom_ids": [int(value) for value in left_tool_geom_ids],
+        "right_tool_geom_ids": [int(value) for value in right_tool_geom_ids],
+        "tool_geom_body_ids": {
+            str(int(key)): int(value)
+            for key, value in (tool_geom_body_ids or {}).items()
+        },
+        "left_tool_body_id": left_tool_body_id,
+        "right_tool_body_id": right_tool_body_id,
+        "tool_visibility_topology_sha256": tool_visibility_topology_sha256,
+    }
+
+
+def _contact_body_proxy_visibility(
+    *,
+    counterpart_geom_ids: Sequence[Any],
+    tool_geom_body_ids: Mapping[Any, Any],
+    key_geom_pixels: Mapping[str, Mapping[str, Any]],
+    key_target_visible: Mapping[str, bool],
+    required_views: Sequence[str],
+    minimum_area_px: int,
+) -> dict[str, Any]:
+    """Resolve collision geoms to rendered proxies on the exact same tool body.
+
+    Collision-only geoms are often not present in MuJoCo's segmentation
+    output.  A contact is nevertheless reviewable when another rendered geom
+    rigidly attached to that *same* tool body is visible.  Resolution is kept
+    fail-closed: every contacted geom must be in the persisted tool-body map,
+    and pixels on a different body never count.
+    """
+
+    normalized_body_map: dict[int, int] = {}
+    for raw_geom_id, raw_body_id in tool_geom_body_ids.items():
+        try:
+            if isinstance(raw_geom_id, bool) or isinstance(raw_body_id, bool):
+                continue
+            geom_id = int(raw_geom_id)
+            body_id = int(raw_body_id)
+        except (TypeError, ValueError):
+            continue
+        normalized_body_map[geom_id] = body_id
+
+    contacted_ids: list[int] = []
+    invalid_contact_id = False
+    for raw_geom_id in counterpart_geom_ids:
+        try:
+            if isinstance(raw_geom_id, bool):
+                raise ValueError
+            contacted_ids.append(int(raw_geom_id))
+        except (TypeError, ValueError):
+            invalid_contact_id = True
+    contacted_ids = sorted(set(contacted_ids))
+    unresolved_ids = sorted(
+        geom_id for geom_id in contacted_ids if geom_id not in normalized_body_map
+    )
+    resolution_complete = bool(contacted_ids) and not (
+        invalid_contact_id or unresolved_ids
+    )
+    contacted_body_ids = (
+        sorted({normalized_body_map[geom_id] for geom_id in contacted_ids})
+        if resolution_complete
+        else []
+    )
+    proxy_geom_ids = (
+        sorted(
+            geom_id
+            for geom_id, body_id in normalized_body_map.items()
+            if body_id in contacted_body_ids
+        )
+        if resolution_complete
+        else []
+    )
+
+    proxy_pixels_by_view: dict[str, int] = {}
+    visible_proxy_geom_ids_by_view: dict[str, list[int]] = {}
+    for view in required_views:
+        pixels = key_geom_pixels.get(view, {})
+        visible_proxy_ids = [
+            geom_id
+            for geom_id in proxy_geom_ids
+            if int(pixels.get(str(geom_id), 0)) > 0
+        ]
+        visible_proxy_geom_ids_by_view[view] = visible_proxy_ids
+        proxy_pixels_by_view[view] = sum(
+            int(pixels.get(str(geom_id), 0)) for geom_id in proxy_geom_ids
+        )
+
+    visible = resolution_complete and any(
+        key_target_visible.get(view) is True
+        and proxy_pixels_by_view[view] >= minimum_area_px
+        for view in required_views
+    )
+    return {
+        "resolution_complete": resolution_complete,
+        "unresolved_counterpart_geom_ids": unresolved_ids,
+        "counterpart_body_ids": contacted_body_ids,
+        "proxy_geom_ids": proxy_geom_ids,
+        "visible_proxy_geom_ids_by_view": visible_proxy_geom_ids_by_view,
+        "proxy_pixel_counts_by_view": proxy_pixels_by_view,
+        "visible": visible,
+    }
+
+
+def _source_visibility_qc(
+    scenario: SourceMujocoCompiledScenario,
+    frame_rows: Sequence[Mapping[str, Any]],
+    calibrations: Mapping[str, CameraCalibration],
+    frames: Mapping[str, Sequence[np.ndarray]],
+    segmentation_observations: Mapping[str, Sequence[Mapping[str, Any]]],
+    key_event: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Evaluate rendered target and applicable counterpart visibility.
+
+    Whole-trajectory coverage uses a small segmentation-presence floor across
+    either view.  The 64-pixel footprint is reserved for the key event.  Apex
+    and final checkpoints are explicit so aggregate coverage cannot hide a
+    missing endpoint.
+    """
+
+    thresholds = dict(SOURCE_MUJOCO_VISUAL_THRESHOLDS)
+    expected_count = len(frame_rows)
+    expected_views = ("main", "secondary")
+    tool_applicable = scenario.embodiment != "no_robot"
+    fixture_applicable = not tool_applicable
+    physical_contact_applicable = bool(
+        key_event.get("physical_contact_applicable") is True
+    )
+    streams_complete = bool(expected_count) and all(
+        len(frames.get(name, ())) == expected_count
+        and len(segmentation_observations.get(name, ())) == expected_count
+        and name in calibrations
+        for name in expected_views
+    )
+    result: dict[str, Any] = {
+        "schema_version": SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA,
+        "evaluated": streams_complete,
+        "rendered_streams_complete": streams_complete,
+        "rendered_frame_count": expected_count if streams_complete else 0,
+        "expected_frame_count": expected_count,
+        "required_views": list(expected_views),
+        "required_checkpoint_names": ["initial", "apex", "key_event", "final"],
+        "target_visible_frame_fraction": 0.0,
+        "key_event_visible_in_any_view": False,
+        "apex_visible_in_any_view": False,
+        "final_state_visible_in_any_view": False,
+        "initial_state_visible_in_any_view": False,
+        "critically_cropped": True,
+        "physical_contact_applicable": physical_contact_applicable,
+        "contact_occluded_both_views": None,
+        "actual_contact_counterpart_visible_at_key_event": None,
+        "contact_body_proxy_resolution_complete": None,
+        "contact_counterpart_body_ids": [],
+        "contact_proxy_geom_ids": [],
+        "contact_visible_proxy_geom_ids_by_view": {},
+        "contact_proxy_pixel_counts_by_view": {},
+        "unresolved_contact_counterpart_geom_ids": [],
+        "contact_exact_fixture_geom_ids": [],
+        "contact_visible_fixture_geom_ids_by_view": {},
+        "contact_fixture_pixel_counts_by_view": {},
+        "bilateral_tool_sides_visible_at_key_event": None,
+        "planned_checkpoint_covisible_in_any_view": False,
+        "contact_counterpart_geom_ids": list(
+            key_event.get("contact_counterpart_geom_ids") or ()
+        ),
+        "left_tool_geom_ids": list(key_event.get("left_tool_geom_ids") or ()),
+        "right_tool_geom_ids": list(key_event.get("right_tool_geom_ids") or ()),
+        "tool_geom_body_ids": dict(key_event.get("tool_geom_body_ids") or {}),
+        "left_tool_body_id": key_event.get("left_tool_body_id"),
+        "right_tool_body_id": key_event.get("right_tool_body_id"),
+        "tool_visibility_topology_sha256": key_event.get(
+            "tool_visibility_topology_sha256"
+        ),
+        "minimum_bbox_margin_px": -1.0,
+        "key_event_object_area_px": 0,
+        "tool_visibility_applicable": tool_applicable,
+        "tool_visible_at_key_event": None,
+        "fixture_visibility_applicable": fixture_applicable,
+        "fixture_visible_at_key_event": None,
+        "counterpart_visible_at_key_event": False,
+        "camera_roles_correct": set(calibrations) == set(expected_views),
+        "maximum_underexposed_fraction": 1.0,
+        "maximum_overexposed_fraction": 1.0,
+        "thresholds": thresholds,
+        "checkpoints": {},
+        "views": {},
+    }
+    if not streams_complete:
+        return result
+
+    timestamps = [float(row["timestamp"]) for row in frame_rows]
+    planned_key_event_time_s = float(key_event["planned_key_event_time_s"])
+    actual_key_event_time_s = float(key_event["actual_key_event_time_s"])
+    planned_key_event_index = min(
+        range(expected_count),
+        key=lambda index: abs(timestamps[index] - planned_key_event_time_s),
+    )
+    actual_key_event_index = min(
+        range(expected_count),
+        key=lambda index: abs(timestamps[index] - actual_key_event_time_s),
+    )
+    checkpoint_indices = {
+        "initial": 0,
+        "apex": max(
+            range(expected_count),
+            key=lambda index: float(frame_rows[index]["object.position"][2]),
+        ),
+        "key_event": actual_key_event_index,
+        "final": expected_count - 1,
+    }
+    result.update(
+        {
+            "planned_key_event_name": str(
+                key_event.get("planned_key_event_name") or "task_interaction"
+            ),
+            "planned_key_event_time_s": planned_key_event_time_s,
+            "planned_key_event_frame_index": planned_key_event_index,
+            "planned_key_event_frame_timestamp_s": timestamps[
+                planned_key_event_index
+            ],
+            "actual_key_event_time_s": actual_key_event_time_s,
+            "actual_key_event_frame_index": actual_key_event_index,
+            "actual_key_event_frame_timestamp_s": timestamps[
+                actual_key_event_index
+            ],
+            "actual_key_event_name": str(key_event["actual_key_event_name"]),
+            "actual_key_event_source": str(key_event["actual_key_event_source"]),
+        }
+    )
+
+    per_view_presence: dict[str, list[bool]] = {}
+    checkpoint_visibility = {name: [] for name in checkpoint_indices}
+    key_target_visible: dict[str, bool] = {}
+    key_tool_pixels: dict[str, int] = {}
+    key_left_pixels: dict[str, int] = {}
+    key_right_pixels: dict[str, int] = {}
+    key_fixture_pixels: dict[str, int] = {}
+    key_geom_pixels: dict[str, Mapping[str, Any]] = {}
+    planned_target_visible: dict[str, bool] = {}
+    planned_counterpart_pixels: dict[str, int] = {}
+    key_margins: list[float] = []
+    key_areas: list[int] = []
+    underexposed: list[float] = []
+    overexposed: list[float] = []
+    trajectory_margins_by_frame: list[list[float]] = [
+        [] for _ in range(expected_count)
+    ]
+
+    for name in expected_views:
+        calibration = calibrations[name]
+        observations = segmentation_observations[name]
+        presence: list[bool] = []
+        frame_metrics: list[dict[str, Any]] = []
+        for index, (row, observation) in enumerate(zip(frame_rows, observations)):
+            summaries = {
+                key: (
+                    observation.get(key)
+                    if isinstance(observation.get(key), Mapping)
+                    else {}
+                )
+                for key in ("object", "tool", "tool_left", "tool_right", "fixture")
+            }
+            object_pixels = int(summaries["object"].get("pixel_count", 0))
+            segmentation_margin = _bbox_margin_px(
+                summaries["object"], calibration
+            )
+            try:
+                pixel_x, pixel_y, _depth, projected_margin = _projected_sphere(
+                    calibration, row["object.position"], scenario.object_radius_m
+                )
+                projected_center_visible = bool(
+                    0.0 <= pixel_x < calibration.width
+                    and 0.0 <= pixel_y < calibration.height
+                )
+            except ValueError:
+                projected_margin = -1.0
+                projected_center_visible = False
+            target_present = bool(
+                object_pixels
+                >= int(thresholds["minimum_trajectory_object_area_px"])
+                and projected_center_visible
+            )
+            geom_pixel_counts = observation.get("geom_pixel_counts")
+            if not isinstance(geom_pixel_counts, Mapping):
+                geom_pixel_counts = {}
+            metric = {
+                "frame_index": index,
+                "timestamp_s": timestamps[index],
+                "object_pixel_count": object_pixels,
+                "segmentation_bbox_margin_px": segmentation_margin,
+                "projected_sphere_margin_px": projected_margin,
+                "projected_center_visible": projected_center_visible,
+                "target_present": target_present,
+                "tool_pixel_count": int(summaries["tool"].get("pixel_count", 0)),
+                "left_tool_pixel_count": int(
+                    summaries["tool_left"].get("pixel_count", 0)
+                ),
+                "right_tool_pixel_count": int(
+                    summaries["tool_right"].get("pixel_count", 0)
+                ),
+                "fixture_pixel_count": int(
+                    summaries["fixture"].get("pixel_count", 0)
+                ),
+                "geom_pixel_counts": {
+                    str(key): int(value) for key, value in geom_pixel_counts.items()
+                },
+                "underexposed_fraction": float(
+                    observation.get("underexposed_fraction", 1.0)
+                ),
+                "overexposed_fraction": float(
+                    observation.get("overexposed_fraction", 1.0)
+                ),
+            }
+            frame_metrics.append(metric)
+            presence.append(target_present)
+            trajectory_margins_by_frame[index].append(
+                min(projected_margin, segmentation_margin)
+            )
+            underexposed.append(metric["underexposed_fraction"])
+            overexposed.append(metric["overexposed_fraction"])
+
+        per_view_presence[name] = presence
+        key_metric = frame_metrics[actual_key_event_index]
+        key_margin = min(
+            key_metric["segmentation_bbox_margin_px"],
+            key_metric["projected_sphere_margin_px"],
+        )
+        key_visible = bool(
+            key_metric["object_pixel_count"]
+            >= int(thresholds["minimum_key_event_object_area_px"])
+            and key_margin >= float(thresholds["minimum_bbox_margin_px"])
+        )
+        key_target_visible[name] = key_visible
+        key_tool_pixels[name] = key_metric["tool_pixel_count"]
+        key_left_pixels[name] = key_metric["left_tool_pixel_count"]
+        key_right_pixels[name] = key_metric["right_tool_pixel_count"]
+        key_fixture_pixels[name] = key_metric["fixture_pixel_count"]
+        key_geom_pixels[name] = key_metric["geom_pixel_counts"]
+        key_margins.append(key_margin)
+        key_areas.append(key_metric["object_pixel_count"])
+
+        planned_metric = frame_metrics[planned_key_event_index]
+        planned_margin = min(
+            planned_metric["segmentation_bbox_margin_px"],
+            planned_metric["projected_sphere_margin_px"],
+        )
+        planned_target_visible[name] = bool(
+            planned_metric["object_pixel_count"]
+            >= int(thresholds["minimum_key_event_object_area_px"])
+            and planned_margin >= float(thresholds["minimum_bbox_margin_px"])
+        )
+        planned_counterpart_pixels[name] = int(
+            planned_metric[
+                "tool_pixel_count" if tool_applicable else "fixture_pixel_count"
+            ]
+        )
+
+        view_checkpoints: dict[str, Any] = {}
+        for checkpoint_name, checkpoint_index in checkpoint_indices.items():
+            metric = frame_metrics[checkpoint_index]
+            minimum_area = int(
+                thresholds["minimum_key_event_object_area_px"]
+                if checkpoint_name == "key_event"
+                else thresholds["minimum_trajectory_object_area_px"]
+            )
+            checkpoint_visible = bool(
+                metric["object_pixel_count"] >= minimum_area
+                and min(
+                    metric["projected_sphere_margin_px"],
+                    metric["segmentation_bbox_margin_px"],
+                )
+                >= float(thresholds["minimum_bbox_margin_px"])
+            )
+            checkpoint_visibility[checkpoint_name].append(checkpoint_visible)
+            view_checkpoints[checkpoint_name] = {
+                **metric,
+                "visible": checkpoint_visible,
+            }
+        result["views"][name] = {
+            "target_visible_frame_fraction": sum(presence) / expected_count,
+            "minimum_object_area_px": min(
+                (row["object_pixel_count"] for row in frame_metrics), default=0
+            ),
+            "minimum_segmentation_bbox_margin_px": min(
+                (row["segmentation_bbox_margin_px"] for row in frame_metrics),
+                default=-1.0,
+            ),
+            "minimum_projected_sphere_margin_px": min(
+                (row["projected_sphere_margin_px"] for row in frame_metrics),
+                default=-1.0,
+            ),
+            "key_event_object_pixel_count": key_metric["object_pixel_count"],
+            "key_event_bbox_margin_px": key_margin,
+            "key_event_tool_pixel_count": key_tool_pixels[name],
+            "key_event_left_tool_pixel_count": key_left_pixels[name],
+            "key_event_right_tool_pixel_count": key_right_pixels[name],
+            "key_event_fixture_pixel_count": key_fixture_pixels[name],
+            "frames": frame_metrics,
+            "checkpoints": view_checkpoints,
+        }
+
+    visible_any_view_by_frame = [
+        any(per_view_presence[name][index] for name in expected_views)
+        for index in range(expected_count)
+    ]
+    result["target_visible_frame_fraction"] = (
+        sum(visible_any_view_by_frame) / expected_count
+    )
+    result["initial_state_visible_in_any_view"] = any(
+        checkpoint_visibility["initial"]
+    )
+    result["apex_visible_in_any_view"] = any(checkpoint_visibility["apex"])
+    result["key_event_visible_in_any_view"] = any(
+        checkpoint_visibility["key_event"]
+    )
+    result["final_state_visible_in_any_view"] = any(
+        checkpoint_visibility["final"]
+    )
+    result["critically_cropped"] = not result["key_event_visible_in_any_view"]
+    result["minimum_bbox_margin_px"] = max(key_margins, default=-1.0)
+    result["key_event_object_area_px"] = max(key_areas, default=0)
+
+    counterpart_threshold = int(thresholds["minimum_counterpart_area_px"])
+    planned_counterpart_threshold = int(
+        thresholds["minimum_planned_counterpart_area_px"]
+    )
+    if tool_applicable:
+        counterpart_pixels = key_tool_pixels
+        applicable_counterpart_threshold = (
+            counterpart_threshold
+            if physical_contact_applicable
+            else planned_counterpart_threshold
+        )
+        tool_visible = any(
+            value >= applicable_counterpart_threshold
+            for value in counterpart_pixels.values()
+        )
+        result["tool_visible_at_key_event"] = tool_visible
+        result["counterpart_visible_at_key_event"] = tool_visible
+    else:
+        counterpart_pixels = key_fixture_pixels
+        fixture_visible = any(
+            value >= counterpart_threshold for value in counterpart_pixels.values()
+        )
+        result["fixture_visible_at_key_event"] = fixture_visible
+        result["counterpart_visible_at_key_event"] = fixture_visible
+
+    result["planned_checkpoint_covisible_in_any_view"] = any(
+        planned_target_visible[name]
+        and planned_counterpart_pixels[name] >= planned_counterpart_threshold
+        for name in expected_views
+    )
+    if physical_contact_applicable:
+        event_source = str(key_event["actual_key_event_source"])
+        if not tool_applicable:
+            raw_counterpart_ids = result["contact_counterpart_geom_ids"]
+            fixture_geom_ids = sorted(
+                {
+                    int(geom_id)
+                    for geom_id in raw_counterpart_ids
+                    if isinstance(geom_id, int) and not isinstance(geom_id, bool)
+                }
+            )
+            identity_complete = bool(fixture_geom_ids) and len(
+                fixture_geom_ids
+            ) == len(raw_counterpart_ids)
+            fixture_pixels_by_view = {
+                name: sum(
+                    int(key_geom_pixels[name].get(str(geom_id), 0))
+                    for geom_id in fixture_geom_ids
+                )
+                for name in expected_views
+            }
+            visible_fixture_ids_by_view = {
+                name: [
+                    geom_id
+                    for geom_id in fixture_geom_ids
+                    if int(key_geom_pixels[name].get(str(geom_id), 0)) > 0
+                ]
+                for name in expected_views
+            }
+            contact_visible = identity_complete and any(
+                key_target_visible[name]
+                and fixture_pixels_by_view[name] >= counterpart_threshold
+                for name in expected_views
+            )
+            result.update(
+                {
+                    "contact_exact_fixture_geom_ids": fixture_geom_ids,
+                    "contact_visible_fixture_geom_ids_by_view": (
+                        visible_fixture_ids_by_view
+                    ),
+                    "contact_fixture_pixel_counts_by_view": (
+                        fixture_pixels_by_view
+                    ),
+                }
+            )
+        elif event_source == "persisted_bilateral_contact":
+            counterpart_ids = set(result["contact_counterpart_geom_ids"])
+            contacted_left_ids = counterpart_ids.intersection(
+                result["left_tool_geom_ids"]
+            )
+            contacted_right_ids = counterpart_ids.intersection(
+                result["right_tool_geom_ids"]
+            )
+            contact_visible = any(
+                key_target_visible[name]
+                and key_left_pixels[name] >= counterpart_threshold
+                and key_right_pixels[name] >= counterpart_threshold
+                for name in expected_views
+            ) if contacted_left_ids and contacted_right_ids else False
+            result["bilateral_tool_sides_visible_at_key_event"] = contact_visible
+        else:
+            proxy_visibility = _contact_body_proxy_visibility(
+                counterpart_geom_ids=result["contact_counterpart_geom_ids"],
+                tool_geom_body_ids=result["tool_geom_body_ids"],
+                key_geom_pixels=key_geom_pixels,
+                key_target_visible=key_target_visible,
+                required_views=expected_views,
+                minimum_area_px=counterpart_threshold,
+            )
+            contact_visible = bool(proxy_visibility["visible"])
+            result.update(
+                {
+                    "contact_body_proxy_resolution_complete": proxy_visibility[
+                        "resolution_complete"
+                    ],
+                    "contact_counterpart_body_ids": proxy_visibility[
+                        "counterpart_body_ids"
+                    ],
+                    "contact_proxy_geom_ids": proxy_visibility["proxy_geom_ids"],
+                    "contact_visible_proxy_geom_ids_by_view": proxy_visibility[
+                        "visible_proxy_geom_ids_by_view"
+                    ],
+                    "contact_proxy_pixel_counts_by_view": proxy_visibility[
+                        "proxy_pixel_counts_by_view"
+                    ],
+                    "unresolved_contact_counterpart_geom_ids": proxy_visibility[
+                        "unresolved_counterpart_geom_ids"
+                    ],
+                }
+            )
+        result["actual_contact_counterpart_visible_at_key_event"] = contact_visible
+        result["contact_occluded_both_views"] = not contact_visible
+
+    result["maximum_underexposed_fraction"] = max(underexposed, default=1.0)
+    result["maximum_overexposed_fraction"] = max(overexposed, default=1.0)
+    result["minimum_trajectory_bbox_margin_px_any_view"] = min(
+        (max(values) for values in trajectory_margins_by_frame), default=-1.0
+    )
+    result["checkpoints"] = {
+        checkpoint_name: {
+            "frame_index": checkpoint_index,
+            "timestamp_s": timestamps[checkpoint_index],
+            "visible_in_any_view": any(checkpoint_visibility[checkpoint_name]),
+        }
+        for checkpoint_name, checkpoint_index in checkpoint_indices.items()
+    }
+    return result
 
 
 def _free_flight_energy_drift(
@@ -1210,29 +1979,397 @@ def _aabb_intersects(left: Sequence[float], right: Sequence[float]) -> bool:
     )
 
 
+def _aabb_has_positive_overlap(
+    left: Sequence[float],
+    right: Sequence[float],
+    *,
+    tolerance_m: float = 1e-6,
+) -> bool:
+    """Return true only for volumetric overlap, not supported face contact."""
+
+    return all(
+        min(float(left[index + 3]), float(right[index + 3]))
+        - max(float(left[index]), float(right[index]))
+        > tolerance_m
+        for index in range(3)
+    )
+
+
+def _world_geom_aabb(model: Any, data: Any, geom_id: int) -> dict[str, Any]:
+    """Transform MuJoCo's compiled local geom AABB into exact world axes."""
+
+    local = np.asarray(model.geom_aabb[int(geom_id)], dtype=np.float64)
+    if local.shape != (6,) or not np.isfinite(local).all():
+        raise RuntimeError(f"geom {geom_id} has no finite compiled AABB")
+    half_size = local[3:]
+    if np.any(half_size < 0.0):
+        raise RuntimeError(f"geom {geom_id} has a negative compiled AABB extent")
+    rotation = np.asarray(data.geom_xmat[int(geom_id)], dtype=np.float64).reshape(
+        3, 3
+    )
+    geom_origin = np.asarray(data.geom_xpos[int(geom_id)], dtype=np.float64)
+    world_center = geom_origin + rotation @ local[:3]
+    world_half_size = np.abs(rotation) @ half_size
+    minimum = world_center - world_half_size
+    maximum = world_center + world_half_size
+    if not np.isfinite((*minimum, *maximum)).all():
+        raise RuntimeError(f"geom {geom_id} produced a non-finite world AABB")
+    return {
+        "minimum_m": [float(value) for value in minimum],
+        "maximum_m": [float(value) for value in maximum],
+        "method": "mujoco_compiled_local_aabb_transformed/v1",
+    }
+
+
+def _flatten_aabb(value: Mapping[str, Any]) -> tuple[float, ...]:
+    minimum = value.get("minimum_m")
+    maximum = value.get("maximum_m")
+    if (
+        not isinstance(minimum, Sequence)
+        or isinstance(minimum, (str, bytes))
+        or not isinstance(maximum, Sequence)
+        or isinstance(maximum, (str, bytes))
+        or len(minimum) != 3
+        or len(maximum) != 3
+    ):
+        raise RuntimeError("runtime clearance AABB must contain XYZ bounds")
+    result = tuple(float(item) for item in (*minimum, *maximum))
+    if not np.isfinite(result).all() or any(
+        result[index] > result[index + 3] for index in range(3)
+    ):
+        raise RuntimeError("runtime clearance AABB is invalid")
+    return result
+
+
+def _evaluate_background_clearance_rows(
+    *,
+    background_rows: Sequence[Mapping[str, Any]],
+    fixture_rows: Sequence[Mapping[str, Any]],
+    high_rate_rows: Sequence[Mapping[str, Any]],
+    object_radius_m: float,
+) -> dict[str, Any]:
+    """Bind every background geom to the complete persisted object sweep."""
+
+    radius = float(object_radius_m)
+    if not math.isfinite(radius) or radius <= 0.0:
+        raise RuntimeError("background clearance requires a positive object radius")
+    if not high_rate_rows:
+        raise RuntimeError("background clearance requires high-rate rollout rows")
+    timestamps: list[float] = []
+    positions: list[tuple[float, float, float]] = []
+    sweep_hash_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(high_rate_rows):
+        timestamp = float(row["timestamp"])
+        position_raw = row["object.position"]
+        if (
+            not isinstance(position_raw, Sequence)
+            or isinstance(position_raw, (str, bytes))
+            or len(position_raw) != 3
+        ):
+            raise RuntimeError("background clearance object position is malformed")
+        position = tuple(float(value) for value in position_raw)
+        if not math.isfinite(timestamp) or not np.isfinite(position).all():
+            raise RuntimeError("background clearance sweep contains non-finite state")
+        timestamps.append(timestamp)
+        positions.append(position)  # type: ignore[arg-type]
+        sweep_hash_rows.append(
+            {
+                "sample_index": index,
+                "timestamp_s": timestamp,
+                "object_position_m": list(position),
+            }
+        )
+    position_array = np.asarray(positions, dtype=np.float64)
+    aggregate_minimum = position_array.min(axis=0) - radius
+    aggregate_maximum = position_array.max(axis=0) + radius
+
+    normalized_fixtures: list[dict[str, Any]] = []
+    for raw in fixture_rows:
+        fixture_id = str(raw.get("fixture_id") or "")
+        if not fixture_id:
+            raise RuntimeError("runtime clearance fixture lacks a stable ID")
+        aabb = raw.get("world_aabb")
+        if not isinstance(aabb, Mapping):
+            raise RuntimeError(f"runtime clearance fixture {fixture_id} lacks an AABB")
+        _flatten_aabb(aabb)
+        normalized_fixtures.append(
+            {
+                "fixture_id": fixture_id,
+                "role": str(raw.get("role") or ""),
+                "geom_id": int(raw.get("geom_id", -1)),
+                "world_aabb": dict(aabb),
+            }
+        )
+    normalized_fixtures.sort(key=lambda value: value["fixture_id"])
+
+    evaluated_backgrounds: list[dict[str, Any]] = []
+    for raw in background_rows:
+        stable_id = str(raw.get("stable_id") or "")
+        if not stable_id:
+            raise RuntimeError("runtime clearance background lacks a stable ID")
+        aabb_value = raw.get("world_aabb")
+        if not isinstance(aabb_value, Mapping):
+            raise RuntimeError(f"runtime clearance background {stable_id} lacks an AABB")
+        aabb = _flatten_aabb(aabb_value)
+        background_minimum = np.asarray(aabb[:3], dtype=np.float64)
+        background_maximum = np.asarray(aabb[3:], dtype=np.float64)
+        intersects_sweep = np.all(
+            (position_array - radius) <= background_maximum,
+            axis=1,
+        ) & np.all(
+            background_minimum <= (position_array + radius),
+            axis=1,
+        )
+        intersection_indices = np.flatnonzero(intersects_sweep)
+        object_overlap_by_axis = np.zeros(3, dtype=np.float64)
+        maximum_object_penetration = 0.0
+        for sample_index in intersection_indices:
+            sphere_minimum = position_array[sample_index] - radius
+            sphere_maximum = position_array[sample_index] + radius
+            overlap = np.minimum(background_maximum, sphere_maximum) - np.maximum(
+                background_minimum, sphere_minimum
+            )
+            object_overlap_by_axis = np.maximum(object_overlap_by_axis, overlap)
+            maximum_object_penetration = max(
+                maximum_object_penetration,
+                float(np.min(overlap)),
+            )
+        fixture_intersection_rows = []
+        for fixture in normalized_fixtures:
+            fixture_aabb = _flatten_aabb(fixture["world_aabb"])
+            overlap = [
+                min(aabb[index + 3], fixture_aabb[index + 3])
+                - max(aabb[index], fixture_aabb[index])
+                for index in range(3)
+            ]
+            if all(value > 1e-6 for value in overlap):
+                fixture_intersection_rows.append(
+                    {
+                        "fixture_id": fixture["fixture_id"],
+                        "overlap_m_by_axis": overlap,
+                        "penetration_depth_m": min(overlap),
+                    }
+                )
+        fixture_intersections = [
+            value["fixture_id"] for value in fixture_intersection_rows
+        ]
+        contype = int(raw.get("contype", -1))
+        conaffinity = int(raw.get("conaffinity", -1))
+        body_weld_id = int(raw.get("body_weld_id", -1))
+        # These admission claims are derived from persisted primitive model
+        # fields.  Never trust self-authored booleans that can be changed and
+        # rehashed together with the rest of the clearance payload.
+        collision_disabled = contype == 0 and conaffinity == 0
+        anchored = body_weld_id == 0
+        first_index = (
+            int(intersection_indices[0]) if len(intersection_indices) else None
+        )
+        evaluated_backgrounds.append(
+            {
+                "stable_id": stable_id,
+                "geom_id": int(raw.get("geom_id", -1)),
+                "classification": str(raw.get("classification") or ""),
+                "source_name": raw.get("source_name"),
+                "catalog_slot": raw.get("catalog_slot"),
+                "body_id": int(raw.get("body_id", -1)),
+                "body_name": raw.get("body_name"),
+                "body_weld_id": body_weld_id,
+                "world_aabb": dict(aabb_value),
+                "contype": contype,
+                "conaffinity": conaffinity,
+                "collision_disabled": collision_disabled,
+                "anchored": anchored,
+                "object_swept_clear": first_index is None,
+                "object_intersection_sample_count": int(len(intersection_indices)),
+                "maximum_object_overlap_m_by_axis": [
+                    float(value) for value in object_overlap_by_axis
+                ],
+                "maximum_object_penetration_depth_m": (
+                    maximum_object_penetration
+                ),
+                "first_object_intersection": (
+                    None
+                    if first_index is None
+                    else {
+                        "sample_index": first_index,
+                        "timestamp_s": timestamps[first_index],
+                        "object_position_m": list(positions[first_index]),
+                    }
+                ),
+                "fixture_intersection_clear": not fixture_intersections,
+                "intersecting_fixture_ids": fixture_intersections,
+                "fixture_intersections": fixture_intersection_rows,
+            }
+        )
+    evaluated_backgrounds.sort(key=lambda value: value["stable_id"])
+    object_failures = [
+        row["stable_id"]
+        for row in evaluated_backgrounds
+        if row["object_swept_clear"] is not True
+    ]
+    fixture_failures = [
+        row["stable_id"]
+        for row in evaluated_backgrounds
+        if row["fixture_intersection_clear"] is not True
+    ]
+    collision_failures = [
+        row["stable_id"]
+        for row in evaluated_backgrounds
+        if row["collision_disabled"] is not True
+    ]
+    anchoring_failures = [
+        row["stable_id"]
+        for row in evaluated_backgrounds
+        if row["anchored"] is not True
+    ]
+    result = {
+        "schema_version": SOURCE_MUJOCO_BACKGROUND_CLEARANCE_SCHEMA,
+        "evaluated": True,
+        "object_sweep": {
+            "source": "every_high_rate_object_position_expanded_by_radius/v1",
+            "sample_count": len(sweep_hash_rows),
+            "object_radius_m": radius,
+            "aggregate_world_aabb": {
+                "minimum_m": [float(value) for value in aggregate_minimum],
+                "maximum_m": [float(value) for value in aggregate_maximum],
+            },
+            "exact_rows_sha256": sha256_json(sweep_hash_rows),
+        },
+        "fixture_rows": normalized_fixtures,
+        "fixture_rows_sha256": sha256_json(normalized_fixtures),
+        "background_rows": evaluated_backgrounds,
+        "background_rows_sha256": sha256_json(evaluated_backgrounds),
+        "background_geom_count": len(evaluated_backgrounds),
+        "all_background_collision_disabled": not collision_failures,
+        "all_background_anchored": not anchoring_failures,
+        "object_swept_volume_clear": not object_failures,
+        "fixture_intersection_clear": not fixture_failures,
+        "collision_failure_ids": collision_failures,
+        "anchoring_failure_ids": anchoring_failures,
+        "object_sweep_failure_ids": object_failures,
+        "fixture_intersection_failure_ids": fixture_failures,
+    }
+    result["clearance_pass"] = bool(
+        result["all_background_collision_disabled"]
+        and result["all_background_anchored"]
+        and result["object_swept_volume_clear"]
+        and result["fixture_intersection_clear"]
+    )
+    return result
+
+
+def _fixture_clearance_static_rows(
+    compiled: CompiledSourceModel,
+    scenario: SourceMujocoCompiledScenario,
+) -> list[dict[str, Any]]:
+    """Return the immutable compiled fixture geometry used by replay QC."""
+
+    rows = []
+    for surface in scenario.surfaces:
+        geom_id = int(compiled.ids.surface_geom_ids[surface.name])
+        rows.append(
+            {
+                "fixture_id": surface.name,
+                "role": surface.role,
+                "geom_id": geom_id,
+                "world_aabb": _world_geom_aabb(
+                    compiled.model, compiled.data, geom_id
+                ),
+            }
+        )
+    rows.sort(key=lambda value: value["fixture_id"])
+    return rows
+
+
+def _background_clearance_static_rows(
+    mujoco: Any,
+    compiled: CompiledSourceModel,
+) -> list[dict[str, Any]]:
+    """Return hash-bound primitive background geometry, without QC claims."""
+
+    model, data = compiled.model, compiled.data
+    rows = []
+    for descriptor in compiled.background_geom_descriptors:
+        geom_id = int(descriptor["geom_id"])
+        body_id = int(model.geom_bodyid[geom_id])
+        rows.append(
+            {
+                **dict(descriptor),
+                "body_id": body_id,
+                "body_name": str(
+                    mujoco.mj_id2name(
+                        model, mujoco.mjtObj.mjOBJ_BODY, body_id
+                    )
+                    or "world"
+                ),
+                "body_weld_id": int(model.body_weldid[body_id]),
+                "world_aabb": _world_geom_aabb(model, data, geom_id),
+                "contype": int(model.geom_contype[geom_id]),
+                "conaffinity": int(model.geom_conaffinity[geom_id]),
+            }
+        )
+    rows.sort(key=lambda value: value["stable_id"])
+    return rows
+
+
+def _runtime_background_clearance(
+    mujoco: Any,
+    compiled: CompiledSourceModel,
+    scenario: SourceMujocoCompiledScenario,
+    high_rate_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Resolve classified compiled geoms into hashable runtime evidence."""
+
+    fixture_rows = _fixture_clearance_static_rows(compiled, scenario)
+    background_rows = _background_clearance_static_rows(mujoco, compiled)
+    result = _evaluate_background_clearance_rows(
+        background_rows=background_rows,
+        fixture_rows=fixture_rows,
+        high_rate_rows=high_rate_rows,
+        object_radius_m=scenario.object_radius_m,
+    )
+    result["classification"] = {
+        "source": "CompiledSourceModel.background_geom_descriptors/v1",
+        "descriptor_count": len(compiled.background_geom_descriptors),
+        "descriptors_sha256": sha256_json(compiled.background_geom_descriptors),
+        "background_static_rows_sha256": sha256_json(background_rows),
+        "fixture_static_rows_sha256": sha256_json(fixture_rows),
+        "exclusions": dict(compiled.background_geom_exclusions),
+        "exclusions_sha256": sha256_json(compiled.background_geom_exclusions),
+    }
+    return result
+
+
 def _robocasa_manifest(
     mujoco: Any,
     compiled: CompiledSourceModel,
     scenario: SourceMujocoCompiledScenario,
     dependency: RoboCasaDependency,
+    *,
+    background_clearance: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not scenario.requires_real_robocasa:
         return []
     model, data = compiled.model, compiled.data
-    task_points = [np.asarray(scenario.object_initial_position_m, dtype=np.float64)]
-    for point in (
-        scenario.physical_target_position_m,
-        scenario.controller_target_position_m,
-        scenario.controller_transport_position_m,
-    ):
-        if point is not None:
-            task_points.append(np.asarray(point, dtype=np.float64))
-    points = np.asarray(task_points)
-    margin = 0.18
-    task_aabb = (
-        *tuple(float(value) for value in points.min(axis=0) - margin),
-        *tuple(float(value) for value in points.max(axis=0) + margin),
-    )
+    runtime_rows: tuple[Mapping[str, Any], ...] = ()
+    clearance_sha256: str | None = None
+    clearance_evaluated = background_clearance is not None
+    if background_clearance is not None:
+        if (
+            background_clearance.get("schema_version")
+            != SOURCE_MUJOCO_BACKGROUND_CLEARANCE_SCHEMA
+            or background_clearance.get("evaluated") is not True
+        ):
+            raise RuntimeError("RoboCasa runtime clearance evidence is malformed")
+        raw_rows = background_clearance.get("background_rows")
+        if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes)):
+            raise RuntimeError("RoboCasa runtime clearance lacks background rows")
+        runtime_rows = tuple(
+            row for row in raw_rows if isinstance(row, Mapping)
+        )
+        if len(runtime_rows) != len(raw_rows):
+            raise RuntimeError("RoboCasa runtime clearance contains malformed rows")
+        clearance_sha256 = sha256_json(background_clearance)
     result: list[dict[str, Any]] = []
     asset_root = Path(dependency.asset_root).resolve(strict=True)
     source_root = Path(dependency.source_root).resolve(strict=True)
@@ -1303,21 +2440,63 @@ def _robocasa_manifest(
         ]
         if not geom_ids:
             raise RuntimeError(f"selected RoboCasa asset has no compiled geoms: {slot}")
-        centers = np.asarray([data.geom_xpos[index] for index in geom_ids], dtype=np.float64)
-        # geom_rbound is a conservative world-orientation-independent bound.
-        radii = np.asarray([model.geom_rbound[index] for index in geom_ids], dtype=np.float64)
-        minimum = np.min(centers - radii[:, None], axis=0)
-        maximum = np.max(centers + radii[:, None], axis=0)
+        geom_aabbs = [
+            _flatten_aabb(_world_geom_aabb(model, data, index))
+            for index in geom_ids
+        ]
+        minimum = np.min(
+            np.asarray([value[:3] for value in geom_aabbs], dtype=np.float64),
+            axis=0,
+        )
+        maximum = np.max(
+            np.asarray([value[3:] for value in geom_aabbs], dtype=np.float64),
+            axis=0,
+        )
         aabb = (*tuple(float(value) for value in minimum), *tuple(float(value) for value in maximum))
         collisions_disabled = all(
             int(model.geom_contype[index]) == 0 and int(model.geom_conaffinity[index]) == 0
             for index in geom_ids
         )
-        swept_clear = not _aabb_intersects(aabb, task_aabb)
         if not collisions_disabled:
             raise RuntimeError(f"RoboCasa background collision is enabled: {slot}")
-        if not swept_clear:
-            raise RuntimeError(f"RoboCasa background intersects task swept volume: {slot}")
+        slot_runtime_rows = tuple(
+            row
+            for row in runtime_rows
+            if row.get("classification") == "catalog"
+            and str(row.get("catalog_slot") or "") == slot
+        )
+        if clearance_evaluated and not slot_runtime_rows:
+            raise RuntimeError(
+                f"RoboCasa runtime clearance omitted catalog slot: {slot}"
+            )
+        swept_clear = (
+            all(row.get("object_swept_clear") is True for row in slot_runtime_rows)
+            if clearance_evaluated
+            else None
+        )
+        fixture_clear = (
+            all(
+                row.get("fixture_intersection_clear") is True
+                for row in slot_runtime_rows
+            )
+            if clearance_evaluated
+            else None
+        )
+        anchored = (
+            all(row.get("anchored") is True for row in slot_runtime_rows)
+            if clearance_evaluated
+            else None
+        )
+        blockers = ["rendered_occlusion_review_pending"]
+        if not clearance_evaluated:
+            blockers.append("runtime_clearance_pending")
+        else:
+            if swept_clear is not True:
+                blockers.append("background_intersects_task_swept_volume")
+            if fixture_clear is not True:
+                blockers.append("background_intersects_physical_fixture")
+            if anchored is not True:
+                blockers.append("background_not_anchored")
         yaw = float(item.get("yaw", 0.0))
         position = tuple(float(value) for value in item.get("position", (0, 0, 0)))
         c, s = math.cos(yaw), math.sin(yaw)
@@ -1348,13 +2527,22 @@ def _robocasa_manifest(
                 "transform_row_major_4x4": list(transform),
                 "visual_only": True,
                 "collision_enabled": False,
-                "swept_volume_clear": True,
-                "fixture_intersection_clear": True,
+                "runtime_clearance_evaluated": clearance_evaluated,
+                "runtime_clearance_sha256": clearance_sha256,
+                "catalog_geom_clearance_sha256": (
+                    sha256_json(slot_runtime_rows)
+                    if clearance_evaluated
+                    else None
+                ),
+                "catalog_geom_count": len(slot_runtime_rows),
+                "background_anchored": anchored,
+                "swept_volume_clear": swept_clear,
+                "fixture_intersection_clear": fixture_clear,
                 # Occlusion is deliberately left for rendered automated/human
                 # review; therefore an R1 preview is not an admitted release row.
                 "occlusion_validated": False,
                 "admitted": False,
-                "blockers": ["rendered_occlusion_review_pending"],
+                "blockers": sorted(blockers),
             }
         )
     for row in result:
@@ -1409,9 +2597,47 @@ class SourceMujocoBackend:
             mujoco, least_squares, compiled, scenario
         )
         _initialize_state(mujoco, compiled, scenario, initial_robot_q)
+        initialized_robot_joint_qpos: tuple[float, ...] | None = None
+        if scenario.embodiment != "no_robot":
+            initialized_robot_joint_qpos = tuple(
+                float(compiled.data.qpos[index])
+                for index in compiled.ids.robot_qpos_adrs
+            )
+            if not np.allclose(
+                initialized_robot_joint_qpos,
+                initial_robot_q,
+                rtol=0.0,
+                atol=1e-12,
+            ):
+                raise RuntimeError(
+                    "initialized robot qpos differs from the owned controller plan"
+                )
+        initialized_robot_joint_qpos_sha256 = (
+            None
+            if initialized_robot_joint_qpos is None
+            else sha256_json(initialized_robot_joint_qpos)
+        )
+        compiled_robot_base_pose = (
+            None
+            if compiled.robot_base_position_m is None
+            else {
+                "position_m": compiled.robot_base_position_m,
+                "euler_rad": scenario.robot_base_euler_rad,
+                "quaternion_wxyz": compiled.robot_base_quaternion_wxyz,
+            }
+        )
+        compiled_robot_base_pose_sha256 = (
+            None
+            if compiled_robot_base_pose is None
+            else sha256_json(compiled_robot_base_pose)
+        )
 
         renderers: dict[str, Any] = {}
         frames: dict[str, list[np.ndarray]] = {"main": [], "secondary": []}
+        segmentation_observations: dict[str, list[dict[str, Any]]] = {
+            "main": [],
+            "secondary": [],
+        }
         if render:
             renderers = {
                 name: mujoco.Renderer(
@@ -1528,7 +2754,21 @@ class SourceMujocoBackend:
                         renderer.update_scene(
                             compiled.data, camera=compiled.camera_names[view]
                         )
-                        frames[view].append(renderer.render().copy())
+                        rgb = np.asarray(renderer.render(), dtype=np.uint8).copy()
+                        frames[view].append(rgb)
+                        segmentation_observations[view].append(
+                            _render_segmentation_observation(
+                                mujoco,
+                                renderer,
+                                rgb,
+                                object_geom_id=compiled.ids.object_geom,
+                                left_tool_geom_ids=compiled.ids.left_gripper_geom_ids,
+                                right_tool_geom_ids=compiled.ids.right_gripper_geom_ids,
+                                fixture_geom_ids=tuple(
+                                    compiled.ids.surface_geom_ids.values()
+                                ),
+                            )
+                        )
                 if step < total_steps:
                     mujoco.mj_step(compiled.model, compiled.data)
         finally:
@@ -1547,6 +2787,15 @@ class SourceMujocoBackend:
         runtime_audit = {
             "initial_object_state_writes": 1,
             "initial_robot_state_writes": int(scenario.embodiment != "no_robot"),
+            "initialized_robot_joint_qpos": initialized_robot_joint_qpos,
+            "initialized_robot_joint_qpos_sha256": (
+                initialized_robot_joint_qpos_sha256
+            ),
+            "compiled_robot_base_position_m": compiled.robot_base_position_m,
+            "compiled_robot_base_quaternion_wxyz": (
+                compiled.robot_base_quaternion_wxyz
+            ),
+            "compiled_robot_base_pose_sha256": compiled_robot_base_pose_sha256,
             "object_state_writes_after_initialization": 0,
             "direct_robot_state_writes_after_initialization": 0,
             "mocap_writes_after_initialization": 0,
@@ -1593,11 +2842,60 @@ class SourceMujocoBackend:
             contact_rows,
             runtime_audit,
         )
+        tool_visibility_topology = _compiled_tool_visibility_topology(compiled)
+        measured_key_event = _measured_visibility_key_event(
+            scenario,
+            high_rate_rows,
+            contact_rows,
+            left_tool_geom_ids=tool_visibility_topology["left_tool_geom_ids"],
+            right_tool_geom_ids=tool_visibility_topology["right_tool_geom_ids"],
+            tool_geom_body_ids=tool_visibility_topology["tool_geom_body_ids"],
+            left_tool_body_id=tool_visibility_topology["left_tool_body_id"],
+            right_tool_body_id=tool_visibility_topology["right_tool_body_id"],
+            tool_visibility_topology_sha256=sha256_json(
+                tool_visibility_topology
+            ),
+        )
+        outcome = {
+            **outcome,
+            "planned_key_event_time_s": measured_key_event[
+                "planned_key_event_time_s"
+            ],
+            "key_event_time_s": measured_key_event["actual_key_event_time_s"],
+            "key_event_name": measured_key_event["actual_key_event_name"],
+            "key_event_source": measured_key_event["actual_key_event_source"],
+        }
+        visibility_qc = _source_visibility_qc(
+            scenario,
+            frame_rows,
+            camera_calibrations,
+            frames,
+            segmentation_observations,
+            measured_key_event,
+        )
+        background_clearance = _runtime_background_clearance(
+            mujoco,
+            compiled,
+            scenario,
+            high_rate_rows,
+        )
+        background_clearance_sha256 = sha256_json(background_clearance)
+        runtime_audit = {
+            **runtime_audit,
+            "background_clearance_schema": (
+                SOURCE_MUJOCO_BACKGROUND_CLEARANCE_SCHEMA
+            ),
+            "background_clearance_sha256": background_clearance_sha256,
+            "background_clearance_pass": background_clearance[
+                "clearance_pass"
+            ],
+        }
         robocasa_manifest = _robocasa_manifest(
             mujoco,
             compiled,
             scenario,
             self.robocasa_dependency,
+            background_clearance=background_clearance,
         )
         source_hashes = {
             "external_dependency_manifest": self.source_dependency.manifest_sha256,
@@ -1632,6 +2930,29 @@ class SourceMujocoBackend:
             quality_flags.append("intended_outcome_mismatch_preserved")
         if scenario.requires_real_robocasa:
             quality_flags.append("rendered_robocasa_occlusion_review_pending")
+        if background_clearance.get("clearance_pass") is not True:
+            quality_flags.append("background_runtime_clearance_failed")
+        if render:
+            if visibility_qc.get("evaluated") is not True:
+                quality_flags.append("rendered_visibility_qc_not_evaluated")
+            if visibility_qc.get("key_event_visible_in_any_view") is not True:
+                quality_flags.append("key_event_visibility_failed")
+            if visibility_qc.get("apex_visible_in_any_view") is not True:
+                quality_flags.append("apex_visibility_failed")
+            if visibility_qc.get("final_state_visible_in_any_view") is not True:
+                quality_flags.append("final_state_visibility_failed")
+            if float(
+                visibility_qc.get("target_visible_frame_fraction", 0.0)
+            ) < float(
+                SOURCE_MUJOCO_VISUAL_THRESHOLDS[
+                    "minimum_target_visible_frame_fraction"
+                ]
+            ):
+                quality_flags.append("whole_episode_target_visibility_failed")
+            if visibility_qc.get("contact_occluded_both_views") is True:
+                quality_flags.append("critical_counterpart_visibility_failed")
+        else:
+            quality_flags.append("rendered_visibility_qc_not_evaluated")
         backend_provenance = {
             "backend": self.name,
             "backend_version": self.version,
@@ -1645,6 +2966,24 @@ class SourceMujocoBackend:
             "compiled_model_sha256": compiled.xml_sha256,
             "compiled_asset_sha256": dict(compiled.source_asset_sha256),
             "model_calibration": RIGID_REVIEW_PROFILE.to_dict(),
+            "robot_base_pose": {
+                "position_m": compiled.robot_base_position_m,
+                "quaternion_wxyz": compiled.robot_base_quaternion_wxyz,
+                "pose_sha256": compiled_robot_base_pose_sha256,
+                "source": "owned_compiled_scenario/v2",
+            },
+            "removed_visual_work_surface_names": list(
+                compiled.removed_visual_work_surface_names
+            ),
+            "removed_task_volume_background_names": list(
+                compiled.removed_task_volume_background_names
+            ),
+            "removed_fixture_intersection_background_names": list(
+                compiled.removed_fixture_intersection_background_names
+            ),
+            "relocated_visual_backgrounds": [
+                dict(value) for value in compiled.relocated_visual_backgrounds
+            ],
             "controller_profile_id": RIGID_REVIEW_PROFILE.profile_id,
             "controller_profile_version": RIGID_REVIEW_PROFILE.profile_id,
             "controller_boundary": "apply_actuator_only_callback",
@@ -1668,7 +3007,17 @@ class SourceMujocoBackend:
                     default=0.0,
                 ),
             },
-            "key_event_time_s": scenario.key_event_time_s,
+            "planned_key_event_time_s": scenario.key_event_time_s,
+            "key_event_time_s": measured_key_event["actual_key_event_time_s"],
+            "key_event_name": measured_key_event["actual_key_event_name"],
+            "key_event_source": measured_key_event["actual_key_event_source"],
+            "visibility_qc_schema": SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA,
+            "visibility_qc_sha256": sha256_json(visibility_qc),
+            "background_clearance_schema": (
+                SOURCE_MUJOCO_BACKGROUND_CLEARANCE_SCHEMA
+            ),
+            "background_clearance_sha256": background_clearance_sha256,
+            "background_clearance": background_clearance,
         }
         return SourceMujocoRunResult(
             scenario=scenario,
@@ -1679,6 +3028,8 @@ class SourceMujocoBackend:
             contact_rows=contact_rows,
             outcome=outcome,
             physics_qc=physics_qc,
+            visibility_qc=visibility_qc,
+            background_clearance=background_clearance,
             runtime_audit=runtime_audit,
             backend_provenance=backend_provenance,
             source_hashes=source_hashes,

@@ -13,7 +13,7 @@ from .contract_v2 import (
 from .schema import ActualOutcomeClass
 
 
-SOURCE_OBJECTIVE_EVALUATOR_VERSION = "1.0.0"
+SOURCE_OBJECTIVE_EVALUATOR_VERSION = "1.1.0"
 SOURCE_OBJECTIVE_EVALUATOR_IDS = (
     "passive_freeflight_v1",
     "passive_projectile_v1",
@@ -66,6 +66,111 @@ def _key_event(source_spec: Mapping[str, Any]) -> tuple[str, float]:
     return str(physics.get("key_event_name") or "task_interaction"), event_time
 
 
+def _contact_time_tolerance(source_spec: Mapping[str, Any]) -> float:
+    physics = source_spec.get("physics")
+    if not isinstance(physics, Mapping):
+        return 1e-9
+    try:
+        simulation_hz = float(physics.get("simulation_hz", 0.0))
+    except (TypeError, ValueError):
+        return 1e-9
+    return 1.0 / simulation_hz if math.isfinite(simulation_hz) and simulation_hz > 0 else 1e-9
+
+
+def select_source_key_event(
+    *,
+    planned_key_event_name: str,
+    planned_key_event_time_s: float,
+    state_rows: Sequence[Mapping[str, Any]],
+    event_rows: Sequence[Mapping[str, Any]],
+    passive: bool,
+    contact_time_tolerance_s: float = 1e-9,
+) -> dict[str, Any]:
+    """Select the same persisted event for objective replay and visibility QC."""
+
+    planned_name = str(planned_key_event_name or "task_interaction")
+    planned_time = float(planned_key_event_time_s)
+    if not planned_name.strip():
+        raise ValueError("source key-event name cannot be empty")
+    if not math.isfinite(planned_time) or planned_time < 0.0:
+        raise ValueError("source key-event time is invalid")
+    if passive:
+        return {
+            "key_event_name": planned_name,
+            "key_event_time_s": planned_time,
+            "key_event_source": "planned_source_scenario_event",
+            "physical_contact_applicable": None,
+            "contact_counterpart_geom_ids": [],
+        }
+
+    bilateral_times = [
+        float(row["timestamp"])
+        for row in state_rows
+        if row.get("contact.bilateral") is True
+        and isinstance(row.get("timestamp"), (int, float))
+        and not isinstance(row.get("timestamp"), bool)
+        and math.isfinite(float(row["timestamp"]))
+    ]
+    if bilateral_times:
+        measured_time = min(bilateral_times)
+        counterpart_ids = sorted(
+            {
+                int(row["counterpart_geom_id"])
+                for row in event_rows
+                if row.get("contact_category") == "gripper"
+                and isinstance(row.get("timestamp"), (int, float))
+                and not isinstance(row.get("timestamp"), bool)
+                and abs(float(row["timestamp"]) - measured_time)
+                <= float(contact_time_tolerance_s) + 1e-12
+                and isinstance(row.get("counterpart_geom_id"), int)
+                and not isinstance(row.get("counterpart_geom_id"), bool)
+                and int(row["counterpart_geom_id"]) >= 0
+            }
+        )
+        return {
+            "key_event_name": "bilateral_grasp_onset",
+            "key_event_time_s": measured_time,
+            "key_event_source": "persisted_bilateral_contact",
+            "physical_contact_applicable": True,
+            "contact_counterpart_geom_ids": counterpart_ids,
+        }
+
+    tool_rows = [
+        row
+        for row in event_rows
+        if row.get("contact_category") in {"gripper", "robot_arm"}
+        and isinstance(row.get("timestamp"), (int, float))
+        and not isinstance(row.get("timestamp"), bool)
+        and math.isfinite(float(row["timestamp"]))
+    ]
+    if tool_rows:
+        measured_time = min(float(row["timestamp"]) for row in tool_rows)
+        counterpart_ids = sorted(
+            {
+                int(row["counterpart_geom_id"])
+                for row in tool_rows
+                if abs(float(row["timestamp"]) - measured_time) <= 1e-12
+                and isinstance(row.get("counterpart_geom_id"), int)
+                and not isinstance(row.get("counterpart_geom_id"), bool)
+                and int(row["counterpart_geom_id"]) >= 0
+            }
+        )
+        return {
+            "key_event_name": "tool_contact_onset",
+            "key_event_time_s": measured_time,
+            "key_event_source": "persisted_contact_event",
+            "physical_contact_applicable": True,
+            "contact_counterpart_geom_ids": counterpart_ids,
+        }
+    return {
+        "key_event_name": planned_name,
+        "key_event_time_s": planned_time,
+        "key_event_source": "planned_interception_for_measured_miss",
+        "physical_contact_applicable": False,
+        "contact_counterpart_geom_ids": [],
+    }
+
+
 def _invalid_result(
     *, evidence: dict[str, Any], key_event_name: str, key_event_time_s: float
 ) -> ObjectiveRecomputeResult:
@@ -105,11 +210,27 @@ def evaluate_source_rows(
         "maximum_penetration_depth_m": maximum_penetration,
         "branch_intent_read": False,
     }
+    selected_key_event = select_source_key_event(
+        planned_key_event_name=planned_key_event_name,
+        planned_key_event_time_s=planned_key_event_time_s,
+        state_rows=state_rows,
+        event_rows=event_rows,
+        passive=evaluator_id.startswith("passive_"),
+        contact_time_tolerance_s=_contact_time_tolerance(source_spec),
+    )
     if invalid_penetration:
         return _invalid_result(
-            evidence={**common_evidence, "penetration_within_limits": False},
-            key_event_name=planned_key_event_name,
-            key_event_time_s=planned_key_event_time_s,
+            evidence={
+                **common_evidence,
+                "penetration_within_limits": False,
+                "planned_key_event_name": planned_key_event_name,
+                "planned_key_event_time_s": planned_key_event_time_s,
+                "measured_key_event_source": selected_key_event[
+                    "key_event_source"
+                ],
+            },
+            key_event_name=str(selected_key_event["key_event_name"]),
+            key_event_time_s=float(selected_key_event["key_event_time_s"]),
         )
 
     finite_state = all(
@@ -142,6 +263,11 @@ def evaluate_source_rows(
             "task_surface_contact_count": len(surface_contacts),
             "passive_observation_valid": objective_valid,
             "penetration_within_limits": True,
+            "planned_key_event_name": planned_key_event_name,
+            "planned_key_event_time_s": planned_key_event_time_s,
+            "measured_key_event_source": selected_key_event[
+                "key_event_source"
+            ],
         }
         return ObjectiveRecomputeResult(
             task_success=objective_valid,
@@ -150,8 +276,8 @@ def evaluate_source_rows(
             ),
             primary_failure_code="none" if objective_valid else "unstable_physics",
             evidence=evidence,
-            key_event_name=planned_key_event_name,
-            key_event_time_s=planned_key_event_time_s,
+            key_event_name=str(selected_key_event["key_event_name"]),
+            key_event_time_s=float(selected_key_event["key_event_time_s"]),
         )
 
     physics = source_spec.get("physics")
@@ -201,34 +327,9 @@ def evaluate_source_rows(
     tool_contacts = sum(
         row.get("contact_category") in {"gripper", "robot_arm"} for row in event_rows
     )
-    bilateral_times = [
-        float(row["timestamp"])
-        for row in state_rows
-        if row.get("contact.bilateral") is True
-        and isinstance(row.get("timestamp"), (int, float))
-        and not isinstance(row.get("timestamp"), bool)
-        and math.isfinite(float(row["timestamp"]))
-    ]
-    tool_contact_times = [
-        float(row["timestamp"])
-        for row in event_rows
-        if row.get("contact_category") in {"gripper", "robot_arm"}
-        and isinstance(row.get("timestamp"), (int, float))
-        and not isinstance(row.get("timestamp"), bool)
-        and math.isfinite(float(row["timestamp"]))
-    ]
-    if bilateral_times:
-        key_event_name = "bilateral_grasp_onset"
-        key_event_time_s = min(bilateral_times)
-        key_event_source = "persisted_bilateral_contact"
-    elif tool_contact_times:
-        key_event_name = "tool_contact_onset"
-        key_event_time_s = min(tool_contact_times)
-        key_event_source = "persisted_contact_event"
-    else:
-        key_event_name = planned_key_event_name
-        key_event_time_s = planned_key_event_time_s
-        key_event_source = "planned_interception_for_measured_miss"
+    key_event_name = str(selected_key_event["key_event_name"])
+    key_event_time_s = float(selected_key_event["key_event_time_s"])
+    key_event_source = str(selected_key_event["key_event_source"])
     evidence = {
         **common_evidence,
         "finite_state": finite_state,
@@ -295,4 +396,5 @@ __all__ = [
     "evaluate_source_persisted",
     "evaluate_source_rows",
     "register_source_objective_evaluators",
+    "select_source_key_event",
 ]

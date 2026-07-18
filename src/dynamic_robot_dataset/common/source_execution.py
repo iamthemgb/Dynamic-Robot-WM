@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
+import math
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..backends import get_backend
@@ -21,7 +22,11 @@ from ..backends.source_mujoco import (
     prepare_review_case,
 )
 from ..backends.source_mujoco.compiler import SourceMujocoCompiledScenario
-from .cameras import CameraCalibration
+from .cameras import (
+    CameraCalibration,
+    invert_rigid_transform,
+    quaternion_to_rotation_matrix,
+)
 from .contract_v2 import MotionMode, ContactRole
 from .corpus_registry import load_corpus_registry
 from .episode_writer import canonical_camera_name
@@ -46,11 +51,12 @@ from .source_evaluators import (
     evaluate_source_rows,
 )
 from .source_scenario import SourceScenarioSpec
+from .visual_qc import source_mujoco_visibility_media_binding
 
 
 SOURCE_EXECUTION_BRIDGE_SCHEMA = "dynamic-robot-source-execution-bridge/v1"
 SOURCE_FINALIZATION_PROVENANCE_SCHEMA = (
-    "dynamic-robot-source-finalization-provenance/v1"
+    "dynamic-robot-source-finalization-provenance/v3"
 )
 
 
@@ -318,6 +324,54 @@ def _verify_runtime_identity(
         raise SourceExecutionBindingError("runtime audit and backend provenance disagree")
     if result.runtime_audit.get("action_ctrl_echo_exact") is not True:
         raise SourceExecutionBindingError("runtime did not preserve exact action/data.ctrl echoes")
+    planned_robot_qpos = spec.initial_state.get("robot_initial_joint_qpos")
+    planned_robot_qpos_sha256 = spec.initial_state.get(
+        "robot_initial_joint_qpos_sha256"
+    )
+    actual_robot_qpos = result.runtime_audit.get("initialized_robot_joint_qpos")
+    actual_robot_qpos_sha256 = result.runtime_audit.get(
+        "initialized_robot_joint_qpos_sha256"
+    )
+    if (
+        _canonical_copy(actual_robot_qpos) != _canonical_copy(planned_robot_qpos)
+        or actual_robot_qpos_sha256 != planned_robot_qpos_sha256
+        or (
+            planned_robot_qpos is not None
+            and sha256_json(planned_robot_qpos) != planned_robot_qpos_sha256
+        )
+    ):
+        raise SourceExecutionBindingError(
+            "initialized robot joint qpos differs from SourceScenarioSpec"
+        )
+    planned_base_position = spec.initial_state.get("robot_base_position_m")
+    planned_base_quaternion = spec.initial_state.get(
+        "robot_base_quaternion_wxyz"
+    )
+    planned_base_pose_sha256 = spec.initial_state.get("robot_base_pose_sha256")
+    if (
+        _canonical_copy(result.runtime_audit.get("compiled_robot_base_position_m"))
+        != _canonical_copy(planned_base_position)
+        or _canonical_copy(
+            result.runtime_audit.get("compiled_robot_base_quaternion_wxyz")
+        )
+        != _canonical_copy(planned_base_quaternion)
+        or result.runtime_audit.get("compiled_robot_base_pose_sha256")
+        != planned_base_pose_sha256
+        or (
+            planned_base_position is not None
+            and sha256_json(
+                {
+                    "position_m": planned_base_position,
+                    "euler_rad": spec.initial_state.get("robot_base_euler_rad"),
+                    "quaternion_wxyz": planned_base_quaternion,
+                }
+            )
+            != planned_base_pose_sha256
+        )
+    ):
+        raise SourceExecutionBindingError(
+            "compiled robot base pose differs from SourceScenarioSpec"
+        )
     expected_asset_ids = [asset.asset_id for asset in spec.robocasa_manifest.assets]
     actual_asset_ids = [str(row.get("asset_id") or "") for row in result.robocasa_asset_manifest]
     if actual_asset_ids != expected_asset_ids:
@@ -355,22 +409,76 @@ def _verify_runtime_identity(
     if set(result.camera_calibrations) != {"main", "secondary"}:
         raise SourceExecutionBindingError("runtime lacks the exact two planned cameras")
     planned_cameras = {camera.name: camera for camera in spec.cameras}
+    canonical_roles = {
+        "main": "main_three_quarter_external",
+        "secondary": "task_specific_secondary",
+    }
     for name, calibration in result.camera_calibrations.items():
         calibration.validate()
         planned = planned_cameras[name]
-        translation = (
-            float(calibration.camera_to_world[3]),
-            float(calibration.camera_to_world[7]),
-            float(calibration.camera_to_world[11]),
+        raw_rotation = quaternion_to_rotation_matrix(
+            planned.pose.quaternion_wxyz
         )
+        position = tuple(float(value) for value in planned.pose.position_m)
+        # SourceCameraSpec stores MuJoCo's camera rotation (right, up,
+        # backward). CameraCalibration uses the canonical image convention
+        # (right, down, forward), so flip its second and third axes.
+        expected_camera_to_world = (
+            raw_rotation[0], -raw_rotation[1], -raw_rotation[2], position[0],
+            raw_rotation[3], -raw_rotation[4], -raw_rotation[5], position[1],
+            raw_rotation[6], -raw_rotation[7], -raw_rotation[8], position[2],
+            0.0, 0.0, 0.0, 1.0,
+        )
+        expected_world_to_camera = invert_rigid_transform(
+            expected_camera_to_world
+        )
+        focal_px = 0.5 * planned.height / math.tan(
+            math.radians(planned.fovy_deg) / 2.0
+        )
+        expected_intrinsic = (
+            focal_px,
+            0.0,
+            planned.width / 2.0,
+            0.0,
+            focal_px,
+            planned.height / 2.0,
+            0.0,
+            0.0,
+            1.0,
+        )
+        planned_look_direction = tuple(
+            float(planned.look_at_m[index]) - position[index]
+            for index in range(3)
+        )
+        look_norm = math.sqrt(
+            sum(value * value for value in planned_look_direction)
+        )
+        planned_look_direction = tuple(
+            value / look_norm for value in planned_look_direction
+        )
+        runtime_look_direction = (
+            float(calibration.camera_to_world[2]),
+            float(calibration.camera_to_world[6]),
+            float(calibration.camera_to_world[10]),
+        )
+
+        def differs(
+            actual: Sequence[float], expected: Sequence[float]
+        ) -> bool:
+            return len(actual) != len(expected) or any(
+                abs(float(left) - float(right)) > 1e-9
+                for left, right in zip(actual, expected)
+            )
+
         if (
             calibration.camera_name != name
+            or planned.role != canonical_roles[name]
             or (calibration.width, calibration.height, calibration.fps)
             != (planned.width, planned.height, float(planned.fps))
-            or any(
-                abs(left - right) > 1e-9
-                for left, right in zip(translation, planned.pose.position_m)
-            )
+            or differs(calibration.camera_to_world, expected_camera_to_world)
+            or differs(calibration.world_to_camera, expected_world_to_camera)
+            or differs(calibration.intrinsic_matrix, expected_intrinsic)
+            or differs(runtime_look_direction, planned_look_direction)
         ):
             raise SourceExecutionBindingError(
                 f"runtime camera {name} differs from SourceScenarioSpec"
@@ -604,6 +712,7 @@ def _normalize_rows(
                     "normal_world",
                     "penetration_depth_m",
                     "contact_category",
+                    "counterpart_geom_id",
                     "normal_force_n",
                     "normal_impulse_n_s",
                     "relative_velocity_world_m_s",
@@ -811,6 +920,24 @@ def materialize_source_mujoco_result(
     source_manifest_sha256 = sha256_json(result.source_hashes)
     backend_provenance_sha256 = sha256_json(result.backend_provenance)
     runtime_audit_sha256 = sha256_json(result.runtime_audit)
+    visibility_qc_sha256 = sha256_json(result.visibility_qc)
+    if (
+        result.backend_provenance.get("visibility_qc_sha256")
+        != visibility_qc_sha256
+    ):
+        raise SourceExecutionBindingError(
+            "runtime visibility QC differs from its backend provenance hash"
+        )
+    background_clearance_sha256 = sha256_json(result.background_clearance)
+    if (
+        result.backend_provenance.get("background_clearance_sha256")
+        != background_clearance_sha256
+        or result.runtime_audit.get("background_clearance_sha256")
+        != background_clearance_sha256
+    ):
+        raise SourceExecutionBindingError(
+            "runtime background clearance differs from provenance/audit hash"
+        )
     record = EpisodeRecord(
         episode_uuid=entry.episode_uuid,
         episode_index=entry.episode_index,
@@ -943,6 +1070,10 @@ def materialize_source_mujoco_result(
             "runtime_audit": dict(result.runtime_audit),
             "runtime_audit_sha256": runtime_audit_sha256,
             "physics_qc": dict(result.physics_qc),
+            "visibility_qc": dict(result.visibility_qc),
+            "visibility_qc_sha256": visibility_qc_sha256,
+            "background_clearance": dict(result.background_clearance),
+            "background_clearance_sha256": background_clearance_sha256,
             "online_outcome_diagnostic": dict(result.outcome),
             "independent_objective_evidence": dict(measurement.evidence),
             "robocasa_asset_manifest": list(result.robocasa_asset_manifest),
@@ -1055,6 +1186,8 @@ def source_finalization_rows(
         runtime_audit = record.extras.get("runtime_audit")
         source_hashes = record.extras.get("source_hashes")
         physics_qc = record.extras.get("physics_qc")
+        visibility_qc = record.extras.get("visibility_qc")
+        background_clearance = record.extras.get("background_clearance")
         source_spec = record.extras.get("source_scenario_spec")
         if not all(
             isinstance(value, Mapping)
@@ -1063,6 +1196,8 @@ def source_finalization_rows(
                 runtime_audit,
                 source_hashes,
                 physics_qc,
+                visibility_qc,
+                background_clearance,
                 source_spec,
             )
         ):
@@ -1075,12 +1210,63 @@ def source_finalization_rows(
             "source_manifest_sha256": sha256_json(source_hashes),
             "backend_provenance_sha256": sha256_json(backend_provenance),
             "runtime_audit_sha256": sha256_json(runtime_audit),
+            "visibility_qc_sha256": sha256_json(visibility_qc),
+            "background_clearance_sha256": sha256_json(
+                background_clearance
+            ),
         }
+        visibility_media_binding = record.extras.get(
+            "visibility_media_binding"
+        )
+        if not isinstance(visibility_media_binding, Mapping):
+            raise SourceExecutionBindingError(
+                "committed source record lacks visibility media binding"
+            )
+        try:
+            recomputed_visibility_media_binding = (
+                source_mujoco_visibility_media_binding(
+                    visibility_qc_sha256=sha256_json(visibility_qc),
+                    camera_rows=raw_cameras,
+                    camera_stream_calibration_ids=(
+                        record.camera_stream_calibration_ids
+                    ),
+                    video_paths=record.video_paths,
+                    content_hashes=record.content_hashes,
+                )
+            )
+        except (TypeError, ValueError) as error:
+            raise SourceExecutionBindingError(
+                "committed source visibility media binding cannot be "
+                f"recomputed: {error}"
+            ) from error
+        if _canonical_copy(visibility_media_binding) != (
+            recomputed_visibility_media_binding
+        ):
+            raise SourceExecutionBindingError(
+                "committed source visibility media binding differs from "
+                "camera rows or encoded media"
+            )
+        visibility_media_binding = recomputed_visibility_media_binding
+        expected_hash_bindings["visibility_media_binding_sha256"] = (
+            sha256_json(visibility_media_binding)
+        )
         for name, expected in expected_hash_bindings.items():
             if record.extras.get(name) != expected:
                 raise SourceExecutionBindingError(
                     f"committed source provenance hash changed: {name}"
                 )
+        background_clearance_sha256 = sha256_json(background_clearance)
+        if (
+            backend_provenance.get("background_clearance_sha256")
+            != background_clearance_sha256
+            or backend_provenance.get("background_clearance")
+            != background_clearance
+            or runtime_audit.get("background_clearance_sha256")
+            != background_clearance_sha256
+        ):
+            raise SourceExecutionBindingError(
+                "committed source background clearance binding changed"
+            )
         provenance = {
             "schema_version": SOURCE_FINALIZATION_PROVENANCE_SCHEMA,
             "episode_uuid": record.episode_uuid,
@@ -1103,6 +1289,13 @@ def source_finalization_rows(
             "backend_provenance_sha256": sha256_json(backend_provenance),
             "runtime_audit_sha256": sha256_json(runtime_audit),
             "physics_qc_sha256": sha256_json(physics_qc),
+            "visibility_qc_sha256": sha256_json(visibility_qc),
+            "background_clearance_sha256": sha256_json(
+                background_clearance
+            ),
+            "visibility_media_binding_sha256": sha256_json(
+                visibility_media_binding
+            ),
             "review_only": True,
             "production_eligible": False,
         }

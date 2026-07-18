@@ -273,6 +273,29 @@ def test_objective_registry_recomputes_only_from_persisted_rows() -> None:
     assert compare_recomputed_objective(record, result) == []
 
 
+def test_source_evaluator_lazy_registration_tracks_current_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dynamic_robot_dataset.common.contract_v2 as contract_v2
+    import dynamic_robot_dataset.common.source_evaluators as source_evaluators
+
+    registry = ObjectiveEvaluatorRegistry()
+    monkeypatch.setattr(
+        contract_v2, "DEFAULT_OBJECTIVE_EVALUATORS", registry
+    )
+    monkeypatch.setattr(
+        source_evaluators, "DEFAULT_OBJECTIVE_EVALUATORS", registry
+    )
+
+    evaluator = registry.get(
+        "passive_freeflight_v1",
+        source_evaluators.SOURCE_OBJECTIVE_EVALUATOR_VERSION,
+    )
+
+    assert evaluator is source_evaluators.evaluate_source_persisted
+    assert registry.get("passive_freeflight_v1", "unknown-version") is None
+
+
 def test_frame_semantics_use_closed_motion_and_contact_labels() -> None:
     rows = [
         {

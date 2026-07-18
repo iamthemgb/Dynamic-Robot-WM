@@ -16,8 +16,8 @@ from ...common.synchronization import fixed_duration_frame_timestamps
 from .profiles import RIGID_REVIEW_PROFILE
 
 
-SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v1"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.4.0-review"
+SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v2"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.6.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):
@@ -40,6 +40,18 @@ _PASSIVE_VARIATION_PROFILES = (
     "lower_admitted_contact_parameter",
     "higher_admitted_contact_parameter",
 )
+
+# World-origin-centered supports derived from the complete fixed-six persisted
+# high-rate object sweeps, expanded by the largest P0 sphere radius (25.5 mm)
+# and a 100 mm visual/physics safety margin, then rounded outward.
+_P0_SUPPORT_HALF_XY_M: Mapping[str, tuple[float, float]] = {
+    # sweep x=[-0.150, 0.0361], y=-0.100
+    "P0a": (0.28, 0.23),
+    # sweep x=[-0.700, 0.4041], y=[-0.150, 0.1221]
+    "P0b": (0.83, 0.28),
+    # sweep x=[-0.450, 0.3707], y=[-0.0265, 0.0001]
+    "P0c": (0.58, 0.16),
+}
 
 # This is intentionally narrower than the taxonomy registry.  Registry support
 # means ownership; this table means an executable, non-proxy review attempt is
@@ -109,6 +121,8 @@ class SourceMujocoCompiledScenario:
     scene_variant: str
     randomization_level: str
     requires_real_robocasa: bool
+    robot_base_position_m: tuple[float, float, float] | None
+    robot_base_euler_rad: tuple[float, float, float] | None
     passive_variation_profile: str | None
     duration_s: float
     simulation_hz: int
@@ -181,6 +195,14 @@ class SourceMujocoCompiledScenario:
             raise SourceMujocoUnsupported("R1 scene/profile admission flags disagree")
         if self.randomization_level != ("R0" if self.scene_profile == "clean_R0" else "R1"):
             raise SourceMujocoUnsupported("scene profile uses the wrong randomization level")
+        if self.embodiment == "no_robot":
+            if self.robot_base_position_m is not None or self.robot_base_euler_rad is not None:
+                raise SourceMujocoUnsupported("no_robot scenario cannot declare a robot base pose")
+        elif self.robot_base_position_m is None or self.robot_base_euler_rad is None:
+            raise SourceMujocoUnsupported("actuated scenario lacks its owned robot base pose")
+        else:
+            _finite_tuple(self.robot_base_position_m, 3, "robot base position")
+            _finite_tuple(self.robot_base_euler_rad, 3, "robot base Euler rotation")
         _finite_tuple(self.object_initial_position_m, 3, "object position")
         _finite_tuple(self.object_initial_linear_velocity_m_s, 3, "object velocity")
         _finite_tuple(self.object_initial_angular_velocity_rad_s, 3, "object angular velocity")
@@ -310,6 +332,8 @@ def _recipe(
     mass = _sphere_mass(radius)
     catch_z = tabletop_height_m + 0.50
     close_z = catch_z + 0.055
+    r1_support_half_height = 0.02 if tabletop_height_m > 0.0 else 0.04
+    r1_support_center_z = tabletop_height_m - r1_support_half_height
     negative = branch_role not in {"nominal_success", "passive_observation"}
     duration = 2.0
     base: dict[str, Any] = {
@@ -328,6 +352,11 @@ def _recipe(
     }
 
     if leaf_id == "P0a":
+        support_xy = (
+            _P0_SUPPORT_HALF_XY_M[leaf_id]
+            if tabletop_height_m > 0.0
+            else (1.4, 1.4)
+        )
         lateral = 0.28 if task_variant == "lateral_freefall" else 0.0
         base.update(
             duration_s=0.8,
@@ -335,9 +364,14 @@ def _recipe(
             motion_kind="passive_freefall",
             object_initial_position_m=(-0.15, -0.10, tabletop_height_m + 0.47),
             object_initial_linear_velocity_m_s=(lateral, 0.0, 0.0),
-            surfaces=(_surface("supported_floor", "floor", (0, 0, tabletop_height_m - 0.04), (1.4, 1.4, 0.04)),),
+            surfaces=(_surface("supported_floor", "floor", (0, 0, r1_support_center_z), (*support_xy, r1_support_half_height)),),
         )
     elif leaf_id == "P0b":
+        support_xy = (
+            _P0_SUPPORT_HALF_XY_M[leaf_id]
+            if tabletop_height_m > 0.0
+            else (1.4, 1.4)
+        )
         vy = 0.34 if task_variant == "angled_projectile" else 0.0
         base.update(
             duration_s=0.8,
@@ -345,18 +379,29 @@ def _recipe(
             motion_kind="passive_projectile",
             object_initial_position_m=(-0.70, -0.15, tabletop_height_m + 0.50),
             object_initial_linear_velocity_m_s=(1.15, vy, 3.50),
-            surfaces=(_surface("supported_floor", "floor", (0, 0, tabletop_height_m - 0.04), (1.4, 1.4, 0.04)),),
+            surfaces=(_surface("supported_floor", "floor", (0, 0, r1_support_center_z), (*support_xy, r1_support_half_height)),),
         )
     elif leaf_id == "P0c" and task_variant == "table_bounce":
+        support_xy = (
+            _P0_SUPPORT_HALF_XY_M[leaf_id]
+            if tabletop_height_m > 0.0
+            else (1.2, 0.8)
+        )
         base.update(
             duration_s=1.3,
             key_event_time_s=0.31,
             motion_kind="passive_table_bounce",
             object_initial_position_m=(-0.30, 0.0, tabletop_height_m + 0.75),
             object_initial_linear_velocity_m_s=(0.55, 0.0, -0.85),
-            surfaces=(_surface("supported_bounce_table", "table", (0, 0, tabletop_height_m - 0.04), (1.2, 0.8, 0.04)),),
+            surfaces=(_surface("supported_bounce_table", "table", (0, 0, r1_support_center_z), (*support_xy, r1_support_half_height)),),
         )
     elif leaf_id == "P0c" and task_variant == "wall_rebound":
+        support_xy = (
+            _P0_SUPPORT_HALF_XY_M[leaf_id]
+            if tabletop_height_m > 0.0
+            else (1.4, 1.4)
+        )
+        wall_half_y = support_xy[1] if tabletop_height_m > 0.0 else 0.65
         # Reach the wall after a complete airborne arc.  The earlier horizontal-only
         # launch struck the support floor after 0.35 s and merely rolled toward
         # the wall, so its nominal "wall rebound" never occurred.  The wall
@@ -373,8 +418,8 @@ def _recipe(
                 0.5 * abs(gravity[2]) * wall_event_time,
             ),
             surfaces=(
-                _surface("supported_floor", "floor", (0, 0, tabletop_height_m - 0.04), (1.4, 1.4, 0.04)),
-                _surface("supported_wall", "wall", (0.35, 0.0, tabletop_height_m + 0.62), (0.02, 0.65, 0.62)),
+                _surface("supported_floor", "floor", (0, 0, r1_support_center_z), (*support_xy, r1_support_half_height)),
+                _surface("supported_wall", "wall", (0.35, 0.0, tabletop_height_m + 0.62), (0.02, wall_half_y, 0.62)),
             ),
         )
     elif leaf_id == "P0d":
@@ -640,7 +685,18 @@ def compile_review_case(
     randomization_level = str(value.get("randomization_level") or "")
     requires_real_robocasa = bool(value.get("requires_real_robocasa"))
     rng_subseeds = _rng_mapping(value.get("rng_subseeds"))
-    tabletop_height = 0.74 if requires_real_robocasa else 0.0
+    external_tabletop_height = 0.74 if requires_real_robocasa else 0.0
+    # F1 is a free-space interception rooted at the room floor.  The external
+    # R1 scene historically raised both robot and task by 0.74 m to sit on a
+    # procedural table whose collision was later disabled.  That made R0 and
+    # R1 different physical tasks and let failed balls pass through visible
+    # furniture.  Keep the owned local F1 task/base pose invariant and treat
+    # R1 furniture solely as remote appearance context.
+    task_height = 0.0 if leaf_id.startswith("F1") else external_tabletop_height
+    robot_base_position = (
+        None if embodiment == "no_robot" else (0.0, 0.0, task_height)
+    )
+    robot_base_euler = None if embodiment == "no_robot" else (0.0, 0.0, 0.0)
     branch_role = str(value.get("branch_role") or "")
     passive_variation_profile = (
         str(value.get("passive_variation_profile") or "")
@@ -653,7 +709,7 @@ def compile_review_case(
         embodiment,
         branch_role,
         seed=rng_subseeds["initial_state"],
-        tabletop_height_m=tabletop_height,
+        tabletop_height_m=task_height,
     )
     if leaf_id.startswith("P0"):
         recipe = _apply_passive_variation(
@@ -691,6 +747,8 @@ def compile_review_case(
         scene_variant=_SCENE_VARIANTS[scene_profile],
         randomization_level=randomization_level,
         requires_real_robocasa=requires_real_robocasa,
+        robot_base_position_m=robot_base_position,
+        robot_base_euler_rad=robot_base_euler,
         passive_variation_profile=passive_variation_profile,
         simulation_hz=(
             RIGID_REVIEW_PROFILE.comparison_simulation_hz

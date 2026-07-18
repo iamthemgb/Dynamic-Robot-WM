@@ -42,6 +42,7 @@ from .synchronization import (
     validate_synchronized_streams,
 )
 from .video_writer import VideoProbe, VideoSpec, encode_video, probe_frame_timestamps, probe_video, validate_video_probe
+from .visual_qc import source_mujoco_visibility_media_binding
 
 
 class MissingParquetDependency(RuntimeError):
@@ -995,6 +996,32 @@ class EpisodeWriter:
         record.content_hashes = {
             relative: sha256_file(resolve_dataset_path(transaction_dir, relative)) for relative in every_output
         }
+        backend_provenance = record.extras.get("backend_provenance")
+        if (
+            isinstance(backend_provenance, Mapping)
+            and backend_provenance.get("backend") == "source_mujoco"
+        ):
+            visibility_hash = str(
+                record.extras.get("visibility_qc_sha256") or ""
+            )
+            camera_rows = record.extras.get("camera_calibrations")
+            if not isinstance(camera_rows, Sequence) or isinstance(
+                camera_rows, (str, bytes, bytearray)
+            ):
+                raise ValueError(
+                    "source_mujoco visibility binding requires camera calibration rows"
+                )
+            binding = source_mujoco_visibility_media_binding(
+                visibility_qc_sha256=visibility_hash,
+                camera_rows=camera_rows,
+                camera_stream_calibration_ids=record.camera_stream_calibration_ids,
+                video_paths=record.video_paths,
+                content_hashes=record.content_hashes,
+            )
+            record.extras["visibility_media_binding"] = binding
+            record.extras["visibility_media_binding_sha256"] = sha256_json(
+                binding
+            )
         record.validate()
         atomic_write_json(
             transaction_dir / ".transaction.json",

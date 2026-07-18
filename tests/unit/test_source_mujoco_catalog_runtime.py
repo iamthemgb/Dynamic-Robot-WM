@@ -40,6 +40,14 @@ def _kitchen_case():
     )
 
 
+def _kitchen_f1_case():
+    return next(
+        case
+        for case in build_review_suite_plan().cases
+        if case.corpus_leaf_id == "F1a" and case.rollout_index == 2
+    )
+
+
 @pytest.fixture(scope="module")
 def kitchen_runtime():
     mujoco, _ = _require_runtime_dependencies()
@@ -51,10 +59,15 @@ def kitchen_runtime():
         robocasa_dependency=backend.robocasa_dependency,
     )
     mujoco.mj_forward(compiled.model, compiled.data)
-    manifest = _robocasa_manifest(
-        mujoco, compiled, scenario, backend.robocasa_dependency
-    )
+    manifest = backend.run(scenario, render=False).robocasa_asset_manifest
     return mujoco, backend, scenario, compiled, manifest
+
+
+@pytest.fixture(scope="module")
+def kitchen_f1_runtime_manifest():
+    return SourceMujocoBackend().run(
+        _kitchen_f1_case(), render=False
+    ).robocasa_asset_manifest
 
 
 def test_compiled_r1_uses_only_its_content_bound_catalog_candidate(
@@ -78,7 +91,7 @@ def test_compiled_r1_uses_only_its_content_bound_catalog_candidate(
     assert manifest[0]["catalog_sha256"] == policy.catalog_sha256
 
 
-def test_compiled_catalog_candidate_is_visual_only_and_swept_volume_clear(
+def test_compiled_catalog_candidate_preserves_measured_runtime_clearance(
     kitchen_runtime,
 ) -> None:
     mujoco, _, _, compiled, manifest = kitchen_runtime
@@ -87,9 +100,10 @@ def test_compiled_catalog_candidate_is_visual_only_and_swept_volume_clear(
     assert row["collision_enabled"] is False
     assert row["swept_volume_clear"] is True
     assert row["fixture_intersection_clear"] is True
+    assert "background_intersects_physical_fixture" not in row["blockers"]
     assert row["occlusion_validated"] is False
     assert row["admitted"] is False
-    assert row["blockers"] == ["rendered_occlusion_review_pending"]
+    assert "rendered_occlusion_review_pending" in row["blockers"]
     assert all(
         int(compiled.model.geom_contype[geom_id]) == 0
         and int(compiled.model.geom_conaffinity[geom_id]) == 0
@@ -105,10 +119,29 @@ def test_compiled_catalog_candidate_is_visual_only_and_swept_volume_clear(
     )
 
 
-def test_runtime_candidate_is_review_valid_but_not_release_admitted(
+def test_planning_manifest_never_claims_uncomputed_runtime_clearance(
     kitchen_runtime,
 ) -> None:
-    manifest = kitchen_runtime[-1]
+    mujoco, backend, scenario, compiled, _ = kitchen_runtime
+    planning_manifest = _robocasa_manifest(
+        mujoco,
+        compiled,
+        scenario,
+        backend.robocasa_dependency,
+    )
+    row = planning_manifest[0]
+
+    assert row["runtime_clearance_evaluated"] is False
+    assert row["runtime_clearance_sha256"] is None
+    assert row["swept_volume_clear"] is None
+    assert row["fixture_intersection_clear"] is None
+    assert "runtime_clearance_pending" in row["blockers"]
+
+
+def test_runtime_candidate_is_review_valid_but_not_release_admitted(
+    kitchen_f1_runtime_manifest,
+) -> None:
+    manifest = kitchen_f1_runtime_manifest
     with pytest.raises(ValueError, match="not admitted"):
         validate_robocasa_asset_manifest(manifest)
     validate_robocasa_asset_manifest(
@@ -141,6 +174,122 @@ def test_external_random_robocasa_imports_and_kitchen_appliances_are_absent(
         "robocasa_background_assets"
     ]
     assert camera_assets == [dict(compiled.robocasa_assets[0])]
+
+
+def test_r1_physical_fixture_is_the_only_visible_work_surface(
+    kitchen_runtime,
+) -> None:
+    _, _, scenario, compiled, _ = kitchen_runtime
+    xml_root = ET.fromstring(compiled.xml)
+    world = xml_root.find("worldbody")
+    assert world is not None
+    names = {
+        str(geom.get("name") or "") for geom in world.findall("./geom")
+    }
+
+    assert compiled.removed_visual_work_surface_names == (
+        "back_counter_top",
+        "robot_table_top",
+    )
+    assert not set(compiled.removed_visual_work_surface_names) & names
+    assert {surface.name for surface in scenario.surfaces} <= names
+    # The lower cabinetry remains as anchored visual support/context; only its
+    # conflicting top plane is removed.
+    assert "back_counter_base" in names
+    assert "robot_table_front" in names
+    assert compiled.external_camera_metadata["main_camera"][
+        "removed_visual_work_surface_names"
+    ] == ["back_counter_top", "robot_table_top"]
+
+
+def test_fixture_free_f1_r1_removes_entire_central_table_and_keeps_remote_context() -> None:
+    case = next(
+        case
+        for case in build_review_suite_plan().cases
+        if case.corpus_leaf_id == "F1a" and case.rollout_index == 2
+    )
+    backend = SourceMujocoBackend()
+    scenario = compile_review_case(case)
+    assert not scenario.surfaces
+    compiled = compile_source_model(
+        scenario,
+        source_dependency=backend.source_dependency,
+        robocasa_dependency=backend.robocasa_dependency,
+    )
+    xml_root = ET.fromstring(compiled.xml)
+    names = {
+        str(geom.get("name") or "")
+        for geom in xml_root.findall("./worldbody/geom")
+    }
+
+    assert compiled.removed_visual_work_surface_names == ()
+    assert compiled.removed_fixture_intersection_background_names == ()
+    removed = compiled.removed_task_volume_background_names
+    assert "robot_table_top" in removed
+    assert removed == tuple(sorted(removed))
+    assert not any(name.startswith("robot_table_") for name in names)
+    assert not any(
+        str(element.get("name") or "").startswith("robot_table_")
+        for element in xml_root.iter()
+    )
+    assert "back_counter_top" in names
+    assert "back_counter_base" in names
+    assert compiled.robot_base_position_m == (0.0, 0.0, 0.0)
+    assert compiled.robot_base_quaternion_wxyz == pytest.approx((1.0, 0.0, 0.0, 0.0))
+    assert compiled.external_camera_metadata["main_camera"][
+        "removed_task_volume_background_names"
+    ] == list(removed)
+
+    procedural = tuple(
+        row
+        for row in compiled.background_geom_descriptors
+        if row["classification"] == "procedural"
+    )
+    catalog = tuple(
+        row
+        for row in compiled.background_geom_descriptors
+        if row["classification"] == "catalog"
+    )
+    assert procedural
+    assert catalog
+    assert compiled.background_geom_exclusions == {"floor": "physical_room_support"}
+    assert len({row["stable_id"] for row in compiled.background_geom_descriptors}) == len(
+        compiled.background_geom_descriptors
+    )
+    assert all(
+        int(compiled.model.geom_contype[int(row["geom_id"])]) == 0
+        and int(compiled.model.geom_conaffinity[int(row["geom_id"])]) == 0
+        for row in compiled.background_geom_descriptors
+    )
+
+
+@pytest.mark.parametrize("leaf_id", ("F2a", "F2d"))
+def test_blocked_f2_r1_recipes_retain_their_robot_support_table(
+    leaf_id: str,
+) -> None:
+    case = next(
+        case
+        for case in build_review_suite_plan().cases
+        if case.corpus_leaf_id == leaf_id and case.rollout_index == 1
+    )
+    backend = SourceMujocoBackend()
+    scenario = compile_review_case(case)
+    compiled = compile_source_model(
+        scenario,
+        source_dependency=backend.source_dependency,
+        robocasa_dependency=backend.robocasa_dependency,
+    )
+    xml_root = ET.fromstring(compiled.xml)
+    names = {
+        str(geom.get("name") or "")
+        for geom in xml_root.findall("./worldbody/geom")
+    }
+
+    assert scenario.robot_base_position_m == (0.0, 0.0, 0.74)
+    assert compiled.robot_base_position_m == (0.0, 0.0, 0.74)
+    assert "robot_table_top" in names
+    assert compiled.removed_visual_work_surface_names == ()
+    assert compiled.removed_task_volume_background_names == ()
 
 
 def test_source_scenario_spec_retains_exact_catalog_identity_and_hash() -> None:

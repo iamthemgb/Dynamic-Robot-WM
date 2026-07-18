@@ -49,7 +49,14 @@ from .synchronization import (
     validate_synchronized_streams,
 )
 from .video_writer import VideoProbe, VideoSpec, iter_rgb_frames, probe_frame_timestamps, probe_video, validate_video_probe
-from .visual_qc import NATIVE_VISUAL_QC_SCHEMA, NATIVE_VISUAL_THRESHOLDS
+from .visual_qc import (
+    NATIVE_VISUAL_QC_SCHEMA,
+    NATIVE_VISUAL_THRESHOLDS,
+    SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA,
+    SOURCE_MUJOCO_VISIBILITY_MEDIA_BINDING_SCHEMA,
+    SOURCE_MUJOCO_VISUAL_THRESHOLDS,
+    source_mujoco_visibility_media_binding,
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -345,6 +352,1485 @@ class EpisodeQC:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+_SOURCE_MUJOCO_TOOL_VISIBILITY_TOPOLOGY_SCHEMA = (
+    "source-mujoco-tool-visibility-topology/v1"
+)
+
+
+def _validate_source_mujoco_visibility_topology(
+    result: EpisodeQC,
+    visibility: Mapping[str, Any],
+    *,
+    source_scenario: Mapping[str, Any] | None,
+    tool_applicable: bool,
+) -> None:
+    """Bind proxy and bilateral identities to the immutable compiled topology."""
+
+    physics = (
+        source_scenario.get("physics")
+        if isinstance(source_scenario, Mapping)
+        else None
+    )
+    topology = (
+        physics.get("tool_visibility_topology")
+        if isinstance(physics, Mapping)
+        else None
+    )
+    if not isinstance(topology, Mapping):
+        result.fail(
+            "source_mujoco SourceScenarioSpec lacks compiled tool visibility topology"
+        )
+        return
+    expected_fields = {
+        "schema_version",
+        "tool_geom_body_ids",
+        "left_tool_geom_ids",
+        "right_tool_geom_ids",
+        "left_tool_body_id",
+        "right_tool_body_id",
+    }
+    if set(topology) != expected_fields:
+        result.fail("source_mujoco compiled tool visibility topology fields changed")
+    if (
+        topology.get("schema_version")
+        != _SOURCE_MUJOCO_TOOL_VISIBILITY_TOPOLOGY_SCHEMA
+    ):
+        result.fail("source_mujoco compiled tool visibility topology schema changed")
+    try:
+        topology_digest = sha256_json(topology)
+    except (TypeError, ValueError):
+        result.fail("source_mujoco compiled tool visibility topology is not canonical JSON")
+        return
+    if not isinstance(physics, Mapping) or physics.get(
+        "tool_visibility_topology_sha256"
+    ) != topology_digest:
+        result.fail("source_mujoco compiled tool visibility topology hash changed")
+    if visibility.get("tool_visibility_topology_sha256") != topology_digest:
+        result.fail("source_mujoco visibility tool topology hash differs from SourceScenarioSpec")
+
+    geom_body_ids = topology.get("tool_geom_body_ids")
+    left_geom_ids = topology.get("left_tool_geom_ids")
+    right_geom_ids = topology.get("right_tool_geom_ids")
+    left_body_id = topology.get("left_tool_body_id")
+    right_body_id = topology.get("right_tool_body_id")
+    canonical_map = isinstance(geom_body_ids, Mapping)
+    if canonical_map:
+        for raw_geom_id, raw_body_id in geom_body_ids.items():
+            if (
+                not isinstance(raw_geom_id, str)
+                or not raw_geom_id.isdigit()
+                or str(int(raw_geom_id)) != raw_geom_id
+                or not isinstance(raw_body_id, int)
+                or isinstance(raw_body_id, bool)
+                or raw_body_id < 0
+            ):
+                canonical_map = False
+                break
+    canonical_sides = all(
+        isinstance(values, list)
+        and all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in values
+        )
+        and values == sorted(set(values))
+        for values in (left_geom_ids, right_geom_ids)
+    )
+    canonical_bodies = all(
+        value is None
+        or (isinstance(value, int) and not isinstance(value, bool) and value >= 0)
+        for value in (left_body_id, right_body_id)
+    )
+    if not canonical_map or not canonical_sides or not canonical_bodies:
+        result.fail("source_mujoco compiled tool visibility topology is malformed")
+    elif tool_applicable:
+        if (
+            not geom_body_ids
+            or not left_geom_ids
+            or not right_geom_ids
+            or left_body_id is None
+            or right_body_id is None
+            or left_body_id == right_body_id
+            or any(geom_body_ids.get(str(geom_id)) != left_body_id for geom_id in left_geom_ids)
+            or any(geom_body_ids.get(str(geom_id)) != right_body_id for geom_id in right_geom_ids)
+        ):
+            result.fail(
+                "source_mujoco compiled bilateral tool identities are inconsistent"
+            )
+    elif (
+        geom_body_ids != {}
+        or left_geom_ids != []
+        or right_geom_ids != []
+        or left_body_id is not None
+        or right_body_id is not None
+    ):
+        result.fail("source_mujoco passive scenario declares tool topology")
+
+    for field_name in expected_fields - {"schema_version"}:
+        if visibility.get(field_name) != topology.get(field_name):
+            result.fail(
+                f"source_mujoco visibility {field_name} differs from compiled SourceScenarioSpec topology"
+            )
+
+
+def _visibility_number(
+    result: EpisodeQC,
+    mapping: Mapping[str, Any],
+    name: str,
+    *,
+    integer: bool = False,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float | int | None:
+    """Parse an untrusted visibility scalar without ever aborting QC."""
+
+    raw = mapping.get(name)
+    if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+        result.fail(f"source_mujoco visibility QC has invalid numeric {name}")
+        return None
+    value = float(raw)
+    if not math.isfinite(value):
+        result.fail(f"source_mujoco visibility QC has non-finite {name}")
+        return None
+    if integer and not value.is_integer():
+        result.fail(f"source_mujoco visibility QC has non-integer {name}")
+        return None
+    if minimum is not None and value < minimum:
+        result.fail(f"source_mujoco visibility QC {name} is below {minimum}")
+    if maximum is not None and value > maximum:
+        result.fail(f"source_mujoco visibility QC {name} exceeds {maximum}")
+    return int(value) if integer else value
+
+
+def _validate_source_mujoco_visibility_qc(
+    result: EpisodeQC,
+    visibility: Mapping[str, Any],
+    *,
+    end_effector: str,
+    expected_frame_count: int | None,
+    frame_rows: Sequence[Mapping[str, Any]] = (),
+    event_rows: Sequence[Mapping[str, Any]] = (),
+    record_key_event_name: str | None = None,
+    record_key_event_time_s: float | None = None,
+    objective_key_event_source: str | None = None,
+    event_time_tolerance_s: float = 1e-9,
+    source_scenario: Mapping[str, Any] | None = None,
+) -> None:
+    """Fail closed on recomputable persisted rendered visibility evidence."""
+
+    thresholds = SOURCE_MUJOCO_VISUAL_THRESHOLDS
+    required_views = ("main", "secondary")
+    required_checkpoints = ("initial", "apex", "key_event", "final")
+    tool_applicable = end_effector != "no_robot"
+    _validate_source_mujoco_visibility_topology(
+        result,
+        visibility,
+        source_scenario=source_scenario,
+        tool_applicable=tool_applicable,
+    )
+    if visibility.get("schema_version") != SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA:
+        result.fail(
+            "source_mujoco visibility QC does not use "
+            f"{SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA}"
+        )
+    if visibility.get("thresholds") != thresholds:
+        result.fail("source_mujoco visibility QC thresholds changed or are incomplete")
+    if visibility.get("evaluated") is not True:
+        result.fail("source_mujoco visibility QC was not evaluated from rendered streams")
+    if visibility.get("rendered_streams_complete") is not True:
+        result.fail("source_mujoco visibility QC lacks both complete rendered streams")
+    if visibility.get("required_views") != list(required_views):
+        result.fail("source_mujoco visibility QC does not require both canonical views")
+    if visibility.get("required_checkpoint_names") != list(required_checkpoints):
+        result.fail("source_mujoco visibility QC checkpoint contract changed")
+
+    rendered_count = _visibility_number(
+        result, visibility, "rendered_frame_count", integer=True, minimum=1
+    )
+    declared_count = _visibility_number(
+        result, visibility, "expected_frame_count", integer=True, minimum=1
+    )
+    if expected_frame_count is None:
+        result.fail("source_mujoco visibility QC cannot bind a missing saved frame count")
+    else:
+        if rendered_count is not None and rendered_count != expected_frame_count:
+            result.fail("source_mujoco visibility QC frame count differs from saved media")
+        if declared_count is not None and declared_count != expected_frame_count:
+            result.fail("source_mujoco visibility QC expected frame count changed")
+    if frame_rows and expected_frame_count is not None and len(frame_rows) != expected_frame_count:
+        result.fail("source_mujoco visibility QC frame evidence differs from frame Parquet")
+    elif not frame_rows:
+        result.fail("source_mujoco visibility QC lacks persisted frame rows for replay")
+
+    persisted_timestamps: list[float] = []
+    persisted_z: list[float] = []
+    for index, row in enumerate(frame_rows):
+        timestamp = _visibility_number(result, row, "timestamp", minimum=0.0)
+        position = row.get("object.position")
+        if timestamp is None:
+            persisted_timestamps.append(math.nan)
+        else:
+            persisted_timestamps.append(float(timestamp))
+        if (
+            not isinstance(position, Sequence)
+            or isinstance(position, (str, bytes, bytearray))
+            or len(position) < 3
+            or not isinstance(position[2], (int, float))
+            or isinstance(position[2], bool)
+            or not math.isfinite(float(position[2]))
+        ):
+            result.fail(
+                f"source_mujoco visibility QC cannot derive apex from frame {index}"
+            )
+            persisted_z.append(-math.inf)
+        else:
+            persisted_z.append(float(position[2]))
+
+    event_values: dict[str, float | int | None] = {}
+    for prefix in ("planned", "actual"):
+        event_values[f"{prefix}_time"] = _visibility_number(
+            result, visibility, f"{prefix}_key_event_time_s", minimum=0.0
+        )
+        event_values[f"{prefix}_index"] = _visibility_number(
+            result,
+            visibility,
+            f"{prefix}_key_event_frame_index",
+            integer=True,
+            minimum=0,
+            maximum=(None if expected_frame_count is None else expected_frame_count - 1),
+        )
+        event_values[f"{prefix}_frame_time"] = _visibility_number(
+            result,
+            visibility,
+            f"{prefix}_key_event_frame_timestamp_s",
+            minimum=0.0,
+        )
+        event_time = event_values[f"{prefix}_time"]
+        frame_index = event_values[f"{prefix}_index"]
+        frame_time = event_values[f"{prefix}_frame_time"]
+        if event_time is not None and frame_time is not None and abs(
+            float(frame_time) - float(event_time)
+        ) > 1.0 / 60.0 + 1e-9:
+            result.fail(
+                f"source_mujoco visibility QC {prefix} event/frame time binding changed"
+            )
+        if (
+            isinstance(frame_index, int)
+            and frame_index < len(persisted_timestamps)
+            and math.isfinite(persisted_timestamps[frame_index])
+        ):
+            if frame_time is None or abs(
+                float(frame_time) - persisted_timestamps[frame_index]
+            ) > 1e-9:
+                result.fail(
+                    f"source_mujoco visibility QC {prefix} frame timestamp differs from frame Parquet"
+                )
+            if event_time is not None:
+                nearest = min(
+                    range(len(persisted_timestamps)),
+                    key=lambda item: abs(persisted_timestamps[item] - float(event_time)),
+                )
+                if frame_index != nearest:
+                    result.fail(
+                        f"source_mujoco visibility QC {prefix} event frame index is not nearest persisted frame"
+                    )
+
+    actual_name = visibility.get("actual_key_event_name")
+    actual_source = visibility.get("actual_key_event_source")
+    if not isinstance(actual_name, str) or not actual_name.strip():
+        result.fail("source_mujoco visibility QC lacks actual key-event name")
+    if not isinstance(actual_source, str) or not actual_source.strip():
+        result.fail("source_mujoco visibility QC lacks actual key-event source")
+    if record_key_event_name is not None and actual_name != record_key_event_name:
+        result.fail("source_mujoco visibility key-event name differs from objective replay")
+    actual_time = event_values.get("actual_time")
+    if record_key_event_time_s is not None and (
+        actual_time is None
+        or not math.isfinite(float(record_key_event_time_s))
+        or abs(float(actual_time) - float(record_key_event_time_s)) > 1e-9
+    ):
+        result.fail("source_mujoco visibility key-event time differs from objective replay")
+    if objective_key_event_source is not None and actual_source != objective_key_event_source:
+        result.fail("source_mujoco visibility key-event source differs from objective evidence")
+
+    target_fraction = _visibility_number(
+        result,
+        visibility,
+        "target_visible_frame_fraction",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    minimum_margin = _visibility_number(result, visibility, "minimum_bbox_margin_px")
+    key_area = _visibility_number(
+        result, visibility, "key_event_object_area_px", integer=True, minimum=0
+    )
+    maximum_under = _visibility_number(
+        result,
+        visibility,
+        "maximum_underexposed_fraction",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    maximum_over = _visibility_number(
+        result,
+        visibility,
+        "maximum_overexposed_fraction",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    if target_fraction is None or target_fraction < float(
+        thresholds["minimum_target_visible_frame_fraction"]
+    ):
+        result.fail("source_mujoco target is not visible in at least 90% of frames")
+    for field_name, label in (
+        ("initial_state_visible_in_any_view", "initial target state"),
+        ("apex_visible_in_any_view", "target apex"),
+        ("key_event_visible_in_any_view", "key event"),
+        ("final_state_visible_in_any_view", "final target state"),
+    ):
+        if visibility.get(field_name) is not True:
+            result.fail(f"source_mujoco {label} is not visible with bbox margin")
+    if visibility.get("critically_cropped") is not False:
+        result.fail("source_mujoco target is critically cropped at the key event")
+    if minimum_margin is None or minimum_margin < float(thresholds["minimum_bbox_margin_px"]):
+        result.fail("source_mujoco key-event bbox margin is below 8 pixels")
+    if key_area is None or key_area < int(thresholds["minimum_key_event_object_area_px"]):
+        result.fail("source_mujoco key-event target footprint is below 64 pixels")
+    if maximum_under is None or maximum_under > float(thresholds["maximum_underexposed_fraction"]):
+        result.fail("source_mujoco underexposed image fraction exceeds 0.35")
+    if maximum_over is None or maximum_over > float(thresholds["maximum_overexposed_fraction"]):
+        result.fail("source_mujoco overexposed image fraction exceeds 0.30")
+    if visibility.get("camera_roles_correct") is not True:
+        result.fail("source_mujoco visibility QC camera roles are incomplete")
+
+    fixture_applicable = not tool_applicable
+    if visibility.get("tool_visibility_applicable") is not tool_applicable:
+        result.fail("source_mujoco tool visibility applicability is incorrect")
+    if visibility.get("fixture_visibility_applicable") is not fixture_applicable:
+        result.fail("source_mujoco fixture visibility applicability is incorrect")
+    if tool_applicable:
+        if visibility.get("tool_visible_at_key_event") is not True:
+            result.fail("source_mujoco gripper is not visible at the key event")
+        if visibility.get("fixture_visible_at_key_event") is not None:
+            result.fail("source_mujoco F1 fixture visibility must be inapplicable")
+    else:
+        if visibility.get("fixture_visible_at_key_event") is not True:
+            result.fail("source_mujoco P0 task fixture is not visible at the key event")
+        if visibility.get("tool_visible_at_key_event") is not None:
+            result.fail("source_mujoco P0 tool visibility must be inapplicable")
+    if visibility.get("counterpart_visible_at_key_event") is not True:
+        result.fail("source_mujoco applicable counterpart is not visible at the key event")
+
+    views = visibility.get("views")
+    recomputed_presence: dict[str, list[bool]] = {}
+    recomputed_checkpoints: dict[str, dict[str, bool]] = {}
+    recomputed_key_areas: list[int] = []
+    recomputed_key_margins: list[float] = []
+    recomputed_under: list[float] = []
+    recomputed_over: list[float] = []
+    frame_metrics_by_view: dict[str, list[Mapping[str, Any]]] = {}
+    if not isinstance(views, Mapping) or set(views) != set(required_views):
+        result.fail("source_mujoco visibility QC views must be exactly main and secondary")
+        views = {}
+    metric_fields = (
+        "frame_index",
+        "timestamp_s",
+        "object_pixel_count",
+        "segmentation_bbox_margin_px",
+        "projected_sphere_margin_px",
+        "projected_center_visible",
+        "target_present",
+        "tool_pixel_count",
+        "left_tool_pixel_count",
+        "right_tool_pixel_count",
+        "fixture_pixel_count",
+        "geom_pixel_counts",
+        "underexposed_fraction",
+        "overexposed_fraction",
+    )
+    for view_name in required_views:
+        view = views.get(view_name)
+        if not isinstance(view, Mapping):
+            result.fail(f"source_mujoco visibility QC lacks {view_name} view evidence")
+            continue
+        metrics = view.get("frames")
+        if not isinstance(metrics, Sequence) or isinstance(metrics, (str, bytes, bytearray)):
+            result.fail(f"source_mujoco visibility QC lacks {view_name} per-frame metrics")
+            continue
+        if expected_frame_count is None or len(metrics) != expected_frame_count:
+            result.fail(f"source_mujoco visibility QC {view_name} per-frame count changed")
+        parsed_metrics: list[Mapping[str, Any]] = []
+        view_presence: list[bool] = []
+        for index, metric in enumerate(metrics):
+            if not isinstance(metric, Mapping):
+                result.fail(f"source_mujoco visibility QC {view_name} frame {index} is malformed")
+                continue
+            parsed_metrics.append(metric)
+            metric_index = _visibility_number(result, metric, "frame_index", integer=True, minimum=0)
+            timestamp = _visibility_number(result, metric, "timestamp_s", minimum=0.0)
+            object_pixels = _visibility_number(result, metric, "object_pixel_count", integer=True, minimum=0)
+            _visibility_number(result, metric, "segmentation_bbox_margin_px")
+            _visibility_number(result, metric, "projected_sphere_margin_px")
+            tool_pixels = _visibility_number(result, metric, "tool_pixel_count", integer=True, minimum=0)
+            left_pixels = _visibility_number(result, metric, "left_tool_pixel_count", integer=True, minimum=0)
+            right_pixels = _visibility_number(result, metric, "right_tool_pixel_count", integer=True, minimum=0)
+            _visibility_number(result, metric, "fixture_pixel_count", integer=True, minimum=0)
+            under = _visibility_number(result, metric, "underexposed_fraction", minimum=0.0, maximum=1.0)
+            over = _visibility_number(result, metric, "overexposed_fraction", minimum=0.0, maximum=1.0)
+            if metric_index != index:
+                result.fail(f"source_mujoco visibility QC {view_name} frame indices are not contiguous")
+            if index < len(persisted_timestamps) and timestamp is not None and abs(
+                float(timestamp) - persisted_timestamps[index]
+            ) > 1e-9:
+                result.fail(f"source_mujoco visibility QC {view_name} timestamp differs from frame Parquet")
+            if metric.get("projected_center_visible") not in {True, False}:
+                result.fail(f"source_mujoco visibility QC {view_name} projected visibility is malformed")
+            expected_presence = bool(
+                object_pixels is not None
+                and object_pixels >= int(thresholds["minimum_trajectory_object_area_px"])
+                and metric.get("projected_center_visible") is True
+            )
+            if metric.get("target_present") is not expected_presence:
+                result.fail(f"source_mujoco visibility QC {view_name} target presence is not recomputable")
+            view_presence.append(expected_presence)
+            if tool_pixels is not None and left_pixels is not None and right_pixels is not None and tool_pixels < max(left_pixels, right_pixels):
+                result.fail(f"source_mujoco visibility QC {view_name} tool union is smaller than a side mask")
+            geom_counts = metric.get("geom_pixel_counts")
+            if not isinstance(geom_counts, Mapping):
+                result.fail(f"source_mujoco visibility QC {view_name} lacks per-geom segmentation counts")
+            else:
+                for geom_id, count in geom_counts.items():
+                    if not str(geom_id).isdigit():
+                        result.fail(f"source_mujoco visibility QC {view_name} has invalid geom ID")
+                    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                        result.fail(f"source_mujoco visibility QC {view_name} has invalid geom pixel count")
+            if under is not None:
+                recomputed_under.append(float(under))
+            if over is not None:
+                recomputed_over.append(float(over))
+        frame_metrics_by_view[view_name] = parsed_metrics
+        recomputed_presence[view_name] = view_presence
+        view_fraction = _visibility_number(result, view, "target_visible_frame_fraction", minimum=0.0, maximum=1.0)
+        if len(view_presence) == expected_frame_count and view_fraction is not None and abs(
+            float(view_fraction) - sum(view_presence) / len(view_presence)
+        ) > 1e-12:
+            result.fail(f"source_mujoco visibility QC {view_name} target fraction changed")
+        view_checkpoints = view.get("checkpoints")
+        if not isinstance(view_checkpoints, Mapping) or set(view_checkpoints) != set(required_checkpoints):
+            result.fail(f"source_mujoco visibility QC {view_name} checkpoints are incomplete")
+            continue
+        recomputed_checkpoints[view_name] = {}
+        for checkpoint_name in required_checkpoints:
+            checkpoint = view_checkpoints.get(checkpoint_name)
+            if not isinstance(checkpoint, Mapping):
+                result.fail(f"source_mujoco visibility QC lacks {view_name}/{checkpoint_name} metrics")
+                continue
+            checkpoint_index = _visibility_number(result, checkpoint, "frame_index", integer=True, minimum=0)
+            if not isinstance(checkpoint_index, int) or checkpoint_index >= len(parsed_metrics):
+                continue
+            metric = parsed_metrics[checkpoint_index]
+            for field_name in metric_fields:
+                if checkpoint.get(field_name) != metric.get(field_name):
+                    result.fail(f"source_mujoco visibility QC {view_name}/{checkpoint_name} differs from per-frame metrics")
+                    break
+            minimum_area = int(
+                thresholds["minimum_key_event_object_area_px"]
+                if checkpoint_name == "key_event"
+                else thresholds["minimum_trajectory_object_area_px"]
+            )
+            object_pixels = metric.get("object_pixel_count")
+            segmentation_margin = metric.get("segmentation_bbox_margin_px")
+            projected_margin = metric.get("projected_sphere_margin_px")
+            expected_visible = bool(
+                isinstance(object_pixels, int)
+                and not isinstance(object_pixels, bool)
+                and object_pixels >= minimum_area
+                and isinstance(segmentation_margin, (int, float))
+                and not isinstance(segmentation_margin, bool)
+                and math.isfinite(float(segmentation_margin))
+                and isinstance(projected_margin, (int, float))
+                and not isinstance(projected_margin, bool)
+                and math.isfinite(float(projected_margin))
+                and min(float(segmentation_margin), float(projected_margin))
+                >= float(thresholds["minimum_bbox_margin_px"])
+            )
+            if checkpoint.get("visible") is not expected_visible:
+                result.fail(f"source_mujoco visibility QC {view_name}/{checkpoint_name} visibility changed")
+            recomputed_checkpoints[view_name][checkpoint_name] = expected_visible
+
+    if expected_frame_count and all(
+        len(recomputed_presence.get(name, ())) == expected_frame_count
+        for name in required_views
+    ):
+        aggregate_fraction = sum(
+            any(recomputed_presence[name][index] for name in required_views)
+            for index in range(expected_frame_count)
+        ) / expected_frame_count
+        if target_fraction is None or abs(float(target_fraction) - aggregate_fraction) > 1e-12:
+            result.fail("source_mujoco visibility QC aggregate target fraction changed")
+
+    expected_exposure_sample_count = (
+        None
+        if expected_frame_count is None
+        else expected_frame_count * len(required_views)
+    )
+    if (
+        expected_exposure_sample_count is None
+        or len(recomputed_under) != expected_exposure_sample_count
+        or len(recomputed_over) != expected_exposure_sample_count
+    ):
+        result.fail(
+            "source_mujoco visibility QC cannot recompute complete exposure aggregates"
+        )
+    else:
+        expected_maximum_under = max(recomputed_under)
+        expected_maximum_over = max(recomputed_over)
+        if maximum_under is None or abs(
+            float(maximum_under) - expected_maximum_under
+        ) > 1e-12:
+            result.fail(
+                "source_mujoco visibility QC maximum underexposed fraction changed"
+            )
+        if maximum_over is None or abs(
+            float(maximum_over) - expected_maximum_over
+        ) > 1e-12:
+            result.fail(
+                "source_mujoco visibility QC maximum overexposed fraction changed"
+            )
+        if expected_maximum_under > float(
+            thresholds["maximum_underexposed_fraction"]
+        ):
+            result.fail(
+                "source_mujoco recomputed underexposed image fraction exceeds 0.35"
+            )
+        if expected_maximum_over > float(
+            thresholds["maximum_overexposed_fraction"]
+        ):
+            result.fail(
+                "source_mujoco recomputed overexposed image fraction exceeds 0.30"
+            )
+
+    planned_index = event_values.get("planned_index")
+    actual_index = event_values.get("actual_index")
+    expected_checkpoint_indices: dict[str, int] = {}
+    if expected_frame_count:
+        expected_checkpoint_indices = {
+            "initial": 0,
+            "apex": max(range(len(persisted_z)), key=lambda index: persisted_z[index]) if persisted_z else -1,
+            "key_event": int(actual_index) if isinstance(actual_index, int) else -1,
+            "final": expected_frame_count - 1,
+        }
+    checkpoints = visibility.get("checkpoints")
+    if not isinstance(checkpoints, Mapping) or set(checkpoints) != set(required_checkpoints):
+        result.fail("source_mujoco visibility QC checkpoint evidence must be exact")
+        checkpoints = {}
+    for checkpoint_name in required_checkpoints:
+        checkpoint = checkpoints.get(checkpoint_name)
+        if not isinstance(checkpoint, Mapping):
+            result.fail(f"source_mujoco visibility QC lacks {checkpoint_name} checkpoint")
+            continue
+        checkpoint_index = _visibility_number(result, checkpoint, "frame_index", integer=True, minimum=0)
+        checkpoint_time = _visibility_number(result, checkpoint, "timestamp_s", minimum=0.0)
+        expected_index = expected_checkpoint_indices.get(checkpoint_name)
+        if expected_index is not None and checkpoint_index != expected_index:
+            result.fail(f"source_mujoco {checkpoint_name} checkpoint index differs from persisted state")
+        if isinstance(checkpoint_index, int) and checkpoint_index < len(persisted_timestamps) and checkpoint_time is not None and abs(
+            float(checkpoint_time) - persisted_timestamps[checkpoint_index]
+        ) > 1e-9:
+            result.fail(f"source_mujoco {checkpoint_name} checkpoint timestamp differs from frame Parquet")
+        expected_visible = any(
+            recomputed_checkpoints.get(view_name, {}).get(checkpoint_name, False)
+            for view_name in required_views
+        )
+        if checkpoint.get("visible_in_any_view") is not expected_visible:
+            result.fail(f"source_mujoco {checkpoint_name} checkpoint aggregate changed")
+        if checkpoint.get("visible_in_any_view") is not True:
+            result.fail(f"source_mujoco {checkpoint_name} checkpoint is not visible in either view")
+
+    checkpoint_aggregate_fields = {
+        "initial": "initial_state_visible_in_any_view",
+        "apex": "apex_visible_in_any_view",
+        "key_event": "key_event_visible_in_any_view",
+        "final": "final_state_visible_in_any_view",
+    }
+    recomputed_checkpoint_aggregates: dict[str, bool] = {}
+    for checkpoint_name, field_name in checkpoint_aggregate_fields.items():
+        expected_visible = any(
+            recomputed_checkpoints.get(view_name, {}).get(
+                checkpoint_name, False
+            )
+            for view_name in required_views
+        )
+        recomputed_checkpoint_aggregates[checkpoint_name] = expected_visible
+        if visibility.get(field_name) is not expected_visible:
+            result.fail(
+                f"source_mujoco visibility QC aggregate {checkpoint_name} visibility changed"
+            )
+    expected_critically_cropped = not recomputed_checkpoint_aggregates.get(
+        "key_event", False
+    )
+    if visibility.get("critically_cropped") is not expected_critically_cropped:
+        result.fail("source_mujoco visibility QC critical-crop aggregate changed")
+
+    def replay_nonnegative_integer(
+        mapping: Mapping[str, Any], field_name: str
+    ) -> int | None:
+        raw = mapping.get(field_name)
+        if (
+            not isinstance(raw, (int, float))
+            or isinstance(raw, bool)
+            or not math.isfinite(float(raw))
+            or not float(raw).is_integer()
+            or float(raw) < 0.0
+        ):
+            return None
+        return int(raw)
+
+    def replay_finite_number(
+        mapping: Mapping[str, Any], field_name: str
+    ) -> float | None:
+        raw = mapping.get(field_name)
+        if (
+            not isinstance(raw, (int, float))
+            or isinstance(raw, bool)
+            or not math.isfinite(float(raw))
+        ):
+            return None
+        return float(raw)
+
+    def replay_key_target_visible(mapping: Mapping[str, Any]) -> bool:
+        object_pixels = replay_nonnegative_integer(mapping, "object_pixel_count")
+        segmentation_margin = replay_finite_number(
+            mapping, "segmentation_bbox_margin_px"
+        )
+        projected_margin = replay_finite_number(
+            mapping, "projected_sphere_margin_px"
+        )
+        return bool(
+            object_pixels is not None
+            and object_pixels
+            >= int(thresholds["minimum_key_event_object_area_px"])
+            and segmentation_margin is not None
+            and projected_margin is not None
+            and min(segmentation_margin, projected_margin)
+            >= float(thresholds["minimum_bbox_margin_px"])
+        )
+
+    planned_index = event_values.get("planned_index")
+    actual_index = event_values.get("actual_index")
+    actual_metrics: dict[str, Mapping[str, Any]] = {}
+    planned_metrics: dict[str, Mapping[str, Any]] = {}
+    for view_name in required_views:
+        metrics = frame_metrics_by_view.get(view_name, ())
+        if not isinstance(actual_index, int) or not (0 <= actual_index < len(metrics)):
+            result.fail(
+                f"source_mujoco visibility QC cannot replay {view_name} actual key frame"
+            )
+        else:
+            actual_metrics[view_name] = metrics[actual_index]
+        if not isinstance(planned_index, int) or not (
+            0 <= planned_index < len(metrics)
+        ):
+            result.fail(
+                f"source_mujoco visibility QC cannot replay {view_name} planned key frame"
+            )
+        else:
+            planned_metrics[view_name] = metrics[planned_index]
+
+    key_target_visible = {
+        view_name: replay_key_target_visible(metric)
+        for view_name, metric in actual_metrics.items()
+    }
+    key_tool_pixels = {
+        view_name: replay_nonnegative_integer(metric, "tool_pixel_count")
+        for view_name, metric in actual_metrics.items()
+    }
+    key_left_pixels = {
+        view_name: replay_nonnegative_integer(metric, "left_tool_pixel_count")
+        for view_name, metric in actual_metrics.items()
+    }
+    key_right_pixels = {
+        view_name: replay_nonnegative_integer(metric, "right_tool_pixel_count")
+        for view_name, metric in actual_metrics.items()
+    }
+    key_fixture_pixels = {
+        view_name: replay_nonnegative_integer(metric, "fixture_pixel_count")
+        for view_name, metric in actual_metrics.items()
+    }
+    key_geom_pixels = {
+        view_name: (
+            metric.get("geom_pixel_counts")
+            if isinstance(metric.get("geom_pixel_counts"), Mapping)
+            else {}
+        )
+        for view_name, metric in actual_metrics.items()
+    }
+
+    per_view_summary_fields = {
+        "key_event_object_pixel_count": "object_pixel_count",
+        "key_event_tool_pixel_count": "tool_pixel_count",
+        "key_event_left_tool_pixel_count": "left_tool_pixel_count",
+        "key_event_right_tool_pixel_count": "right_tool_pixel_count",
+        "key_event_fixture_pixel_count": "fixture_pixel_count",
+    }
+    for view_name, metric in actual_metrics.items():
+        view = views.get(view_name)
+        if not isinstance(view, Mapping):
+            continue
+        for summary_name, metric_name in per_view_summary_fields.items():
+            if view.get(summary_name) != metric.get(metric_name):
+                result.fail(
+                    f"source_mujoco visibility QC {view_name} {summary_name} changed"
+                )
+        segmentation_margin = replay_finite_number(
+            metric, "segmentation_bbox_margin_px"
+        )
+        projected_margin = replay_finite_number(
+            metric, "projected_sphere_margin_px"
+        )
+        if segmentation_margin is not None and projected_margin is not None:
+            expected_key_margin = min(segmentation_margin, projected_margin)
+            if view.get("key_event_bbox_margin_px") != expected_key_margin:
+                result.fail(
+                    f"source_mujoco visibility QC {view_name} key-event bbox summary changed"
+                )
+            recomputed_key_margins.append(expected_key_margin)
+        object_pixels = replay_nonnegative_integer(metric, "object_pixel_count")
+        if object_pixels is not None:
+            recomputed_key_areas.append(object_pixels)
+
+    if len(recomputed_key_margins) != len(required_views):
+        result.fail("source_mujoco visibility QC cannot recompute key-event margins")
+    elif minimum_margin is None or abs(
+        float(minimum_margin) - max(recomputed_key_margins)
+    ) > 1e-12:
+        result.fail("source_mujoco visibility QC key-event margin aggregate changed")
+    if len(recomputed_key_areas) != len(required_views):
+        result.fail("source_mujoco visibility QC cannot recompute key-event target area")
+    elif key_area is None or int(key_area) != max(recomputed_key_areas):
+        result.fail("source_mujoco visibility QC key-event target area aggregate changed")
+
+    physical_contact = visibility.get("physical_contact_applicable")
+    if not isinstance(physical_contact, bool):
+        result.fail("source_mujoco visibility QC lacks physical-contact applicability")
+
+    def event_timestamp(row: Mapping[str, Any]) -> float | None:
+        raw = row.get("timestamp")
+        if (
+            not isinstance(raw, (int, float))
+            or isinstance(raw, bool)
+            or not math.isfinite(float(raw))
+        ):
+            return None
+        return float(raw)
+
+    valid_event_rows = [row for row in event_rows if isinstance(row, Mapping)]
+    tool_contact_rows = [
+        row
+        for row in valid_event_rows
+        if row.get("contact_category") in {"gripper", "robot_arm"}
+        and event_timestamp(row) is not None
+    ]
+    expected_physical_contact: bool | None
+    expected_contact_rows: list[Mapping[str, Any]] = []
+    if actual_source == "persisted_bilateral_contact":
+        expected_physical_contact = True
+        if not tool_applicable:
+            result.fail(
+                "source_mujoco passive episode claims a persisted bilateral contact"
+            )
+        if actual_time is not None:
+            expected_contact_rows = [
+                row
+                for row in tool_contact_rows
+                if row.get("contact_category") == "gripper"
+                and abs(float(event_timestamp(row)) - float(actual_time))
+                <= float(event_time_tolerance_s) + 1e-12
+            ]
+        if not expected_contact_rows:
+            result.fail(
+                "source_mujoco bilateral event source lacks persisted contact rows"
+            )
+    elif actual_source == "persisted_contact_event":
+        expected_physical_contact = True
+        if not tool_applicable:
+            result.fail(
+                "source_mujoco passive episode claims a persisted tool contact"
+            )
+        if actual_time is not None:
+            expected_contact_rows = [
+                row
+                for row in tool_contact_rows
+                if abs(float(event_timestamp(row)) - float(actual_time)) <= 1e-12
+            ]
+        if not expected_contact_rows:
+            result.fail(
+                "source_mujoco contact event source lacks persisted contact rows"
+            )
+    elif actual_source == "planned_interception_for_measured_miss":
+        expected_physical_contact = False
+        if not tool_applicable:
+            result.fail(
+                "source_mujoco passive episode claims an actuated interception miss"
+            )
+        if tool_contact_rows:
+            result.fail(
+                "source_mujoco measured-miss event source conflicts with persisted tool contact"
+            )
+    elif actual_source == "planned_source_scenario_event":
+        if tool_applicable:
+            result.fail(
+                "source_mujoco actuated episode claims a passive planned event source"
+            )
+        # The online selector deliberately treats a passive task-surface contact
+        # within one 30 Hz video interval of the planned event as the physical
+        # counterpart. Reproduce that rule from saved contacts instead of
+        # trusting the summary boolean.
+        if actual_time is not None:
+            expected_contact_rows = [
+                row
+                for row in valid_event_rows
+                if row.get("contact_category") == "task_surface"
+                and event_timestamp(row) is not None
+                and abs(float(event_timestamp(row)) - float(actual_time))
+                <= 1.0 / 30.0 + 1e-12
+            ]
+        expected_physical_contact = bool(expected_contact_rows)
+    else:
+        expected_physical_contact = None
+        result.fail("source_mujoco visibility QC has unsupported key-event source")
+
+    if (
+        expected_physical_contact is not None
+        and physical_contact is not expected_physical_contact
+    ):
+        result.fail(
+            "source_mujoco physical-contact applicability differs from persisted event evidence"
+        )
+
+    expected_contact_ids = sorted(
+        {
+            int(row["counterpart_geom_id"])
+            for row in expected_contact_rows
+            if isinstance(row.get("counterpart_geom_id"), int)
+            and not isinstance(row.get("counterpart_geom_id"), bool)
+            and int(row["counterpart_geom_id"]) >= 0
+        }
+    )
+    counterpart_ids = visibility.get("contact_counterpart_geom_ids")
+    if not isinstance(counterpart_ids, Sequence) or isinstance(counterpart_ids, (str, bytes, bytearray)) or any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in counterpart_ids if isinstance(counterpart_ids, Sequence) and not isinstance(counterpart_ids, (str, bytes, bytearray))
+    ):
+        result.fail("source_mujoco visibility QC has invalid contact counterpart geom IDs")
+        counterpart_ids = []
+    else:
+        counterpart_ids = list(counterpart_ids)
+    if len(counterpart_ids) != len(set(counterpart_ids)):
+        result.fail("source_mujoco visibility QC contact counterpart geom IDs are duplicated")
+    if counterpart_ids != expected_contact_ids:
+        result.fail(
+            "source_mujoco visibility contact geom IDs differ from saved contact evidence"
+        )
+
+    counterpart_threshold = int(thresholds["minimum_counterpart_area_px"])
+    planned_counterpart_threshold = int(
+        thresholds["minimum_planned_counterpart_area_px"]
+    )
+    expected_tool_visible: bool | None = None
+    expected_fixture_visible: bool | None = None
+    if tool_applicable:
+        applicable_threshold = (
+            counterpart_threshold
+            if expected_physical_contact is True
+            else planned_counterpart_threshold
+        )
+        expected_tool_visible = any(
+            pixel_count is not None and pixel_count >= applicable_threshold
+            for pixel_count in key_tool_pixels.values()
+        )
+        if visibility.get("tool_visible_at_key_event") is not expected_tool_visible:
+            result.fail(
+                "source_mujoco key-event tool visibility differs from per-frame segmentation"
+            )
+        expected_counterpart_visible = expected_tool_visible
+    else:
+        expected_fixture_visible = any(
+            pixel_count is not None and pixel_count >= counterpart_threshold
+            for pixel_count in key_fixture_pixels.values()
+        )
+        if (
+            visibility.get("fixture_visible_at_key_event")
+            is not expected_fixture_visible
+        ):
+            result.fail(
+                "source_mujoco key-event fixture visibility differs from per-frame segmentation"
+            )
+        expected_counterpart_visible = expected_fixture_visible
+    if (
+        visibility.get("counterpart_visible_at_key_event")
+        is not expected_counterpart_visible
+    ):
+        result.fail(
+            "source_mujoco applicable counterpart visibility differs from per-frame segmentation"
+        )
+
+    expected_planned_covisible = False
+    if len(planned_metrics) == len(required_views):
+        for view_name, metric in planned_metrics.items():
+            counterpart_pixels = replay_nonnegative_integer(
+                metric,
+                "tool_pixel_count" if tool_applicable else "fixture_pixel_count",
+            )
+            if (
+                replay_key_target_visible(metric)
+                and counterpart_pixels is not None
+                and counterpart_pixels >= planned_counterpart_threshold
+            ):
+                expected_planned_covisible = True
+                break
+    if (
+        visibility.get("planned_checkpoint_covisible_in_any_view")
+        is not expected_planned_covisible
+    ):
+        result.fail(
+            "source_mujoco planned checkpoint co-visibility differs from per-frame segmentation"
+        )
+
+    expected_bilateral_visible: bool | None = None
+    expected_actual_contact_visible: bool | None = None
+    expected_proxy_resolution: bool | None = None
+    expected_contact_body_ids: list[int] = []
+    expected_proxy_geom_ids: list[int] = []
+    expected_visible_proxy_ids_by_view: dict[str, list[int]] = {}
+    expected_proxy_pixels_by_view: dict[str, int] = {}
+    expected_unresolved_contact_ids: list[int] = []
+    expected_exact_fixture_ids: list[int] = []
+    expected_visible_fixture_ids_by_view: dict[str, list[int]] = {}
+    expected_fixture_pixels_by_view: dict[str, int] = {}
+    left_set: set[int] = set()
+    right_set: set[int] = set()
+    if actual_source == "persisted_bilateral_contact":
+        left_ids = visibility.get("left_tool_geom_ids")
+        right_ids = visibility.get("right_tool_geom_ids")
+        if not isinstance(left_ids, Sequence) or isinstance(
+            left_ids, (str, bytes, bytearray)
+        ):
+            left_ids = []
+        if not isinstance(right_ids, Sequence) or isinstance(
+            right_ids, (str, bytes, bytearray)
+        ):
+            right_ids = []
+        left_set = {
+            value
+            for value in left_ids
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+        right_set = {
+            value
+            for value in right_ids
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+        contacted_both_sides = bool(
+            set(expected_contact_ids).intersection(left_set)
+            and set(expected_contact_ids).intersection(right_set)
+        )
+        expected_bilateral_visible = bool(
+            contacted_both_sides
+            and any(
+                key_target_visible.get(view_name, False)
+                and key_left_pixels.get(view_name) is not None
+                and int(key_left_pixels[view_name]) >= counterpart_threshold
+                and key_right_pixels.get(view_name) is not None
+                and int(key_right_pixels[view_name]) >= counterpart_threshold
+                for view_name in required_views
+            )
+        )
+        expected_actual_contact_visible = expected_bilateral_visible
+    elif (
+        expected_physical_contact is True
+        and tool_applicable
+        and actual_source == "persisted_contact_event"
+    ):
+        raw_body_map = visibility.get("tool_geom_body_ids")
+        normalized_body_map: dict[int, int] = {}
+        invalid_body_map = not isinstance(raw_body_map, Mapping)
+        if isinstance(raw_body_map, Mapping):
+            for raw_geom_id, raw_body_id in raw_body_map.items():
+                try:
+                    if isinstance(raw_geom_id, bool) or isinstance(
+                        raw_body_id, bool
+                    ):
+                        raise ValueError
+                    geom_id = int(raw_geom_id)
+                    body_id = int(raw_body_id)
+                    if str(geom_id) != str(raw_geom_id) or geom_id < 0 or body_id < 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    invalid_body_map = True
+                    continue
+                normalized_body_map[geom_id] = body_id
+        if invalid_body_map:
+            result.fail("source_mujoco contact proxy has an invalid geom/body map")
+        expected_unresolved_contact_ids = sorted(
+            geom_id
+            for geom_id in expected_contact_ids
+            if geom_id not in normalized_body_map
+        )
+        expected_proxy_resolution = bool(expected_contact_ids) and not (
+            invalid_body_map or expected_unresolved_contact_ids
+        )
+        if expected_proxy_resolution:
+            expected_contact_body_ids = sorted(
+                {
+                    normalized_body_map[geom_id]
+                    for geom_id in expected_contact_ids
+                }
+            )
+            expected_proxy_geom_ids = sorted(
+                geom_id
+                for geom_id, body_id in normalized_body_map.items()
+                if body_id in expected_contact_body_ids
+            )
+        for view_name in required_views:
+            pixels = key_geom_pixels.get(view_name, {})
+            visible_proxy_ids: list[int] = []
+            proxy_pixel_count = 0
+            for geom_id in expected_proxy_geom_ids:
+                raw_count = pixels.get(str(geom_id), 0)
+                if (
+                    not isinstance(raw_count, int)
+                    or isinstance(raw_count, bool)
+                    or raw_count < 0
+                ):
+                    result.fail(
+                        "source_mujoco contact proxy has invalid per-geom pixels"
+                    )
+                    continue
+                proxy_pixel_count += raw_count
+                if raw_count > 0:
+                    visible_proxy_ids.append(geom_id)
+            expected_visible_proxy_ids_by_view[view_name] = visible_proxy_ids
+            expected_proxy_pixels_by_view[view_name] = proxy_pixel_count
+        expected_actual_contact_visible = bool(
+            expected_proxy_resolution
+            and any(
+                key_target_visible.get(view_name, False)
+                and expected_proxy_pixels_by_view.get(view_name, 0)
+                >= counterpart_threshold
+                for view_name in required_views
+            )
+        )
+    elif expected_physical_contact is True:
+        # Passive task fixtures are rendered physical geoms, so their exact
+        # persisted contact IDs—not the robot-body proxy map—are authoritative.
+        expected_exact_fixture_ids = list(expected_contact_ids)
+        for view_name in required_views:
+            pixels = key_geom_pixels.get(view_name, {})
+            visible_fixture_ids: list[int] = []
+            fixture_pixel_count = 0
+            for geom_id in expected_exact_fixture_ids:
+                raw_count = pixels.get(str(geom_id), 0)
+                if (
+                    not isinstance(raw_count, int)
+                    or isinstance(raw_count, bool)
+                    or raw_count < 0
+                ):
+                    result.fail(
+                        "source_mujoco fixture contact has invalid per-geom pixels"
+                    )
+                    continue
+                fixture_pixel_count += raw_count
+                if raw_count > 0:
+                    visible_fixture_ids.append(geom_id)
+            expected_visible_fixture_ids_by_view[view_name] = (
+                visible_fixture_ids
+            )
+            expected_fixture_pixels_by_view[view_name] = fixture_pixel_count
+        expected_actual_contact_visible = bool(
+            expected_exact_fixture_ids
+            and any(
+                key_target_visible.get(view_name, False)
+                and expected_fixture_pixels_by_view.get(view_name, 0)
+                >= counterpart_threshold
+                for view_name in required_views
+            )
+        )
+
+    proxy_claims = {
+        "contact_body_proxy_resolution_complete": expected_proxy_resolution,
+        "contact_counterpart_body_ids": expected_contact_body_ids,
+        "contact_proxy_geom_ids": expected_proxy_geom_ids,
+        "contact_visible_proxy_geom_ids_by_view": (
+            expected_visible_proxy_ids_by_view
+        ),
+        "contact_proxy_pixel_counts_by_view": expected_proxy_pixels_by_view,
+        "unresolved_contact_counterpart_geom_ids": (
+            expected_unresolved_contact_ids
+        ),
+    }
+    for field_name, expected_value in proxy_claims.items():
+        if visibility.get(field_name) != expected_value:
+            result.fail(
+                f"source_mujoco {field_name} differs from contact-body proxy replay"
+            )
+    fixture_contact_claims = {
+        "contact_exact_fixture_geom_ids": expected_exact_fixture_ids,
+        "contact_visible_fixture_geom_ids_by_view": (
+            expected_visible_fixture_ids_by_view
+        ),
+        "contact_fixture_pixel_counts_by_view": (
+            expected_fixture_pixels_by_view
+        ),
+    }
+    for field_name, expected_value in fixture_contact_claims.items():
+        if visibility.get(field_name) != expected_value:
+            result.fail(
+                f"source_mujoco {field_name} differs from exact fixture-contact replay"
+            )
+
+    if expected_physical_contact is True:
+        if not expected_contact_ids:
+            result.fail("source_mujoco physical contact lacks persisted counterpart geom IDs")
+        if (
+            visibility.get("actual_contact_counterpart_visible_at_key_event")
+            is not expected_actual_contact_visible
+        ):
+            result.fail(
+                "source_mujoco actual-contact visibility differs from per-frame segmentation"
+            )
+        if visibility.get("contact_occluded_both_views") is not (
+            not bool(expected_actual_contact_visible)
+        ):
+            result.fail(
+                "source_mujoco contact-occlusion claim differs from per-frame segmentation"
+            )
+        if expected_actual_contact_visible is not True:
+            result.fail(
+                "source_mujoco actual contact counterpart is not visible at the key event"
+            )
+    elif expected_physical_contact is False:
+        if (
+            visibility.get("actual_contact_counterpart_visible_at_key_event")
+            is not None
+        ):
+            result.fail("source_mujoco no-contact event claims a visible physical contact")
+        if visibility.get("contact_occluded_both_views") is not None:
+            result.fail("source_mujoco no-contact event claims physical-contact occlusion")
+        if expected_planned_covisible is not True:
+            result.fail("source_mujoco no-contact event lacks planned object/counterpart co-visibility")
+
+    if actual_source == "persisted_bilateral_contact":
+        geom_body_ids = visibility.get("tool_geom_body_ids")
+        left_body_id = visibility.get("left_tool_body_id")
+        right_body_id = visibility.get("right_tool_body_id")
+        if not left_set or not right_set or left_set.intersection(right_set):
+            result.fail("source_mujoco bilateral visibility lacks distinct left/right geom identities")
+        if (
+            not isinstance(geom_body_ids, Mapping)
+            or not isinstance(left_body_id, int)
+            or isinstance(left_body_id, bool)
+            or not isinstance(right_body_id, int)
+            or isinstance(right_body_id, bool)
+            or left_body_id == right_body_id
+            or any(geom_body_ids.get(str(geom_id)) != left_body_id for geom_id in left_set)
+            or any(geom_body_ids.get(str(geom_id)) != right_body_id for geom_id in right_set)
+        ):
+            result.fail("source_mujoco bilateral contact geoms are not bound to distinct visible tool bodies")
+        if not set(expected_contact_ids).intersection(left_set) or not set(
+            expected_contact_ids
+        ).intersection(right_set):
+            result.fail("source_mujoco bilateral contact evidence does not bind both tool sides")
+        if (
+            visibility.get("bilateral_tool_sides_visible_at_key_event")
+            is not expected_bilateral_visible
+        ):
+            result.fail(
+                "source_mujoco bilateral visibility claim differs from per-frame side masks"
+            )
+        if expected_bilateral_visible is not True:
+            result.fail("source_mujoco opposing bilateral contacts are not visible")
+    elif visibility.get("bilateral_tool_sides_visible_at_key_event") is not None:
+        result.fail("source_mujoco non-bilateral event claims bilateral visibility")
+
+
+def _validate_source_mujoco_background_clearance(
+    result: EpisodeQC,
+    clearance: Mapping[str, Any],
+    *,
+    high_rate_rows: Sequence[Mapping[str, Any]],
+    source_scenario: Mapping[str, Any] | None,
+    backend_provenance: Mapping[str, Any] | None,
+    runtime_audit: Mapping[str, Any] | None,
+    stored_sha256: Any,
+) -> None:
+    """Bind runtime background clearance to the complete persisted trajectory."""
+
+    schema = "source-mujoco-background-clearance/v2"
+    if clearance.get("schema_version") != schema:
+        result.fail("source_mujoco background clearance schema changed")
+    for name in (
+        "evaluated",
+        "clearance_pass",
+        "all_background_collision_disabled",
+        "all_background_anchored",
+        "object_swept_volume_clear",
+        "fixture_intersection_clear",
+    ):
+        if clearance.get(name) is not True:
+            result.fail(f"source_mujoco background clearance failed {name}")
+    background_rows = clearance.get("background_rows")
+    fixture_rows = clearance.get("fixture_rows")
+    if not isinstance(background_rows, Sequence) or isinstance(
+        background_rows, (str, bytes, bytearray)
+    ):
+        result.fail("source_mujoco background clearance rows are malformed")
+        background_row_values: list[Mapping[str, Any]] | None = None
+    elif not all(isinstance(row, Mapping) for row in background_rows):
+        result.fail("source_mujoco background clearance rows contain malformed entries")
+        background_row_values = None
+    elif clearance.get("background_rows_sha256") != sha256_json(background_rows):
+        result.fail("source_mujoco background clearance row hash changed")
+        background_row_values = list(background_rows)  # type: ignore[list-item]
+    else:
+        background_row_values = list(background_rows)  # type: ignore[list-item]
+    if not isinstance(fixture_rows, Sequence) or isinstance(
+        fixture_rows, (str, bytes, bytearray)
+    ):
+        result.fail("source_mujoco fixture clearance rows are malformed")
+        fixture_row_values: list[Mapping[str, Any]] | None = None
+    elif not all(isinstance(row, Mapping) for row in fixture_rows):
+        result.fail("source_mujoco fixture clearance rows contain malformed entries")
+        fixture_row_values = None
+    elif clearance.get("fixture_rows_sha256") != sha256_json(fixture_rows):
+        result.fail("source_mujoco fixture clearance row hash changed")
+        fixture_row_values = list(fixture_rows)  # type: ignore[list-item]
+    else:
+        fixture_row_values = list(fixture_rows)  # type: ignore[list-item]
+    object_sweep = clearance.get("object_sweep")
+    if not isinstance(object_sweep, Mapping):
+        result.fail("source_mujoco background clearance lacks object sweep")
+    else:
+        sample_count = object_sweep.get("sample_count")
+        if (
+            not isinstance(sample_count, int)
+            or isinstance(sample_count, bool)
+            or sample_count != len(high_rate_rows)
+        ):
+            result.fail(
+                "source_mujoco background sweep sample count differs from high-rate Parquet"
+            )
+        try:
+            exact_rows = [
+                {
+                    "sample_index": index,
+                    "timestamp_s": float(row["timestamp"]),
+                    "object_position_m": [
+                        float(value) for value in row["object.position"]
+                    ],
+                }
+                for index, row in enumerate(high_rate_rows)
+            ]
+            if any(
+                len(row["object_position_m"]) != 3
+                or not math.isfinite(row["timestamp_s"])
+                or not all(
+                    math.isfinite(value) for value in row["object_position_m"]
+                )
+                for row in exact_rows
+            ):
+                raise ValueError("non-finite sweep row")
+            if object_sweep.get("exact_rows_sha256") != sha256_json(exact_rows):
+                result.fail(
+                    "source_mujoco background sweep differs from persisted high-rate trajectory"
+                )
+        except (KeyError, TypeError, ValueError):
+            result.fail(
+                "source_mujoco background sweep cannot be replayed from high-rate Parquet"
+            )
+
+    physics = (
+        source_scenario.get("physics")
+        if isinstance(source_scenario, Mapping)
+        else None
+    )
+    try:
+        if not isinstance(physics, Mapping):
+            raise TypeError("missing scenario physics")
+        object_radius_m = float(physics["object_radius_m"])
+        if not math.isfinite(object_radius_m) or object_radius_m <= 0.0:
+            raise ValueError("invalid object radius")
+    except (KeyError, TypeError, ValueError):
+        object_radius_m = math.nan
+        result.fail(
+            "source_mujoco background clearance lacks its SourceScenarioSpec object radius"
+        )
+    if isinstance(object_sweep, Mapping):
+        try:
+            stored_radius = float(object_sweep["object_radius_m"])
+        except (KeyError, TypeError, ValueError):
+            stored_radius = math.nan
+        if not math.isfinite(stored_radius) or stored_radius != object_radius_m:
+            result.fail(
+                "source_mujoco background sweep object radius differs from SourceScenarioSpec"
+            )
+
+    classification = clearance.get("classification")
+    if not isinstance(classification, Mapping):
+        result.fail("source_mujoco background clearance lacks its static classification")
+    if background_row_values is not None:
+        stable_ids = [str(row.get("stable_id") or "") for row in background_row_values]
+        if any(not value for value in stable_ids) or len(set(stable_ids)) != len(stable_ids):
+            result.fail("source_mujoco background clearance stable IDs are invalid")
+        background_static_fields = (
+            "stable_id",
+            "geom_id",
+            "classification",
+            "source_name",
+            "catalog_slot",
+            "body_id",
+            "body_name",
+            "body_weld_id",
+            "world_aabb",
+            "contype",
+            "conaffinity",
+        )
+        background_static_rows = sorted(
+            (
+                {name: row.get(name) for name in background_static_fields}
+                for row in background_row_values
+            ),
+            key=lambda row: str(row["stable_id"]),
+        )
+        descriptor_rows = [
+            {
+                name: row[name]
+                for name in (
+                    "stable_id",
+                    "geom_id",
+                    "classification",
+                    "source_name",
+                    "catalog_slot",
+                )
+            }
+            for row in background_static_rows
+        ]
+        if any(
+            not isinstance(row.get("world_aabb"), Mapping)
+            or row["world_aabb"].get("method")
+            != "mujoco_compiled_local_aabb_transformed/v1"
+            for row in background_static_rows
+        ):
+            result.fail("source_mujoco background clearance AABB method changed")
+        background_static_sha256 = sha256_json(background_static_rows)
+        if isinstance(classification, Mapping) and (
+            classification.get("descriptor_count") != len(background_static_rows)
+            or classification.get("descriptors_sha256") != sha256_json(descriptor_rows)
+            or classification.get("background_static_rows_sha256")
+            != background_static_sha256
+        ):
+            result.fail(
+                "source_mujoco background static classification cannot be replayed"
+            )
+        if not isinstance(physics, Mapping) or (
+            physics.get("background_clearance_static_row_count")
+            != len(background_static_rows)
+            or physics.get("background_clearance_static_rows_sha256")
+            != background_static_sha256
+        ):
+            result.fail(
+                "source_mujoco background geometry differs from SourceScenarioSpec"
+            )
+
+    if fixture_row_values is not None:
+        fixture_ids = [str(row.get("fixture_id") or "") for row in fixture_row_values]
+        if any(not value for value in fixture_ids) or len(set(fixture_ids)) != len(fixture_ids):
+            result.fail("source_mujoco fixture clearance stable IDs are invalid")
+        if any(
+            not isinstance(row.get("world_aabb"), Mapping)
+            or row["world_aabb"].get("method")
+            != "mujoco_compiled_local_aabb_transformed/v1"
+            for row in fixture_row_values
+        ):
+            result.fail("source_mujoco fixture clearance AABB method changed")
+        normalized_fixture_rows = sorted(
+            (dict(row) for row in fixture_row_values),
+            key=lambda row: str(row["fixture_id"]),
+        )
+        fixture_static_sha256 = sha256_json(normalized_fixture_rows)
+        if isinstance(classification, Mapping) and classification.get(
+            "fixture_static_rows_sha256"
+        ) != fixture_static_sha256:
+            result.fail(
+                "source_mujoco fixture static classification cannot be replayed"
+            )
+        if not isinstance(physics, Mapping) or (
+            physics.get("fixture_clearance_static_row_count")
+            != len(normalized_fixture_rows)
+            or physics.get("fixture_clearance_static_rows_sha256")
+            != fixture_static_sha256
+        ):
+            result.fail(
+                "source_mujoco fixture geometry differs from SourceScenarioSpec"
+            )
+
+    if isinstance(classification, Mapping):
+        exclusions = classification.get("exclusions")
+        if not isinstance(exclusions, Mapping) or classification.get(
+            "exclusions_sha256"
+        ) != sha256_json(exclusions):
+            result.fail("source_mujoco background exclusion binding changed")
+
+    if (
+        background_row_values is not None
+        and fixture_row_values is not None
+        and math.isfinite(object_radius_m)
+    ):
+        try:
+            # This pure replay recomputes AABBs over the exact persisted
+            # trajectory, collision/anchoring claims from primitive model
+            # fields, per-row intersections, aggregates, and all failure IDs.
+            from ..backends.source_mujoco.backend import (
+                _evaluate_background_clearance_rows,
+            )
+
+            recomputed = _evaluate_background_clearance_rows(
+                background_rows=background_row_values,
+                fixture_rows=fixture_row_values,
+                high_rate_rows=high_rate_rows,
+                object_radius_m=object_radius_m,
+            )
+            replay_mismatches = sorted(
+                key
+                for key, value in recomputed.items()
+                if clearance.get(key) != value
+            )
+            if replay_mismatches:
+                result.fail(
+                    "source_mujoco background clearance replay changed: "
+                    + ", ".join(replay_mismatches)
+                )
+            result.metrics["background_clearance_replay"] = {
+                "replay_match": not replay_mismatches,
+                "object_radius_m": object_radius_m,
+                "background_geom_count": len(background_row_values),
+                "fixture_count": len(fixture_row_values),
+            }
+        except Exception as error:
+            result.fail(f"source_mujoco background clearance replay: {error}")
+    digest = sha256_json(clearance)
+    if stored_sha256 != digest:
+        result.fail("source_mujoco background clearance hash binding changed")
+    if not isinstance(backend_provenance, Mapping) or (
+        backend_provenance.get("background_clearance_sha256") != digest
+        or backend_provenance.get("background_clearance") != clearance
+    ):
+        result.fail("source_mujoco provenance background clearance binding changed")
+    if not isinstance(runtime_audit, Mapping) or runtime_audit.get(
+        "background_clearance_sha256"
+    ) != digest:
+        result.fail("source_mujoco runtime-audit background clearance binding changed")
 
 
 @dataclass(slots=True)
@@ -1137,42 +2623,138 @@ class QCValidator:
                 result.fail(f"objective recomputation: {error}")
         visibility = record.extras.get("visibility_qc")
         if isinstance(visibility, Mapping):
-            if visibility.get("schema_version") != NATIVE_VISUAL_QC_SCHEMA:
-                result.fail(f"visibility QC does not use {NATIVE_VISUAL_QC_SCHEMA}")
-            if visibility.get("evaluated") is not True:
-                result.fail("visibility QC was not evaluated from rendered streams")
-            if visibility.get("key_event_visible_in_any_view") is not True:
-                result.fail("key event is not visible in either view")
-            if visibility.get("critically_cropped") is True:
-                result.fail("target critically cropped during key event")
-            if visibility.get("contact_occluded_both_views") is True:
-                result.fail("critical contact occluded in both views")
-            if float(visibility.get("target_visible_frame_fraction", 0.0)) < float(
-                NATIVE_VISUAL_THRESHOLDS["minimum_target_visible_frame_fraction"]
-            ):
-                result.fail("target is not visible in at least 90% of episode frames")
-            if float(visibility.get("minimum_bbox_margin_px", 0.0)) < float(
-                NATIVE_VISUAL_THRESHOLDS["minimum_bbox_margin_px"]
-            ):
-                result.fail("target crop margin is below 8 pixels at the key event")
-            if int(visibility.get("key_event_object_area_px", 0)) < int(
-                NATIVE_VISUAL_THRESHOLDS["minimum_key_event_object_area_px"]
-            ):
-                result.fail("target key-event footprint is below 64 pixels")
-            if visibility.get("tool_visible_at_key_event") is not True:
-                result.fail("tool is not visible at the key event")
-            if visibility.get("fixture_visible_at_key_event") is not True:
-                result.fail("fixture is not visible at the key event")
-            if visibility.get("camera_roles_correct") is not True:
-                result.fail("camera roles do not match the task family")
-            if float(visibility.get("maximum_underexposed_fraction", 1.0)) > float(
-                NATIVE_VISUAL_THRESHOLDS["maximum_underexposed_fraction"]
-            ):
-                result.fail("underexposed/black image fraction exceeds 0.35")
-            if float(visibility.get("maximum_overexposed_fraction", 1.0)) > float(
-                NATIVE_VISUAL_THRESHOLDS["maximum_overexposed_fraction"]
-            ):
-                result.fail("overexposed image fraction exceeds 0.30")
+            if source_mujoco_backend:
+                independent_evidence = record.extras.get(
+                    "independent_objective_evidence"
+                )
+                source_physics = (
+                    source_scenario.get("physics")
+                    if isinstance(source_scenario, Mapping)
+                    else None
+                )
+                try:
+                    visibility_event_tolerance = (
+                        1.0 / float(source_physics["simulation_hz"])
+                        if isinstance(source_physics, Mapping)
+                        else 1e-9
+                    )
+                except (KeyError, TypeError, ValueError, ZeroDivisionError):
+                    visibility_event_tolerance = 1e-9
+                _validate_source_mujoco_visibility_qc(
+                    result,
+                    visibility,
+                    end_effector=end_effector,
+                    expected_frame_count=record.frame_count,
+                    frame_rows=frame_rows,
+                    event_rows=event_rows,
+                    record_key_event_name=record.key_event_name,
+                    record_key_event_time_s=record.key_event_time_s,
+                    objective_key_event_source=(
+                        str(independent_evidence.get("measured_key_event_source"))
+                        if isinstance(independent_evidence, Mapping)
+                        and independent_evidence.get("measured_key_event_source")
+                        is not None
+                        else None
+                    ),
+                    event_time_tolerance_s=visibility_event_tolerance,
+                    source_scenario=(
+                        source_scenario
+                        if isinstance(source_scenario, Mapping)
+                        else None
+                    ),
+                )
+                expected_visibility_hash = sha256_json(visibility)
+                if record.extras.get("visibility_qc_sha256") != expected_visibility_hash:
+                    result.fail("source_mujoco visibility QC hash binding changed")
+                if isinstance(backend_provenance, Mapping) and (
+                    backend_provenance.get("visibility_qc_sha256")
+                    != expected_visibility_hash
+                ):
+                    result.fail(
+                        "source_mujoco provenance visibility QC hash binding changed"
+                    )
+                binding = record.extras.get("visibility_media_binding")
+                camera_rows = record.extras.get("camera_calibrations")
+                if not isinstance(binding, Mapping):
+                    result.fail(
+                        "source_mujoco visibility QC lacks encoded-media binding"
+                    )
+                elif not isinstance(camera_rows, Sequence) or isinstance(
+                    camera_rows, (str, bytes, bytearray)
+                ):
+                    result.fail(
+                        "source_mujoco visibility QC lacks bound camera rows"
+                    )
+                else:
+                    try:
+                        expected_binding = source_mujoco_visibility_media_binding(
+                            visibility_qc_sha256=expected_visibility_hash,
+                            camera_rows=camera_rows,
+                            camera_stream_calibration_ids=(
+                                record.camera_stream_calibration_ids
+                            ),
+                            video_paths=record.video_paths,
+                            content_hashes=record.content_hashes,
+                        )
+                        if binding != expected_binding:
+                            result.fail(
+                                "source_mujoco visibility encoded-media binding changed"
+                            )
+                        if binding.get("schema_version") != (
+                            SOURCE_MUJOCO_VISIBILITY_MEDIA_BINDING_SCHEMA
+                        ):
+                            result.fail(
+                                "source_mujoco visibility media-binding schema changed"
+                            )
+                        if record.extras.get(
+                            "visibility_media_binding_sha256"
+                        ) != sha256_json(binding):
+                            result.fail(
+                                "source_mujoco visibility media-binding hash changed"
+                            )
+                    except Exception as error:
+                        result.fail(
+                            f"source_mujoco visibility encoded-media binding: {error}"
+                        )
+            else:
+                if visibility.get("schema_version") != NATIVE_VISUAL_QC_SCHEMA:
+                    result.fail(f"visibility QC does not use {NATIVE_VISUAL_QC_SCHEMA}")
+                if visibility.get("evaluated") is not True:
+                    result.fail("visibility QC was not evaluated from rendered streams")
+                if visibility.get("key_event_visible_in_any_view") is not True:
+                    result.fail("key event is not visible in either view")
+                if visibility.get("critically_cropped") is True:
+                    result.fail("target critically cropped during key event")
+                if visibility.get("contact_occluded_both_views") is True:
+                    result.fail("critical contact occluded in both views")
+                if float(visibility.get("target_visible_frame_fraction", 0.0)) < float(
+                    NATIVE_VISUAL_THRESHOLDS["minimum_target_visible_frame_fraction"]
+                ):
+                    result.fail("target is not visible in at least 90% of episode frames")
+                if float(visibility.get("minimum_bbox_margin_px", 0.0)) < float(
+                    NATIVE_VISUAL_THRESHOLDS["minimum_bbox_margin_px"]
+                ):
+                    result.fail("target crop margin is below 8 pixels at the key event")
+                if int(visibility.get("key_event_object_area_px", 0)) < int(
+                    NATIVE_VISUAL_THRESHOLDS["minimum_key_event_object_area_px"]
+                ):
+                    result.fail("target key-event footprint is below 64 pixels")
+                if visibility.get("tool_visible_at_key_event") is not True:
+                    result.fail("tool is not visible at the key event")
+                if visibility.get("fixture_visible_at_key_event") is not True:
+                    result.fail("fixture is not visible at the key event")
+                if visibility.get("camera_roles_correct") is not True:
+                    result.fail("camera roles do not match the task family")
+                if float(visibility.get("maximum_underexposed_fraction", 1.0)) > float(
+                    NATIVE_VISUAL_THRESHOLDS["maximum_underexposed_fraction"]
+                ):
+                    result.fail("underexposed/black image fraction exceeds 0.35")
+                if float(visibility.get("maximum_overexposed_fraction", 1.0)) > float(
+                    NATIVE_VISUAL_THRESHOLDS["maximum_overexposed_fraction"]
+                ):
+                    result.fail("overexposed image fraction exceeds 0.30")
+        elif source_mujoco_backend:
+            result.fail("source_mujoco episode lacks rendered visibility_qc metadata")
         else:
             result.warnings.extend(
                 [
@@ -1180,6 +2762,37 @@ class QCValidator:
                     "critical-contact occlusion not evaluated: no visibility_qc metadata",
                 ]
             )
+        if source_mujoco_backend:
+            background_clearance = record.extras.get("background_clearance")
+            runtime_audit_evidence = record.extras.get("runtime_audit")
+            if not isinstance(background_clearance, Mapping):
+                result.fail(
+                    "source_mujoco episode lacks runtime background clearance"
+                )
+            else:
+                _validate_source_mujoco_background_clearance(
+                    result,
+                    background_clearance,
+                    high_rate_rows=high_rate_rows,
+                    source_scenario=(
+                        source_scenario
+                        if isinstance(source_scenario, Mapping)
+                        else None
+                    ),
+                    backend_provenance=(
+                        backend_provenance
+                        if isinstance(backend_provenance, Mapping)
+                        else None
+                    ),
+                    runtime_audit=(
+                        runtime_audit_evidence
+                        if isinstance(runtime_audit_evidence, Mapping)
+                        else None
+                    ),
+                    stored_sha256=record.extras.get(
+                        "background_clearance_sha256"
+                    ),
+                )
         if source_mujoco_backend:
             objective_recompute = result.metrics.get("objective_recompute")
             if not isinstance(objective_recompute, Mapping):

@@ -11,7 +11,7 @@ import yaml
 
 from ..actuator_only import action_spec
 from ...common.embodiments import FRANKA_HAND, ROBOTIQ_2F85_THICK_PAD
-from ...common.hashing import combined_manifest_hash, sha256_file
+from ...common.hashing import combined_manifest_hash, sha256_file, sha256_json
 from ...common.source_scenario import (
     ActuatorPhaseSpec,
     CounterfactualIdentity,
@@ -26,7 +26,10 @@ from ...common.source_scenario import (
 )
 from .backend import (
     SourceMujocoBackend,
+    _background_clearance_static_rows,
+    _compiled_tool_visibility_topology,
     _controller_for_scenario,
+    _fixture_clearance_static_rows,
     _require_runtime_dependencies,
     _robocasa_manifest,
 )
@@ -91,10 +94,10 @@ def _actuator_phases(
     compiled: CompiledSourceModel,
     scenario: SourceMujocoCompiledScenario,
     names: tuple[str, ...],
-) -> tuple[ActuatorPhaseSpec, ...]:
+) -> tuple[tuple[ActuatorPhaseSpec, ...], tuple[float, ...] | None]:
     if scenario.embodiment == "no_robot":
-        return ()
-    controller, _, _ = _controller_for_scenario(
+        return (), None
+    controller, initial_robot_q, _ = _controller_for_scenario(
         mujoco, least_squares, compiled, scenario
     )
     assert controller is not None
@@ -160,7 +163,7 @@ def _actuator_phases(
         plan.closed_gripper_command,
         "hold",
     )
-    return tuple(phases)
+    return tuple(phases), tuple(float(value) for value in initial_robot_q)
 
 
 def _fixtures(mujoco: Any, compiled: CompiledSourceModel, scenario: SourceMujocoCompiledScenario) -> tuple[FixtureSpec, ...]:
@@ -290,6 +293,37 @@ def prepare_review_case(
         "compiled_asset_manifest": combined_manifest_hash(compiled.source_asset_sha256),
     }
     embodiment = _embodiment(scenario.embodiment)
+    actuator_phases, robot_initial_joint_qpos = _actuator_phases(
+        mujoco,
+        least_squares,
+        compiled,
+        scenario,
+        embodiment.action_names,
+    )
+    robot_initial_joint_qpos_sha256 = (
+        None
+        if robot_initial_joint_qpos is None
+        else sha256_json(robot_initial_joint_qpos)
+    )
+    robot_base_pose = (
+        None
+        if scenario.robot_base_position_m is None
+        else {
+            "position_m": scenario.robot_base_position_m,
+            "euler_rad": scenario.robot_base_euler_rad,
+            "quaternion_wxyz": compiled.robot_base_quaternion_wxyz,
+        }
+    )
+    robot_base_pose_sha256 = (
+        None if robot_base_pose is None else sha256_json(robot_base_pose)
+    )
+    background_clearance_static_rows = _background_clearance_static_rows(
+        mujoco, compiled
+    )
+    fixture_clearance_static_rows = _fixture_clearance_static_rows(
+        compiled, scenario
+    )
+    tool_visibility_topology = _compiled_tool_visibility_topology(compiled)
     spec = SourceScenarioSpec(
         # ReviewArtifactRequest binds SourceScenarioSpec to the fixed logical
         # case ID.  The storage UUID is a separate run-plan identity and must
@@ -314,6 +348,39 @@ def prepare_review_case(
             "randomization_level": scenario.randomization_level,
             "requires_real_robocasa": scenario.requires_real_robocasa,
             "passive_variation_profile": scenario.passive_variation_profile,
+            "relocated_visual_backgrounds": [
+                dict(value) for value in compiled.relocated_visual_backgrounds
+            ],
+            "removed_visual_work_surface_names": list(
+                compiled.removed_visual_work_surface_names
+            ),
+            "removed_task_volume_background_names": list(
+                compiled.removed_task_volume_background_names
+            ),
+            "removed_fixture_intersection_background_names": list(
+                compiled.removed_fixture_intersection_background_names
+            ),
+            "background_clearance_static_rows_sha256": sha256_json(
+                background_clearance_static_rows
+            ),
+            "background_clearance_static_row_count": len(
+                background_clearance_static_rows
+            ),
+            "fixture_clearance_static_rows_sha256": sha256_json(
+                fixture_clearance_static_rows
+            ),
+            "fixture_clearance_static_row_count": len(
+                fixture_clearance_static_rows
+            ),
+            "tool_visibility_topology": tool_visibility_topology,
+            "tool_visibility_topology_sha256": sha256_json(
+                tool_visibility_topology
+            ),
+            "robot_base_position_m": scenario.robot_base_position_m,
+            "robot_base_euler_rad": scenario.robot_base_euler_rad,
+            "robot_base_quaternion_wxyz": compiled.robot_base_quaternion_wxyz,
+            "robot_base_pose_sha256": robot_base_pose_sha256,
+            "robot_base_pose_source": "owned_compiled_scenario/v2",
             "evaluator": scenario.evaluator,
             "release_state": "blocked",
         },
@@ -334,16 +401,16 @@ def prepare_review_case(
             "branch_role": scenario.branch_role,
             "intended_outcome": scenario.intended_outcome,
             "passive_variation_profile": scenario.passive_variation_profile,
+            "robot_base_position_m": scenario.robot_base_position_m,
+            "robot_base_euler_rad": scenario.robot_base_euler_rad,
+            "robot_base_quaternion_wxyz": compiled.robot_base_quaternion_wxyz,
+            "robot_base_pose_sha256": robot_base_pose_sha256,
+            "robot_initial_joint_qpos": robot_initial_joint_qpos,
+            "robot_initial_joint_qpos_sha256": robot_initial_joint_qpos_sha256,
         },
         embodiment=embodiment,
         fixtures=_fixtures(mujoco, compiled, scenario),
-        actuator_phases=_actuator_phases(
-            mujoco,
-            least_squares,
-            compiled,
-            scenario,
-            embodiment.action_names,
-        ),
+        actuator_phases=actuator_phases,
         cameras=_cameras(mujoco, compiled),
         rng_subseeds=RNGSubseeds.from_dict(scenario.rng_subseeds),
         robocasa_manifest=RoboCasaAssetManifest(

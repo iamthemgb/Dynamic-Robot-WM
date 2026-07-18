@@ -1,5 +1,5 @@
 schema_version: dynamic-robot-rigid-profile-calibration/v1
-calibration_id: source_mujoco_rigid_600_1200_candidate_v4
+calibration_id: source_mujoco_rigid_600_1200_candidate_v6
 contract_version: dynamic-robot-dataset/v2
 
 # This file records exploratory measurements made while repairing the owned
@@ -157,6 +157,107 @@ measurements:
     repair:
       - move_main_camera_to_incoming_side_of_supported_wall
       - persist_interval_contact_event_without_claiming_sampled_active_contact
+
+  camera_framing_repairs:
+    fixed_review_case_ids: [P0c-review-01, P0c-review-03, P0c-review-05]
+    fixed_seeds_preserved: true
+    failed_profile: source-mujoco-rigid-review-2026-07-v4
+    repaired_profile: source-mujoco-rigid-review-2026-07-v5
+    failure_evidence:
+      P0c-review-01: main_final_object_partially_cropped
+      P0c-review-03: main_final_object_partially_cropped
+      P0c-review-05: main_final_object_outside_frame
+    repair:
+      camera_position_m_relative_to_R1_support: [-0.90, 0.95, 1.05]
+      look_at_target_m_relative_to_R1_support: [-0.02, 0.0, 0.84]
+      vertical_fov_deg: 64.0
+      physics_or_seed_changed: false
+    full_trajectory_projection:
+      includes_object_radius: true
+      evaluated_at_every_canonical_30hz_timestamp: true
+      required_minimum_edge_margin_px: 8.0
+      cases:
+        - review_case_id: P0c-review-01
+          projected_object_bbox_xyxy: [351.61310689586213, 11.33749425769191, 539.3375064691654, 458.3972729463238]
+          minimum_edge_margin_px: 11.33749425769191
+        - review_case_id: P0c-review-03
+          projected_object_bbox_xyxy: [351.7077880459984, 123.35180962972069, 539.3375064691654, 464.2911303824628]
+          minimum_edge_margin_px: 15.708869617537175
+        - review_case_id: P0c-review-05
+          projected_object_bbox_xyxy: [351.72710493706813, 123.35180962972069, 539.3375064691654, 467.69104309836524]
+          minimum_edge_margin_px: 12.308956901634758
+    rendered_confirmation:
+      review_case_id: P0c-review-05
+      strict_persisted_artifact_qc_pass: true
+      object_visible_in_all_main_event_strip_panels: true
+      formal_human_approval_recorded: false
+
+  f1_r1_free_space_scene_repair:
+    fixed_review_case_ids:
+      - F1a-review-00
+      - F1a-review-02
+      - F1d-review-03
+    fixed_seeds_preserved: true
+    failed_profile: source-mujoco-rigid-review-2026-07-v5
+    repaired_profile: source-mujoco-rigid-review-2026-07-v6
+    failure_evidence:
+      retained_collision_disabled_robot_table: true
+      failed_objects_crossed_visible_table_volume: true
+      r0_r1_local_task_height_invariant: false
+      camera_only_repair_rejected: true
+    repair_contract:
+      local_f1_task_height_m: 0.0
+      robot_base_position_m: [0.0, 0.0, 0.0]
+      robot_base_euler_rad: [0.0, 0.0, 0.0]
+      remove_all_named_elements_with_prefix: robot_table_
+      retain_back_counter_only_after_persisted_sweep_clearance: true
+      persist_exact_removed_names: true
+      persist_planned_robot_joint_qpos_and_hash: true
+      source_compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v2
+    required_reruns:
+      - same_fixed_seed_rendered_F1a_review_00
+      - same_fixed_seed_rendered_F1a_review_02
+      - same_fixed_seed_rendered_F1d_review_03
+      - full_F1_fixed_six_matrix
+      - hash_bound_human_review
+    admission_claimed: false
+
+  p0_r1_support_clearance_repair:
+    fixed_seeds_preserved: true
+    repaired_profile: source-mujoco-rigid-review-2026-07-v6
+    sweep_source: every_fixed_six_high_rate_object_position
+    maximum_object_radius_m: 0.0255
+    edge_safety_margin_m: 0.10
+    normalized_r1_support:
+      top_z_m: 0.74
+      half_height_m: 0.02
+      positive_volume_fixture_background_overlap_forbidden: true
+      face_contact_tolerance_m: 0.000001
+    fixed_six_sweeps_and_rounded_support_half_xy_m:
+      P0a:
+        object_x_range_m: [-0.15, 0.036018232498884424]
+        object_y_range_m: [-0.10, -0.10]
+        support_half_xy_m: [0.28, 0.23]
+      P0b:
+        object_x_range_m: [-0.70, 0.40400000000220715]
+        object_y_range_m: [-0.15, 0.12200000000054323]
+        support_half_xy_m: [0.83, 0.28]
+      P0c:
+        object_x_range_m: [-0.45, 0.3706433783578471]
+        object_y_range_m: [-0.026474208548739397, 0.000000000000000032896794124040574]
+        support_half_xy_m: [0.58, 0.16]
+    profile_level_catalog_clearance_lift_m:
+      lab: 0.0030
+      kitchen: 0.0032
+      workbench: 0.0088
+      storage: 0.0011
+      tabletop: 0.0011
+    provenance_categories:
+      - removed_visual_work_surface_names
+      - removed_task_volume_background_names
+      - removed_fixture_intersection_background_names
+      - relocated_visual_backgrounds
+    admission_claimed: false
 
 required_before_admission:
   - persist_exact_source_scenario_specs

@@ -45,6 +45,18 @@ _ROBOCASA_CATALOG_POSES: Mapping[
     "tabletop": ((1.04, 0.78, 0.77021), 0.08),
 }
 
+# Profile-level lifts measured from each compiled catalog candidate's true
+# mesh AABB.  Applied only to owned P0 R1 support scenes, these put the lowest
+# visual point at least 1 mm above the z=0.74 task surface.  F1 appearance
+# poses remain unchanged.
+_ROBOCASA_P0_CLEARANCE_LIFT_M: Mapping[str, float] = {
+    "lab": 0.0030,
+    "kitchen": 0.0032,
+    "workbench": 0.0088,
+    "storage": 0.0011,
+    "tabletop": 0.0011,
+}
+
 
 @dataclass(frozen=True, slots=True)
 class SourceModelIds:
@@ -78,6 +90,14 @@ class CompiledSourceModel:
     robocasa_assets: tuple[Mapping[str, Any], ...]
     stripped_robotwin_asset_count: int
     stripped_external_robocasa_element_count: int
+    removed_visual_work_surface_names: tuple[str, ...]
+    removed_task_volume_background_names: tuple[str, ...]
+    removed_fixture_intersection_background_names: tuple[str, ...]
+    relocated_visual_backgrounds: tuple[Mapping[str, Any], ...]
+    background_geom_descriptors: tuple[Mapping[str, Any], ...]
+    background_geom_exclusions: Mapping[str, str]
+    robot_base_position_m: tuple[float, float, float] | None
+    robot_base_quaternion_wxyz: tuple[float, float, float, float] | None
     external_camera_metadata: Mapping[str, Any]
 
 
@@ -172,7 +192,17 @@ def _build_external_sample(scene_builder: Any, scenario: SourceMujocoCompiledSce
         float(value)
         for value in camera_rng.normal(0.0, (0.035, 0.035, 0.025))
     )
-    tabletop_height = 0.74 if scenario.requires_real_robocasa else None
+    # F2a currently shares the direct interception controller, but remains a
+    # table-height catch.  Only the F1 family is the owned floor-rooted,
+    # fixture-free task whose procedural center table must be omitted.
+    free_space_f1 = scenario.corpus_leaf_id.startswith("F1")
+    tabletop_height = (
+        None
+        if free_space_f1
+        else 0.74
+        if scenario.requires_real_robocasa
+        else None
+    )
     contact_groups = tuple(
         {"name": surface.role, "geoms": (surface.name,)} for surface in scenario.surfaces
     )
@@ -192,6 +222,8 @@ def _build_external_sample(scene_builder: Any, scenario: SourceMujocoCompiledSce
         camera_jitter=camera_jitter,
         floor_material_jitter=floor_material_jitter,
         release_time_s=0.0,
+        robot_base_position=(scenario.robot_base_position_m or (0.0, 0.0, 0.0)),
+        robot_base_euler=(scenario.robot_base_euler_rad or (0.0, 0.0, 0.0)),
         catch_center_z=(scenario.controller_target_position_m or (0.0, 0.0, 0.5))[2],
         tabletop_height=tabletop_height,
         planned_intercept_time_s=scenario.ballistic_event_time_s,
@@ -229,6 +261,176 @@ def _strip_external_robocasa_selection(root: ET.Element) -> int:
     for tag in ("body", "mesh", "texture", "material"):
         removed += _remove_children_with_prefix(root, tag, "rc_")
     return removed
+
+
+def _remove_external_visual_work_surfaces(
+    root: ET.Element,
+    scenario: SourceMujocoCompiledScenario,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Remove procedural worktops that intersect owned physical fixtures.
+
+    The pinned scene builder puts ``robot_table_top`` and
+    ``back_counter_top`` at a top height of exactly 0.74 m.  Every fixed R1
+    P0 fixture is also rendered at or through that height.  Merely disabling
+    contact therefore leaves two coplanar (or crossing) visible surfaces and
+    produces large, disconnected depth-fighting polygons in both cameras.
+
+    Fixture-free interception scenes intentionally keep their randomized
+    procedural worktop.  When an owned physical fixture is present, however,
+    it is the sole visible task surface; the lower table/counter structure
+    remains as visual support.  Fail closed if the expected primary worktop
+    is absent, or if a future external variant adds another top-level
+    ``countertop`` work-surface that this owned cleanup did not classify.
+    """
+
+    if not scenario.requires_real_robocasa:
+        return (), ()
+    world = root.find("worldbody")
+    if world is None:
+        raise RuntimeError("external scene lacks worldbody")
+    if scenario.corpus_leaf_id.startswith("F1"):
+        # The F1 task/base stays on the room floor in both R0 and R1.  Every
+        # central support-table component is therefore false appearance: the
+        # object may legitimately miss and fall through its former volume.
+        # Remove the entire named family, not only its collision-disabled top,
+        # and bind the exact variant-dependent set into runtime metadata.
+        candidates = tuple(
+            geom
+            for geom in world.findall("./geom")
+            if str(geom.get("name") or "").startswith("robot_table_")
+        )
+        names = tuple(sorted(str(geom.get("name") or "") for geom in candidates))
+        if "robot_table_top" not in names:
+            raise RuntimeError("R1 F1 scene lacks its classified central robot table")
+        for geom in candidates:
+            world.remove(geom)
+        if scenario.scene_profile == "robocasa_storage":
+            marker = world.find("./geom[@name='storage_floor_marker']")
+            if marker is None:
+                raise RuntimeError(
+                    "R1 F1 storage scene lacks its classified floor marker"
+                )
+            world.remove(marker)
+            names = tuple(sorted((*names, "storage_floor_marker")))
+        remaining = tuple(
+            str(element.get("name") or "")
+            for element in root.iter()
+            if str(element.get("name") or "").startswith("robot_table_")
+        )
+        if remaining:
+            raise RuntimeError(
+                "unclassified central robot-table element remains in R1 F1 scene: "
+                + ", ".join(sorted(remaining))
+            )
+        return (), names
+
+    # The overlap replacement below is the P0 passive-fixture contract.  F2
+    # scenes may declare a contact plate or vertical rebound wall while the
+    # procedural table still physically supports the robot; those fixtures
+    # are not replacements for the worktop.
+    if not scenario.corpus_leaf_id.startswith("P0") or not scenario.surfaces:
+        return (), ()
+    candidates = tuple(
+        geom
+        for geom in world.findall("./geom")
+        if str(geom.get("material") or "") == "countertop"
+        and str(geom.get("name") or "").endswith("_top")
+    )
+    names = tuple(sorted(str(geom.get("name") or "") for geom in candidates))
+    if "robot_table_top" not in names:
+        raise RuntimeError(
+            "R1 physical-fixture scene lacks its classified procedural worktop"
+        )
+    for geom in candidates:
+        world.remove(geom)
+    remaining = tuple(
+        str(geom.get("name") or "")
+        for geom in world.findall("./geom")
+        if str(geom.get("material") or "") == "countertop"
+        and str(geom.get("name") or "").endswith("_top")
+    )
+    if remaining:
+        raise RuntimeError(
+            "unclassified procedural worktop remains in an R1 fixture scene: "
+            + ", ".join(sorted(remaining))
+        )
+    return names, ()
+
+
+def _relocate_external_visual_boundaries(
+    root: ET.Element,
+    scenario: SourceMujocoCompiledScenario,
+) -> tuple[Mapping[str, Any], ...]:
+    """Move visual-only left room boundaries outside every owned P0 fixture.
+
+    The external room used x≈-0.95 for both ``left_wall`` and the kitchen
+    ``backsplash_left_return`` while owned P0 supports extend as far as
+    x=-1.40.  Keeping them in place creates a visible intersection even after
+    contact is disabled.  Relocation preserves task physics and fixed seeds;
+    the exact pre/post transforms are persisted for review.
+    """
+
+    if (
+        not scenario.requires_real_robocasa
+        or not scenario.corpus_leaf_id.startswith("P0")
+        or not scenario.surfaces
+    ):
+        return ()
+    world = root.find("worldbody")
+    if world is None:
+        raise RuntimeError("external scene lacks worldbody")
+    left_wall = world.find("./geom[@name='left_wall']")
+    if left_wall is None:
+        raise RuntimeError("R1 P0 scene lacks its classified left visual boundary")
+    result: list[Mapping[str, Any]] = []
+    # The far face is at most -1.46 m, leaving 6 cm beyond the largest current
+    # owned support bound (-1.40 m).  Keep Y/Z and geometry size unchanged.
+    maximum_x = -1.46
+    for name in ("left_wall", "backsplash_left_return"):
+        geom = world.find(f"./geom[@name='{name}']")
+        if geom is None:
+            continue
+        old = tuple(float(value) for value in str(geom.get("pos") or "").split())
+        size = tuple(float(value) for value in str(geom.get("size") or "").split())
+        if len(old) != 3 or len(size) < 1 or size[0] <= 0:
+            raise RuntimeError(f"visual boundary {name} lacks a finite box transform")
+        new = (maximum_x - size[0], old[1], old[2])
+        geom.set("pos", " ".join(f"{value:.12g}" for value in new))
+        result.append(
+            {
+                "name": name,
+                "old_position_m": old,
+                "new_position_m": new,
+                "maximum_x_m": maximum_x,
+                "reason": "clear_owned_p0_fixture_aabb",
+            }
+        )
+    return tuple(result)
+
+
+def _apply_owned_robot_base(
+    root: ET.Element,
+    scenario: SourceMujocoCompiledScenario,
+) -> None:
+    """Replace the external sample's implicit base transform with the contract."""
+
+    if scenario.embodiment == "no_robot":
+        return
+    assert scenario.robot_base_position_m is not None
+    assert scenario.robot_base_euler_rad is not None
+    link0 = root.find("./worldbody/body[@name='link0']")
+    if link0 is None:
+        raise RuntimeError("external robot scene lacks link0")
+    link0.set(
+        "pos", " ".join(f"{value:.12g}" for value in scenario.robot_base_position_m)
+    )
+    link0.attrib.pop("quat", None)
+    link0.attrib.pop("axisangle", None)
+    link0.attrib.pop("xyaxes", None)
+    link0.attrib.pop("zaxis", None)
+    link0.set(
+        "euler", " ".join(f"{value:.12g}" for value in scenario.robot_base_euler_rad)
+    )
 
 
 def _loaded_external_variants(source_root: Path) -> Any:
@@ -286,11 +488,21 @@ def _select_catalog_candidate(
             f"RoboCasa catalog candidate is not safe for review: {candidate.asset_id}"
         )
     try:
-        position, yaw = _ROBOCASA_CATALOG_POSES[catalog_profile]
+        original_position, yaw = _ROBOCASA_CATALOG_POSES[catalog_profile]
     except KeyError as error:
         raise RuntimeError(
             f"R1 profile lacks an owned supported background pose: {catalog_profile}"
         ) from error
+    clearance_lift_m = (
+        _ROBOCASA_P0_CLEARANCE_LIFT_M[catalog_profile]
+        if scenario.corpus_leaf_id.startswith("P0")
+        else 0.0
+    )
+    position = (
+        original_position[0],
+        original_position[1],
+        original_position[2] + clearance_lift_m,
+    )
     descriptor = Path(candidate.descriptor_path).resolve(strict=True)
     asset_root = Path(dependency.asset_root).resolve(strict=True)
     try:
@@ -311,6 +523,9 @@ def _select_catalog_candidate(
         "visual_only": candidate.visual_only,
         "collision_enabled": candidate.collision_enabled,
         "static_admission_blockers": list(candidate.blockers),
+        "original_position_m": list(original_position),
+        "p0_fixture_clearance_lift_m": clearance_lift_m,
+        "position_transform_source": "owned_profile_level_p0_clearance/v1",
     }
     return candidate, relative_descriptor, position, yaw, catalog_metadata
 
@@ -378,6 +593,10 @@ def _runtime_camera_metadata(
     runtime_assets: Sequence[Mapping[str, Any]],
     *,
     removed_count: int,
+    removed_visual_work_surface_names: Sequence[str],
+    removed_task_volume_background_names: Sequence[str],
+    removed_fixture_intersection_background_names: Sequence[str],
+    relocated_visual_backgrounds: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Replace stale external selection metadata with the executed selection."""
 
@@ -387,6 +606,18 @@ def _runtime_camera_metadata(
     main["robocasa_background_assets"] = serialized_assets
     main["robocasa_background_selection_source"] = "owned_content_bound_catalog"
     main["external_random_robocasa_elements_removed"] = int(removed_count)
+    main["removed_visual_work_surface_names"] = list(
+        removed_visual_work_surface_names
+    )
+    main["removed_task_volume_background_names"] = list(
+        removed_task_volume_background_names
+    )
+    main["removed_fixture_intersection_background_names"] = list(
+        removed_fixture_intersection_background_names
+    )
+    main["relocated_visual_backgrounds"] = [
+        dict(value) for value in relocated_visual_backgrounds
+    ]
     randomization = main.get("scene_randomization")
     if isinstance(randomization, Mapping):
         randomization = dict(randomization)
@@ -413,21 +644,75 @@ def _remove_robot(root: ET.Element) -> None:
             root.remove(section)
 
 
-def _add_secondary_camera(root: ET.Element, height_offset: float) -> None:
+def _add_secondary_camera(
+    root: ET.Element,
+    scenario: SourceMujocoCompiledScenario,
+    height_offset: float,
+) -> None:
+    """Install the owned task-overview view before model initialization.
+
+    The external camera was composed around the interception point.  That is
+    useful as the primary review view, but it cannot show the complete outcome
+    of a miss that reaches the room floor, a high projectile apex, or the end
+    of a long rolling surface.  Keep the primary view untouched and give only
+    the secondary stream a deterministic task envelope.  Camera changes do
+    not alter task geometry, physics, RNG state, or runtime callbacks.
+    """
+
     world = root.find("worldbody")
     if world is None:
         raise RuntimeError("external scene lacks worldbody")
     old = world.find("./camera[@name='secondary_camera']")
     if old is not None:
         world.remove(old)
-    ET.SubElement(
+    camera = ET.SubElement(
         world,
         "camera",
         name="secondary_camera",
-        pos=f"-0.72 -1.18 {1.10 + height_offset:.8g}",
-        xyaxes="0.853  -0.522 0 0.239 0.391 0.889",
-        fovy="52",
     )
+    if scenario.motion_kind == "direct_free_contact_interception":
+        anchor = scenario.physical_target_position_m or scenario.controller_target_position_m
+        if anchor is None:
+            raise RuntimeError("F1 camera lacks its physical/controller target")
+        # Anchor framing to the owned free-space task, never the R1 furniture
+        # height.  A close right-side angle resolves both opposed finger pads
+        # at bilateral contact (the main view looks nearly along their axis),
+        # while the main stream retains the complete ballistic/floor outcome.
+        _set_camera_look_at(
+            camera,
+            position_m=(anchor[0] + 1.05, anchor[1] - 0.35, anchor[2] + 0.45),
+            target_m=(anchor[0], anchor[1], anchor[2] + 0.05),
+            fovy_deg=55.0,
+        )
+    elif scenario.motion_kind == "passive_projectile":
+        # P0b-review-02 reaches 1.395 m above its support and exceeded both old
+        # views near the apex.  Express this overview relative to the support
+        # height so the clean and RoboCasa scenes share identical framing.
+        _set_camera_look_at(
+            camera,
+            position_m=(0.20, -1.80, height_offset + 1.20),
+            target_m=(-0.15, -0.05, height_offset + 0.72),
+            fovy_deg=62.0,
+        )
+    elif scenario.motion_kind in {
+        "passive_slope_roll",
+        "passive_straight_roll",
+    }:
+        # The P0d object stays on its declared support while traversing as far
+        # as x=[-0.89, 1.07].  Aim at the physical support plane, not the old
+        # interception-height target, to retain both endpoints.
+        _set_camera_look_at(
+            camera,
+            position_m=(0.10, -1.80, height_offset + 0.90),
+            target_m=(0.10, 0.0, height_offset + 0.04),
+            fovy_deg=58.0,
+        )
+    else:
+        # Preserve the already-reviewed complementary view for other tasks,
+        # including the separately repaired P0c wall-rebound camera.
+        camera.set("pos", f"-0.72 -1.18 {1.10 + height_offset:.8g}")
+        camera.set("xyaxes", "0.853  -0.522 0 0.239 0.391 0.889")
+        camera.set("fovy", "52")
 
 
 def _set_camera_look_at(
@@ -462,20 +747,38 @@ def _repair_task_camera(
 ) -> None:
     """Keep owned physical fixtures from hiding the task in the main view."""
 
-    if scenario.motion_kind != "passive_wall_rebound":
+    if scenario.motion_kind not in {
+        "direct_free_contact_interception",
+        "passive_wall_rebound",
+    }:
         return
     main = root.find(".//camera[@name='main_camera']")
     if main is None:
         raise RuntimeError("external scene lacks main_camera")
+    if scenario.motion_kind == "direct_free_contact_interception":
+        anchor = scenario.physical_target_position_m or scenario.controller_target_position_m
+        if anchor is None:
+            raise RuntimeError("F1 camera lacks its physical/controller target")
+        _set_camera_look_at(
+            main,
+            position_m=(anchor[0] - 1.15, anchor[1] - 1.18, anchor[2] + 0.65),
+            target_m=(anchor[0], anchor[1], anchor[2] + 0.17),
+            fovy_deg=62.0,
+        )
+        return
     # The external main camera sits on the far side of supported_wall, making
-    # the complete rebound trajectory invisible and producing a genuinely
-    # frozen canonical stream.  Move only the camera before initialization to
-    # the incoming side at a complementary angle to the secondary view.
+    # the rebound invisible.  Keep the repaired camera on the incoming side,
+    # but frame the complete fixed trajectory rather than only the contact
+    # event.  The 64-degree vertical field of view and balanced look-at keep
+    # the projected object (including its radius) at least eight pixels inside
+    # all four image edges for P0c-review-01/03/05 at every 30 Hz timestamp.
+    # This is a deterministic pre-initialization camera calibration: no seed,
+    # physics state, fixture, or runtime callback is changed.
     _set_camera_look_at(
         main,
         position_m=(-0.90, 0.95, height_offset + 1.05),
-        target_m=(-0.02, 0.0, height_offset + 0.72),
-        fovy_deg=48.0,
+        target_m=(-0.02, 0.0, height_offset + 0.84),
+        fovy_deg=64.0,
     )
 
 
@@ -619,9 +922,19 @@ def _patch_calibrated_model(
         actuator.set("ctrlrange", "0 255")
         actuator.set("ctrllimited", "true")
 
-    height_offset = 0.74 if scenario.requires_real_robocasa else 0.0
+    # Camera height follows the owned task coordinate frame.  F1 is explicitly
+    # anchored above from its physical/controller target and remains at local
+    # height zero in R0 and R1; other current recipes retain their declared
+    # table/support frame.
+    height_offset = (
+        0.0
+        if scenario.corpus_leaf_id.startswith("F1")
+        else 0.74
+        if scenario.requires_real_robocasa
+        else 0.0
+    )
     _repair_task_camera(root, scenario, height_offset)
-    _add_secondary_camera(root, height_offset)
+    _add_secondary_camera(root, scenario, height_offset)
     # Visual background geometry must never participate in contact.
     # RoboCasa's imported geoms are commonly unnamed, so the owning body
     # prefix is the authoritative classification boundary.
@@ -774,6 +1087,254 @@ def _resolve_model_ids(mujoco: Any, model: Any, scenario: SourceMujocoCompiledSc
     )
 
 
+def _compiled_robot_base_pose(
+    mujoco: Any,
+    model: Any,
+    data: Any,
+    scenario: SourceMujocoCompiledScenario,
+) -> tuple[
+    tuple[float, float, float] | None,
+    tuple[float, float, float, float] | None,
+]:
+    """Validate and return the compiled world pose of the owned robot base."""
+
+    if scenario.embodiment == "no_robot":
+        if int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "link0")) >= 0:
+            raise RuntimeError("no_robot scene retained link0")
+        return None, None
+    assert scenario.robot_base_position_m is not None
+    assert scenario.robot_base_euler_rad is not None
+    body_id = _name2id(mujoco, model, mujoco.mjtObj.mjOBJ_BODY, "link0")
+    mujoco.mj_forward(model, data)
+    actual_position = tuple(float(value) for value in data.xpos[body_id])
+    actual_quaternion = tuple(float(value) for value in data.xquat[body_id])
+    expected_quaternion_array = np.empty(4, dtype=np.float64)
+    mujoco.mju_euler2Quat(
+        expected_quaternion_array,
+        np.asarray(scenario.robot_base_euler_rad, dtype=np.float64),
+        "xyz",
+    )
+    expected_quaternion = tuple(float(value) for value in expected_quaternion_array)
+    if not np.allclose(
+        actual_position,
+        scenario.robot_base_position_m,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise RuntimeError(
+            "compiled link0 position differs from owned robot-base contract: "
+            f"actual={actual_position}, expected={scenario.robot_base_position_m}"
+        )
+    if not np.allclose(
+        actual_quaternion,
+        expected_quaternion,
+        rtol=0.0,
+        atol=1e-12,
+    ):
+        raise RuntimeError(
+            "compiled link0 orientation differs from owned robot-base contract"
+        )
+    return actual_position, actual_quaternion
+
+
+def _background_geometry_contract(
+    mujoco: Any,
+    model: Any,
+    scenario: SourceMujocoCompiledScenario,
+    robocasa_assets: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[Mapping[str, Any], ...], Mapping[str, str]]:
+    """Classify every procedural/catalog background geom and enforce no contact.
+
+    Worldbody geoms are owned task support only when explicitly excluded here;
+    every other top-level geom is procedural appearance.  Catalog membership
+    is resolved through body ancestry because imported mesh geoms are commonly
+    unnamed.  Stable IDs remain independent of a worker or rollout process.
+    """
+
+    exclusions: dict[str, str] = {"floor": "physical_room_support"}
+    exclusions.update(
+        {
+            surface.name: f"owned_task_fixture:{surface.role}"
+            for surface in scenario.surfaces
+        }
+    )
+    descriptors: list[Mapping[str, Any]] = []
+    classified_geom_ids: set[int] = set()
+    for geom_id in range(model.ngeom):
+        if int(model.geom_bodyid[geom_id]) != 0:
+            continue
+        name = str(
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+        )
+        if name in exclusions:
+            continue
+        if not name:
+            raise RuntimeError("unnamed top-level procedural background geom")
+        descriptors.append(
+            {
+                "stable_id": f"procedural:{name}",
+                "geom_id": geom_id,
+                "classification": "procedural",
+                "source_name": name,
+                "catalog_slot": None,
+            }
+        )
+        classified_geom_ids.add(geom_id)
+
+    for item in robocasa_assets:
+        slot = str(item.get("slot") or "")
+        if not slot:
+            raise RuntimeError("compiled RoboCasa asset lacks its catalog slot")
+        prefix = f"rc_{slot}_"
+        owned_body_ids: set[int] = set()
+        for body_id in range(1, model.nbody):
+            cursor = body_id
+            while cursor > 0:
+                body_name = str(
+                    mujoco.mj_id2name(
+                        model, mujoco.mjtObj.mjOBJ_BODY, cursor
+                    )
+                    or ""
+                )
+                if body_name.startswith(prefix):
+                    owned_body_ids.add(body_id)
+                    break
+                cursor = int(model.body_parentid[cursor])
+        geom_ids = tuple(
+            geom_id
+            for geom_id in range(model.ngeom)
+            if int(model.geom_bodyid[geom_id]) in owned_body_ids
+        )
+        if not geom_ids:
+            raise RuntimeError(f"catalog background has no compiled geoms: {slot}")
+        for ordinal, geom_id in enumerate(geom_ids):
+            if geom_id in classified_geom_ids:
+                raise RuntimeError("background geom received multiple classifications")
+            name = str(
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+                or ""
+            )
+            suffix = name or f"geom:{ordinal:04d}"
+            descriptors.append(
+                {
+                    "stable_id": f"catalog:{slot}:{suffix}",
+                    "geom_id": geom_id,
+                    "classification": "catalog",
+                    "source_name": name or None,
+                    "catalog_slot": slot,
+                }
+            )
+            classified_geom_ids.add(geom_id)
+
+    descriptors.sort(key=lambda value: str(value["stable_id"]))
+    if len({str(value["stable_id"]) for value in descriptors}) != len(descriptors):
+        raise RuntimeError("background geometry stable IDs are not unique")
+    for descriptor in descriptors:
+        geom_id = int(descriptor["geom_id"])
+        if (
+            int(model.geom_contype[geom_id]) != 0
+            or int(model.geom_conaffinity[geom_id]) != 0
+        ):
+            raise RuntimeError(
+                "background geometry collision is enabled: "
+                + str(descriptor["stable_id"])
+            )
+    return tuple(descriptors), dict(sorted(exclusions.items()))
+
+
+def _compiled_world_geom_aabb(
+    model: Any,
+    data: Any,
+    geom_id: int,
+) -> tuple[float, float, float, float, float, float]:
+    local = np.asarray(model.geom_aabb[int(geom_id)], dtype=np.float64)
+    center_local = local[:3]
+    half_local = local[3:]
+    rotation = np.asarray(data.geom_xmat[int(geom_id)], dtype=np.float64).reshape(3, 3)
+    center_world = np.asarray(data.geom_xpos[int(geom_id)], dtype=np.float64) + (
+        rotation @ center_local
+    )
+    half_world = np.abs(rotation) @ half_local
+    return tuple(float(value) for value in (*center_world - half_world, *center_world + half_world))  # type: ignore[return-value]
+
+
+def _positive_aabb_overlap(
+    left: Sequence[float],
+    right: Sequence[float],
+    *,
+    tolerance_m: float = 1e-6,
+) -> bool:
+    return all(
+        min(float(left[index + 3]), float(right[index + 3]))
+        - max(float(left[index]), float(right[index]))
+        > tolerance_m
+        for index in range(3)
+    )
+
+
+def _remove_procedural_fixture_intersections(
+    mujoco: Any,
+    root: ET.Element,
+    scenario: SourceMujocoCompiledScenario,
+) -> tuple[str, ...]:
+    """Remove R1 appearance geoms with positive owned-fixture volume overlap.
+
+    This is a single geometry rule across P0 profiles, evaluated from MuJoCo's
+    compiled AABBs after all deterministic relocation and support normalization.
+    Face contact is retained; only positive volume intersection is removed.
+    Catalog descendants are governed by their profile-level support lift and
+    remain fail-closed in runtime clearance.
+    """
+
+    if not scenario.requires_real_robocasa or not scenario.surfaces:
+        return ()
+    provisional_xml = ET.tostring(root, encoding="unicode")
+    provisional_model = mujoco.MjModel.from_xml_string(provisional_xml)
+    provisional_data = mujoco.MjData(provisional_model)
+    mujoco.mj_forward(provisional_model, provisional_data)
+    fixture_ids = tuple(
+        _name2id(mujoco, provisional_model, mujoco.mjtObj.mjOBJ_GEOM, surface.name)
+        for surface in scenario.surfaces
+    )
+    fixture_aabbs = tuple(
+        _compiled_world_geom_aabb(provisional_model, provisional_data, geom_id)
+        for geom_id in fixture_ids
+    )
+    remove_names: list[str] = []
+    exclusions = {"floor", *(surface.name for surface in scenario.surfaces)}
+    for geom_id in range(provisional_model.ngeom):
+        if int(provisional_model.geom_bodyid[geom_id]) != 0:
+            continue
+        name = str(
+            mujoco.mj_id2name(
+                provisional_model, mujoco.mjtObj.mjOBJ_GEOM, geom_id
+            )
+            or ""
+        )
+        if name in exclusions:
+            continue
+        aabb = _compiled_world_geom_aabb(
+            provisional_model, provisional_data, geom_id
+        )
+        if any(_positive_aabb_overlap(aabb, fixture) for fixture in fixture_aabbs):
+            if not name:
+                raise RuntimeError(
+                    "unnamed procedural background intersects an owned fixture"
+                )
+            remove_names.append(name)
+    world = root.find("worldbody")
+    if world is None:
+        raise RuntimeError("external scene lacks worldbody")
+    for name in sorted(set(remove_names)):
+        geom = world.find(f"./geom[@name='{name}']")
+        if geom is None:
+            raise RuntimeError(
+                f"classified fixture-intersecting procedural geom is not top-level: {name}"
+            )
+        world.remove(geom)
+    return tuple(sorted(set(remove_names)))
+
+
 def compile_source_model(
     scenario: SourceMujocoCompiledScenario,
     *,
@@ -818,13 +1379,27 @@ def compile_source_model(
                 source_root=source_root,
             )
         )
+    (
+        removed_visual_work_surfaces,
+        removed_task_volume_backgrounds,
+    ) = _remove_external_visual_work_surfaces(root, scenario)
+    relocated_visual_backgrounds = _relocate_external_visual_boundaries(
+        root, scenario
+    )
+    _apply_owned_robot_base(root, scenario)
     if scenario.embodiment == "no_robot":
         _remove_robot(root)
     _patch_calibrated_model(root, scenario)
+    removed_fixture_intersections = _remove_procedural_fixture_intersections(
+        mujoco, root, scenario
+    )
     xml = ET.tostring(root, encoding="unicode")
     model = mujoco.MjModel.from_xml_string(xml)
     data = mujoco.MjData(model)
     ids = _resolve_model_ids(mujoco, model, scenario)
+    robot_base_position, robot_base_quaternion = _compiled_robot_base_pose(
+        mujoco, model, data, scenario
+    )
     if scenario.requires_real_robocasa and not robocasa_assets:
         raise RuntimeError("R1 scene imported no content-bound RoboCasa catalog asset")
     if scenario.requires_real_robocasa and any(
@@ -842,6 +1417,14 @@ def compile_source_model(
             ),
         ),
     )
+    background_geom_descriptors, background_geom_exclusions = (
+        _background_geometry_contract(
+            mujoco,
+            model,
+            scenario,
+            robocasa_assets,
+        )
+    )
     return CompiledSourceModel(
         model=model,
         data=data,
@@ -853,10 +1436,28 @@ def compile_source_model(
         robocasa_assets=robocasa_assets,
         stripped_robotwin_asset_count=stripped,
         stripped_external_robocasa_element_count=stripped_external_robocasa,
+        removed_visual_work_surface_names=removed_visual_work_surfaces,
+        removed_task_volume_background_names=removed_task_volume_backgrounds,
+        removed_fixture_intersection_background_names=(
+            removed_fixture_intersections
+        ),
+        relocated_visual_backgrounds=relocated_visual_backgrounds,
+        background_geom_descriptors=background_geom_descriptors,
+        background_geom_exclusions=background_geom_exclusions,
+        robot_base_position_m=robot_base_position,
+        robot_base_quaternion_wxyz=robot_base_quaternion,
         external_camera_metadata=_runtime_camera_metadata(
             bundle.camera_pose if isinstance(bundle.camera_pose, Mapping) else {},
             robocasa_assets,
             removed_count=stripped_external_robocasa,
+            removed_visual_work_surface_names=removed_visual_work_surfaces,
+            removed_task_volume_background_names=(
+                removed_task_volume_backgrounds
+            ),
+            removed_fixture_intersection_background_names=(
+                removed_fixture_intersections
+            ),
+            relocated_visual_backgrounds=relocated_visual_backgrounds,
         ),
     )
 

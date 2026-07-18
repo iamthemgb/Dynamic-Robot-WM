@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from copy import copy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from dynamic_robot_dataset.backends.source_mujoco import SourceMujocoBackend
+from dynamic_robot_dataset.common.cameras import invert_rigid_transform
 from dynamic_robot_dataset.common.episode_writer import (
     load_episode_records,
     read_parquet_rows,
 )
+from dynamic_robot_dataset.common.hashing import sha256_json
+from dynamic_robot_dataset.common.qc import validate_dataset
 from dynamic_robot_dataset.common.review_suite import (
     build_review_request_ledger,
     build_review_suite_plan,
@@ -29,6 +33,9 @@ from dynamic_robot_dataset.common.source_execution import (
     prepare_source_review_declaration,
     source_finalization_rows,
 )
+from dynamic_robot_dataset.common.visual_qc import (
+    source_mujoco_visibility_media_binding,
+)
 
 
 def _case(case_id: str):
@@ -47,6 +54,34 @@ def _entry(declaration: dict) -> RunPlanEpisode:
             "source_scenario_spec_sha256"
         ],
     )
+
+
+def _record_with_visibility_media_binding(p0a_unrendered_runtime):
+    entry, result = p0a_unrendered_runtime
+    materialization = materialize_source_mujoco_result(entry, result)
+    record = materialization.record
+    record.video_paths = {
+        "observation.images.main": "videos/main.mp4",
+        "observation.images.secondary": "videos/secondary.mp4",
+    }
+    record.camera_stream_calibration_ids = dict(
+        materialization.camera_calibration_ids or {}
+    )
+    record.camera_ids = sorted(record.camera_stream_calibration_ids.values())
+    record.content_hashes = {
+        record.video_paths["observation.images.main"]: "1" * 64,
+        record.video_paths["observation.images.secondary"]: "2" * 64,
+    }
+    binding = source_mujoco_visibility_media_binding(
+        visibility_qc_sha256=record.extras["visibility_qc_sha256"],
+        camera_rows=record.extras["camera_calibrations"],
+        camera_stream_calibration_ids=record.camera_stream_calibration_ids,
+        video_paths=record.video_paths,
+        content_hashes=record.content_hashes,
+    )
+    record.extras["visibility_media_binding"] = binding
+    record.extras["visibility_media_binding_sha256"] = sha256_json(binding)
+    return record
 
 
 def test_frame_interval_contact_does_not_claim_sampled_active_contact() -> None:
@@ -94,6 +129,100 @@ def p0a_unrendered_runtime():
     declaration = prepare_source_review_declaration(case, episode_index=0)
     result = SourceMujocoBackend().run(case, render=False)
     return _entry(declaration), result
+
+
+def test_materialization_rejects_runtime_camera_orientation_change(
+    p0a_unrendered_runtime,
+) -> None:
+    entry, original = p0a_unrendered_runtime
+    result = copy(original)
+    main = original.camera_calibrations["main"]
+    matrix = main.camera_to_world
+    # Preserve translation, forward/look-at direction, and rigid validity
+    # while rolling the camera axes by 90 degrees.
+    changed_camera_to_world = (
+        matrix[1], -matrix[0], matrix[2], matrix[3],
+        matrix[5], -matrix[4], matrix[6], matrix[7],
+        matrix[9], -matrix[8], matrix[10], matrix[11],
+        0.0, 0.0, 0.0, 1.0,
+    )
+    changed = replace(
+        main,
+        camera_to_world=changed_camera_to_world,
+        world_to_camera=invert_rigid_transform(changed_camera_to_world),
+    )
+    changed.validate()
+    result.camera_calibrations = {
+        **original.camera_calibrations,
+        "main": changed,
+    }
+
+    with pytest.raises(
+        SourceExecutionBindingError,
+        match="runtime camera main differs from SourceScenarioSpec",
+    ):
+        materialize_source_mujoco_result(entry, result)
+
+
+def test_materialization_rejects_runtime_camera_fov_change(
+    p0a_unrendered_runtime,
+) -> None:
+    entry, original = p0a_unrendered_runtime
+    result = copy(original)
+    main = original.camera_calibrations["main"]
+    intrinsic = list(main.intrinsic_matrix)
+    intrinsic[0] *= 0.9
+    intrinsic[4] *= 0.9
+    changed = replace(main, intrinsic_matrix=tuple(intrinsic))
+    changed.validate()
+    result.camera_calibrations = {
+        **original.camera_calibrations,
+        "main": changed,
+    }
+
+    with pytest.raises(
+        SourceExecutionBindingError,
+        match="runtime camera main differs from SourceScenarioSpec",
+    ):
+        materialize_source_mujoco_result(entry, result)
+
+
+def test_source_finalization_rejects_stale_visibility_media_binding(
+    p0a_unrendered_runtime,
+) -> None:
+    record = _record_with_visibility_media_binding(p0a_unrendered_runtime)
+    source_finalization_rows([record])
+
+    main_path = record.video_paths["observation.images.main"]
+    record.content_hashes[main_path] = "f" * 64
+
+    with pytest.raises(
+        SourceExecutionBindingError,
+        match="visibility media binding differs from camera rows or encoded media",
+    ):
+        source_finalization_rows([record])
+
+
+def test_source_finalization_rejects_fabricated_self_hashed_media_binding(
+    p0a_unrendered_runtime,
+) -> None:
+    record = _record_with_visibility_media_binding(p0a_unrendered_runtime)
+    binding = record.extras["visibility_media_binding"]
+    forged = {
+        **binding,
+        "video_content_sha256": {
+            **binding["video_content_sha256"],
+            "observation.images.main": "f" * 64,
+        },
+    }
+    record.extras["visibility_media_binding"] = forged
+    record.extras["visibility_media_binding_sha256"] = sha256_json(forged)
+
+    with pytest.raises(
+        SourceExecutionBindingError,
+        match="visibility media binding differs from camera rows or encoded media",
+    ):
+        source_finalization_rows([record])
 
 
 @pytest.mark.integration
@@ -192,6 +321,17 @@ def test_real_p0a_writer_round_trip_and_finalization_metadata(tmp_path: Path) ->
     assert all(row.get("grasp.center_position") is None for row in object_rows)
     assert record.extras["source_scenario_spec"]["scenario_id"] == case.case_id
     assert record.extras["review_suite_episode_index"] == case.episode_index
+    assert record.extras["visibility_qc"]["evaluated"] is True
+    assert record.extras["visibility_qc"]["final_state_visible_in_any_view"] is True
+    assert record.extras["visibility_qc_sha256"] == sha256_json(
+        record.extras["visibility_qc"]
+    )
+    passive_visibility = record.extras["visibility_qc"]
+    assert passive_visibility["contact_exact_fixture_geom_ids"]
+    assert passive_visibility[
+        "actual_contact_counterpart_visible_at_key_event"
+    ] is True
+    assert passive_visibility["contact_occluded_both_views"] is False
 
     finalization = source_finalization_rows([record])
     assert len(finalization.cameras) == 2
@@ -213,3 +353,5 @@ def test_real_p0a_writer_round_trip_and_finalization_metadata(tmp_path: Path) ->
     assert len(finalized) == 1
     assert (root / "meta" / "cameras.parquet").is_file()
     assert (root / "meta" / "provenance.parquet").is_file()
+    report = validate_dataset(root, strict_all=True, write_reports=False)
+    assert report.passed, report.to_dict()
