@@ -696,11 +696,17 @@ def _add_secondary_camera(
         "camera",
         name="secondary_camera",
     )
-    if scenario.motion_kind == "direct_free_contact_interception":
+    if scenario.motion_kind in {
+        "direct_free_contact_interception",
+        "rolling_pickup_interception",
+    }:
         anchor = scenario.physical_target_position_m
         if anchor is None:
-            raise RuntimeError("F1 camera lacks its physical target")
-        if scenario.scene_profile == "robocasa_storage":
+            raise RuntimeError("interception camera lacks its physical target")
+        if (
+            scenario.scene_profile == "robocasa_storage"
+            and scenario.motion_kind == "direct_free_contact_interception"
+        ):
             # A high deterministic overview covers the complete storage F1
             # envelope: release near z=1.50, free-contact interaction near the
             # gripper, and collision-derived failures reaching y=-1.61 on the
@@ -800,6 +806,7 @@ def _repair_task_camera(
 
     if scenario.motion_kind not in {
         "direct_free_contact_interception",
+        "rolling_pickup_interception",
         "passive_projectile",
         "passive_wall_rebound",
     }:
@@ -807,10 +814,13 @@ def _repair_task_camera(
     main = root.find(".//camera[@name='main_camera']")
     if main is None:
         raise RuntimeError("external scene lacks main_camera")
-    if scenario.motion_kind == "direct_free_contact_interception":
+    if scenario.motion_kind in {
+        "direct_free_contact_interception",
+        "rolling_pickup_interception",
+    }:
         anchor = scenario.physical_target_position_m or scenario.controller_target_position_m
         if anchor is None:
-            raise RuntimeError("F1 camera lacks its physical/controller target")
+            raise RuntimeError("interception camera lacks its physical/controller target")
         _set_camera_look_at(
             main,
             position_m=(anchor[0] - 1.15, anchor[1] - 1.18, anchor[2] + 0.65),

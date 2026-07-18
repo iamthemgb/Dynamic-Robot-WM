@@ -1894,6 +1894,16 @@ def _rolling_evidence(
         (segment for segment in segments if len(segment) >= sustained_samples),
         max(segments, key=len, default=[]),
     )
+    # The fixture certifies the approach roll up to the declared key event.
+    # Later same-mode surface interactions (a missed pickup compressing into
+    # the runway backstop and rebounding) measurably turned the tangent fit
+    # positive and the contact slip past its limit without any airborne gap
+    # to split the segment on.
+    contacted = [
+        row
+        for row in contacted
+        if float(row["timestamp"]) <= float(scenario.key_event_time_s) + 1e-9
+    ]
     if len(contacted) < 3 or not scenario.surfaces:
         return {
             "rolling_or_sliding_slip_within_limit": False,
