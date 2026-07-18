@@ -558,22 +558,28 @@ measurements:
         F2a_franka_negative_controller_timing: 32.66
       added_classes_pass_strict_qc_at_1200hz: true
       comparison_rate_divergence_without_contact_event_or_600hz_defect:
-        cases: [F2a-review-02, F2a-review-03, F2a-review-05, F3b-review-02]
+        cases: [F3b-review-02]
         compiled_rate_hz: 600
         compiled_rate_strict_qc_pass: true
         semantic_outcome_match_at_1200hz: true
         measured_1200hz_divergence:
-          room_floor_impact_penetration_m_after_2p2m_fall: 0.00334
           wrist_servo_transient_rad_s2_at_doubled_fd_resolution: 119.7
         note: >-
-          These deflection/pickup misses pass every strict check at their
-          compiled 600 Hz rate and reach the same measured outcome at
-          1200 Hz.  The comparison-rate residuals are a marginal foam-ball
-          floor-impact penetration (3.34 mm vs the 3 mm cap after a 2.2 m
-          fall) and the identical commanded servo transient sampled at
-          doubled finite-difference resolution; both are recorded here as
-          exploratory calibration evidence rather than silently excepted.
+          This pickup miss passes every strict check at its compiled 600 Hz
+          rate and reaches the same measured outcome at 1200 Hz.  The
+          comparison-rate residual is the identical commanded servo
+          transient sampled at doubled finite-difference resolution; it is
+          recorded here as exploratory calibration evidence rather than
+          silently excepted.  The earlier F2a deflection-miss floor-impact
+          penetration divergence disappeared with the F2a floor rooting
+          (post-rooting first-bilateral shifts measured 2.3 mm).
       no_contact_event_cases_within_gate: [F3b-review-03, F3b-review-05]
+      f2a_floor_rooting: >-
+        F2a shares F1's fixtureless ballistic interception and its room-floor
+        rooting in R1 scenes: counter-rooted F2a misses measurably fell 2.2 m
+        out of frame and into background furniture, failing rendered
+        visibility/background-clearance QC (4 of 6 fixed cases) that the F1
+        rooting was introduced to satisfy.
     admission_claimed: false
     formal_human_approval_recorded: false
 

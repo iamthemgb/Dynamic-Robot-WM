@@ -263,7 +263,7 @@ def test_fixture_free_f1_r1_removes_entire_central_table_and_keeps_remote_contex
     )
 
 
-@pytest.mark.parametrize("leaf_id", ("F2a", "F2d"))
+@pytest.mark.parametrize("leaf_id", ("F2d",))
 def test_blocked_f2_r1_recipes_retain_their_robot_support_table(
     leaf_id: str,
 ) -> None:
@@ -290,6 +290,27 @@ def test_blocked_f2_r1_recipes_retain_their_robot_support_table(
     assert "robot_table_top" in names
     assert compiled.removed_visual_work_surface_names == ()
     assert compiled.removed_task_volume_background_names == ()
+
+
+def test_f2a_shares_f1_floor_rooting_in_r1_scenes() -> None:
+    # Counter-rooted F2a misses measurably fell 2.2 m out of frame and into
+    # background furniture; F2a is a fixtureless ballistic interception and
+    # uses F1's floor rooting so the rendered visibility QC geometry holds.
+    case = next(
+        case
+        for case in build_review_suite_plan().cases
+        if case.corpus_leaf_id == "F2a" and case.rollout_index == 1
+    )
+    scenario = compile_review_case(case)
+    assert scenario.robot_base_position_m == (0.0, 0.0, 0.0)
+    f1d = next(
+        case
+        for case in build_review_suite_plan().cases
+        if case.corpus_leaf_id == "F1d" and case.rollout_index == 1
+    )
+    assert scenario.controller_target_position_m == compile_review_case(
+        f1d
+    ).controller_target_position_m
 
 
 def test_source_scenario_spec_retains_exact_catalog_identity_and_hash() -> None:

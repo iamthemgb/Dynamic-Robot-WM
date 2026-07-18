@@ -1040,8 +1040,16 @@ def compile_review_case(
     # procedural table whose collision was later disabled.  That made R0 and
     # R1 different physical tasks and let failed balls pass through visible
     # furniture.  Keep the owned local F1 task/base pose invariant and treat
-    # R1 furniture solely as remote appearance context.
-    task_height = 0.0 if leaf_id.startswith("F1") else external_tabletop_height
+    # R1 furniture solely as remote appearance context.  F2a shares F1's
+    # fixtureless ballistic interception and therefore its floor rooting:
+    # counter-rooted F2a misses measurably fell 2.2 m out of frame and into
+    # background furniture, failing the rendered visibility/clearance QC that
+    # the F1 rooting was introduced to satisfy.
+    task_height = (
+        0.0
+        if leaf_id.startswith("F1") or leaf_id == "F2a"
+        else external_tabletop_height
+    )
     robot_base_position = (
         None if embodiment == "no_robot" else (0.0, 0.0, task_height)
     )
