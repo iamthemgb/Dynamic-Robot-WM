@@ -92,13 +92,49 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
     assert RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m == 0.045
     assert RIGID_REVIEW_PROFILE.reach_arrival_before_ballistic_s == 0.055
     assert RIGID_REVIEW_PROFILE.minimum_reach_duration_s == 0.18
-    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.13.0-review"
-    assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v4")
+    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.15.0-review"
+    assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v6")
 
     rolling = resolve_rolling_island_dependency()
     assert rolling.manifest_sha256 == PINNED_ROLLING_ISLAND_MANIFEST_SHA256
     assert rolling.controller_imported is False
     assert "controller.py" not in rolling.file_sha256
+    assert "robocasa_assets.py" in rolling.file_sha256
+
+
+def test_f3b_robocasa_style_is_deterministic_and_uses_only_the_asset_rng() -> None:
+    case = _case("F3b", rollout=1)
+    first = compile_review_case(case).rolling_island_scene
+    assert first is not None
+    assert first.asset_selection_policy.endswith("/v2")
+    assert first.visual_model_xml_sha256
+    assert all(path.endswith("/model.xml") for path in first.visual_model_xml_sha256)
+    assert first.style_texture_sha256
+    assert set(first.style_texture_path_by_material) == {
+        "countertop",
+        "cabinet_front",
+        "scene_floor",
+        "scene_wall",
+    }
+    admitted_families = ("sinks/", "dishwashers/", "fridges/")
+    assert all(
+        any(family in path for family in admitted_families)
+        for path in first.visual_model_xml_sha256
+    )
+    assert not any("/stoves/" in path for path in first.visual_model_xml_sha256)
+
+    next_assets = replace(case.rng_subseeds, assets=case.rng_subseeds.assets + 1)
+    second = compile_review_case(replace(case, rng_subseeds=next_assets)).rolling_island_scene
+    assert second is not None
+    assert second.layout_id == first.layout_id
+    assert second.style_id != first.style_id
+    assert second.style_id == 11 + (first.style_id - 11 + 1) % 50
+    assert second.task_frame_origin_world_xy_m == first.task_frame_origin_world_xy_m
+    assert second.task_frame_yaw_world_rad == first.task_frame_yaw_world_rad
+    assert second.counter_position_task_m == first.counter_position_task_m
+    assert second.counter_half_size_m == first.counter_half_size_m
+    assert second.visual_model_xml_sha256 != first.visual_model_xml_sha256
+    assert second.style_texture_sha256 != first.style_texture_sha256
 
 
 def test_f1_r0_r1_share_owned_physics_base_and_planned_robot_state() -> None:

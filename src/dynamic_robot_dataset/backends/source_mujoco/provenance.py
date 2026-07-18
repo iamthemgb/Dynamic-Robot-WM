@@ -53,13 +53,14 @@ PINNED_SOURCE_MANIFEST_SHA256 = (
 # controller is intentionally outside the allowlist because that controller
 # writes robot and object qpos/qvel after initialization.
 PINNED_ROLLING_ISLAND_SOURCE_FILES: Mapping[str, str] = {
+    "robocasa_assets.py": "5c14d63d5f7ae4ab5717f36aff63828bddde9b6800c223dcaf38e51aafb8c5f3",
     "scene_builder.py": "61887be9dc7ee1b80076b9c2bf60ebf56474baf3db031ac57ccdca20be6ec5c7",
     "utils.py": "618720ecfe64e354311500e9c6e19852c3debf5eec8850ec6eeb0fc4b91a45c8",
     "variants.py": "fce9fbaf623668f4532a48f30b67106ee1014b7bceffee7ee7d7d77e30246d40",
     "yaml_scene.py": "cfee5a192e9c2b7ee991a57e6dafcbb2181b7c66c71d52a514ae4fb7d708e9c8",
 }
 PINNED_ROLLING_ISLAND_MANIFEST_SHA256 = (
-    "cf6a9ec045b8392f8ca6351b9d749021aab8973ed5ffff78499b51497d55d384"
+    "138c74962dfa7fc3272100e643d0b995c1c8b6e6e053af9caf8523ae770738a6"
 )
 
 
@@ -83,7 +84,7 @@ class RollingIslandDependencyManifest:
     source_root: str
     file_sha256: Mapping[str, str]
     manifest_sha256: str
-    usage: str = "scene_geometry_and_placement_only"
+    usage: str = "scene_geometry_placement_and_visual_assets_only"
     controller_imported: bool = False
     read_only_usage: bool = True
 

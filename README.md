@@ -158,6 +158,36 @@ uv run --frozen dynamic-robot-dataset generate \
   --output outputs/previews/f1a_r0
 ```
 
+### F3b RoboCasa kitchen previews
+
+F3b borrows only the content-pinned scene, YAML, camera, and visual-asset
+helpers from Michael's read-only `ball_roll_interception_scripts` tree. Its
+`controller.py` is neither pinned nor imported; robot motion remains the owned
+actuator-only, free-contact controller in this repository.
+
+For R1, the independent asset seed selects one of the 50 RoboCasa training
+styles. The selected layout stays fixed, while official countertop, cabinet,
+floor, and wall textures vary. Only sized sink, dishwasher, and refrigerator
+models outside the task island are admitted as collision-disabled background
+meshes. Zero-size placeholders, island appliances, and the occluding stove
+models fail closed.
+
+Generate the fixed six-case F3b review with:
+
+```bash
+export MUJOCO_GL=egl
+uv run --frozen dynamic-robot-dataset review-suite \
+  --output outputs/review/unified_acceptance_v1 \
+  --validate-only --execute \
+  --dataset-output outputs/review/f3b_robocasa_fixed_six \
+  --leaf-id F3b
+```
+
+The resulting videos are written to
+`videos/observation.images.main/chunk-000/` and
+`videos/observation.images.secondary/chunk-000/`. Episode 0 is the fixed clean
+R0 reference; episodes 1--5 are the seeded RoboCasa kitchen appearances.
+
 Complete six-case leaves produce a hash-bound
 `reviews/human_review_ledger.pending.json`; the ledger contains no fabricated
 human decisions and cannot activate a leaf until reviewers fill and validate

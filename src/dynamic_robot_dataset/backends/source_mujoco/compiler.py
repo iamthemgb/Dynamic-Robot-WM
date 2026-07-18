@@ -27,8 +27,8 @@ from .rolling_island import (
 )
 
 
-SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v4"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.13.0-review"
+SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v6"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.15.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):

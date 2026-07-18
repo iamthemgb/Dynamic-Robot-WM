@@ -28,20 +28,42 @@ from .provenance import (
 )
 
 
-ROLLING_ISLAND_SCENE_SCHEMA = "source-mujoco-rolling-island-scene/v1"
+ROLLING_ISLAND_SCENE_SCHEMA = "source-mujoco-rolling-island-scene/v3"
 ROLLING_ISLAND_SURFACE_NAME = "supported_rolling_pickup_island_top"
 ROLLING_ISLAND_WRAPPER_NAME = "rolling_island_scene"
 
 # The three layouts are the exact families demonstrated in Michael's reference
-# rollouts.  Reusing their geometry with different audited RoboCasa styles gives
-# all five fixed R1 review appearances a genuine full-sized island surface.
-_PROFILE_SCENES: Mapping[str, tuple[int, int]] = {
-    "robocasa_lab": (38, 42),
-    "robocasa_kitchen": (48, 41),
-    "robocasa_workbench": (51, 34),
-    "robocasa_storage": (38, 41),
-    "robocasa_tabletop": (48, 34),
+# rollouts.  The task-supporting layout remains fixed by review profile while
+# the independent asset RNG selects one of RoboCasa's 50 training styles.
+_PROFILE_LAYOUTS: Mapping[str, int] = {
+    "robocasa_lab": 38,
+    "robocasa_kitchen": 48,
+    "robocasa_workbench": 51,
+    "robocasa_storage": 38,
+    "robocasa_tabletop": 48,
 }
+_PROFILE_STYLE_OFFSETS: Mapping[str, int] = {
+    "robocasa_lab": 0,
+    "robocasa_kitchen": 7,
+    "robocasa_workbench": 13,
+    "robocasa_storage": 19,
+    "robocasa_tabletop": 31,
+}
+_AUDITED_STYLE_IDS = tuple(range(11, 61))
+_ASSET_SELECTION_POLICY = "fixed_audited_layout_profile_salted_asset_seed_mod_50/v2"
+_VISUAL_MODEL_ADMISSION_POLICY = "sized_off_island_sink_dishwasher_fridge/v1"
+_ADMITTED_VISUAL_MODEL_ROLES = {
+    "sink",
+    "dishwasher",
+    "fridge_bottom_freezer",
+    "fridge_french_door",
+    "fridge_side_by_side",
+}
+
+
+def _style_id_from_asset_seed(scene_profile: str, seed: int) -> int:
+    offset = _PROFILE_STYLE_OFFSETS[scene_profile]
+    return _AUDITED_STYLE_IDS[(int(seed) + offset) % len(_AUDITED_STYLE_IDS)]
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,15 +83,29 @@ class RollingIslandScenePlan:
     table_top_z_m: float
     layout_yaml_sha256: str
     style_yaml_sha256: str
+    asset_selection_seed: int
+    asset_selection_policy: str
+    visual_model_admission_policy: str
+    visual_model_xml_sha256: Mapping[str, str]
+    style_texture_path_by_material: Mapping[str, str]
+    style_texture_sha256: Mapping[str, str]
     collaborator_manifest_sha256: str
     schema_version: str = ROLLING_ISLAND_SCENE_SCHEMA
 
     def validate(self) -> None:
         if self.schema_version != ROLLING_ISLAND_SCENE_SCHEMA:
             raise ValueError("unsupported rolling-island scene schema")
-        expected = _PROFILE_SCENES.get(self.scene_profile)
-        if expected != (self.layout_id, self.style_id):
-            raise ValueError("rolling-island profile does not match its fixed layout/style")
+        expected_layout = _PROFILE_LAYOUTS.get(self.scene_profile)
+        if expected_layout != self.layout_id:
+            raise ValueError("rolling-island profile does not match its audited layout")
+        if self.asset_selection_policy != _ASSET_SELECTION_POLICY:
+            raise ValueError("rolling-island asset selection policy is unsupported")
+        if self.style_id != _style_id_from_asset_seed(
+            self.scene_profile, self.asset_selection_seed
+        ):
+            raise ValueError("rolling-island style does not match its asset RNG seed")
+        if self.visual_model_admission_policy != _VISUAL_MODEL_ADMISSION_POLICY:
+            raise ValueError("rolling-island visual-model admission policy is unsupported")
         if not self.counter_name or not self.source_counter_top_geom_name:
             raise ValueError("rolling-island scene lacks a selected counter")
         if self.collaborator_manifest_sha256 != PINNED_ROLLING_ISLAND_MANIFEST_SHA256:
@@ -98,6 +134,27 @@ class RollingIslandScenePlan:
             raise ValueError("rolling-island task surface does not end at table-top height")
         if len(self.layout_yaml_sha256) != 64 or len(self.style_yaml_sha256) != 64:
             raise ValueError("rolling-island YAML provenance is incomplete")
+        if not self.visual_model_xml_sha256:
+            raise ValueError("rolling-island scene contains no real RoboCasa visual models")
+        if any(
+            not relative or len(digest) != 64
+            for relative, digest in self.visual_model_xml_sha256.items()
+        ):
+            raise ValueError("rolling-island visual-model provenance is incomplete")
+        expected_materials = {
+            "countertop",
+            "cabinet_front",
+            "scene_floor",
+            "scene_wall",
+        }
+        if set(self.style_texture_path_by_material) != expected_materials:
+            raise ValueError("rolling-island style texture targets are incomplete")
+        if set(self.style_texture_path_by_material.values()) != set(
+            self.style_texture_sha256
+        ):
+            raise ValueError("rolling-island style texture hashes are incomplete")
+        if any(len(digest) != 64 for digest in self.style_texture_sha256.values()):
+            raise ValueError("rolling-island style texture provenance is invalid")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -107,7 +164,7 @@ class RollingIslandScenePlan:
 def _package_modules(
     dependency: RollingIslandDependencyManifest,
     robocasa: RoboCasaDependency,
-) -> tuple[Any, Any, Any]:
+) -> tuple[Any, Any, Any, Any]:
     """Load the pinned files under a private namespace and patch only asset lookup."""
 
     root = Path(dependency.source_root).resolve(strict=True)
@@ -136,7 +193,7 @@ def _package_modules(
     variants = importlib.import_module(f"{package_name}.variants")
     variants.robocasa_assets_root = audited_asset_root
     scene_builder = importlib.import_module(f"{package_name}.scene_builder")
-    return yaml_scene, variants, scene_builder
+    return yaml_scene, robocasa_assets, variants, scene_builder
 
 
 def _resolved_scene(
@@ -145,8 +202,10 @@ def _resolved_scene(
     *,
     layout_id: int,
     style_id: int,
-) -> tuple[Any, Any, Any, Any]:
-    yaml_scene, variants, scene_builder = _package_modules(dependency, robocasa)
+) -> tuple[Any, Any, Any, Any, Any]:
+    yaml_scene, robocasa_assets, variants, scene_builder = _package_modules(
+        dependency, robocasa
+    )
     # Force the deterministic YAML path.  It is the portion of Michael's scene
     # stack audited here and avoids importing a second unpinned robosuite tree.
     fixtures, style_config = yaml_scene._resolve_scene_fixtures(layout_id, style_id)
@@ -165,7 +224,7 @@ def _resolved_scene(
         backend="audited_yaml_fallback",
         native_error=None,
     )
-    return scene, yaml_scene, variants, scene_builder
+    return scene, yaml_scene, robocasa_assets, variants, scene_builder
 
 
 def _task_xy(
@@ -203,6 +262,141 @@ def _yaml_path(asset_root: Path, *, kind: str, identifier: int) -> Path:
     )
 
 
+def _admitted_visual_fixtures(scene: Any, *, counter_name: str) -> tuple[Any, ...]:
+    selected = next(fixture for fixture in scene.fixtures if fixture.name == counter_name)
+    return tuple(
+        fixture
+        for fixture in scene.fixtures
+        if fixture.group_name != selected.group_name
+        and fixture.style_role in _ADMITTED_VISUAL_MODEL_ROLES
+        and min(fixture.half_size) > 0.05
+    )
+
+
+def _style_model_manifest(
+    fixtures: Sequence[Any],
+    robocasa_assets: Any,
+    *,
+    asset_root: Path,
+) -> Mapping[str, str]:
+    """Hash every real appliance descriptor selected by the RoboCasa style."""
+
+    manifest: dict[str, str] = {}
+    for fixture in fixtures:
+        relative = robocasa_assets.style_model_rel_path(
+            fixture.style_role, fixture.style_model
+        )
+        if relative is None:
+            continue
+        path = asset_root / relative
+        if not path.is_file() and relative.startswith("lightwheel/"):
+            path = asset_root / "objects" / relative
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"RoboCasa style model is unavailable for {fixture.name}: {relative}"
+            )
+        manifest[relative] = sha256_file(path)
+    return dict(sorted(manifest.items()))
+
+
+def _style_value(style_config: Mapping[str, Any], *path: str) -> Any:
+    value: Any = style_config
+    for key in path:
+        if not isinstance(value, Mapping) or key not in value:
+            raise KeyError(f"RoboCasa style omits {'.'.join(path)}")
+        value = value[key]
+    return value
+
+
+def _first_style_token(value: Any, *, label: str) -> str:
+    if isinstance(value, str):
+        token = value
+    elif isinstance(value, Sequence) and value and isinstance(value[0], str):
+        token = value[0]
+    else:
+        raise ValueError(f"RoboCasa style {label} is not a texture token")
+    if not token:
+        raise ValueError(f"RoboCasa style {label} is empty")
+    return token
+
+
+def _registry_texture(
+    yaml_scene: Any,
+    asset_root: Path,
+    *,
+    registry_name: str,
+    token: str,
+    field: str,
+) -> str:
+    registry_path = asset_root / "fixtures" / "fixture_registry" / f"{registry_name}.yaml"
+    with registry_path.open("r", encoding="utf-8") as handle:
+        registry = yaml_scene.yaml.safe_load(handle)
+    entry = registry.get(token) if isinstance(registry, Mapping) else None
+    relative = entry.get(field) if isinstance(entry, Mapping) else None
+    if not isinstance(relative, str) or not relative:
+        raise ValueError(
+            f"RoboCasa {registry_name} token {token!r} lacks {field!r}"
+        )
+    path = asset_root / relative
+    if not path.is_file():
+        raise FileNotFoundError(f"RoboCasa style texture is unavailable: {relative}")
+    return relative
+
+
+def _style_texture_plan(
+    scene: Any,
+    yaml_scene: Any,
+    *,
+    asset_root: Path,
+) -> tuple[Mapping[str, str], Mapping[str, str]]:
+    """Resolve official RoboCasa registry textures for the fallback geometry."""
+
+    style = scene.style_config
+    counter = _first_style_token(
+        _style_value(style, "counter", "island"), label="counter.island"
+    )
+    cabinet = _first_style_token(
+        _style_value(style, "cabinet", "default"), label="cabinet.default"
+    )
+    floor = _first_style_token(_style_value(style, "floor"), label="floor")
+    wall = _first_style_token(_style_value(style, "wall"), label="wall")
+    targets = {
+        "countertop": _registry_texture(
+            yaml_scene,
+            asset_root,
+            registry_name="counter",
+            token=counter,
+            field="top_texture",
+        ),
+        "cabinet_front": _registry_texture(
+            yaml_scene,
+            asset_root,
+            registry_name="cabinet",
+            token=cabinet,
+            field="texture",
+        ),
+        "scene_floor": _registry_texture(
+            yaml_scene,
+            asset_root,
+            registry_name="floor",
+            token=floor,
+            field="texture",
+        ),
+        "scene_wall": _registry_texture(
+            yaml_scene,
+            asset_root,
+            registry_name="wall",
+            token=wall,
+            field="texture",
+        ),
+    }
+    hashes = {
+        relative: sha256_file(asset_root / relative)
+        for relative in sorted(set(targets.values()))
+    }
+    return targets, hashes
+
+
 def resolve_rolling_island_plan(
     scene_profile: str,
     *,
@@ -213,10 +407,11 @@ def resolve_rolling_island_plan(
     """Resolve Michael's selected island into a robot-local task frame."""
 
     try:
-        layout_id, style_id = _PROFILE_SCENES[scene_profile]
+        layout_id = _PROFILE_LAYOUTS[scene_profile]
     except KeyError as error:
         raise ValueError(f"no rolling-island scene for profile {scene_profile!r}") from error
-    scene, _, _, scene_builder = _resolved_scene(
+    style_id = _style_id_from_asset_seed(scene_profile, seed)
+    scene, yaml_scene, robocasa_assets, _, scene_builder = _resolved_scene(
         dependency,
         robocasa,
         layout_id=layout_id,
@@ -250,6 +445,15 @@ def resolve_rolling_island_plan(
     asset_root = Path(robocasa.asset_root).resolve(strict=True)
     layout_yaml = _yaml_path(asset_root, kind="layouts", identifier=layout_id)
     style_yaml = _yaml_path(asset_root, kind="styles", identifier=style_id)
+    admitted_visual_fixtures = _admitted_visual_fixtures(
+        scene, counter_name=counter_name
+    )
+    visual_model_manifest = _style_model_manifest(
+        admitted_visual_fixtures, robocasa_assets, asset_root=asset_root
+    )
+    style_texture_paths, style_texture_hashes = _style_texture_plan(
+        scene, yaml_scene, asset_root=asset_root
+    )
     plan = RollingIslandScenePlan(
         scene_profile=scene_profile,
         layout_id=layout_id,
@@ -270,6 +474,12 @@ def resolve_rolling_island_plan(
         table_top_z_m=table_top,
         layout_yaml_sha256=sha256_file(layout_yaml),
         style_yaml_sha256=sha256_file(style_yaml),
+        asset_selection_seed=int(seed),
+        asset_selection_policy=_ASSET_SELECTION_POLICY,
+        visual_model_admission_policy=_VISUAL_MODEL_ADMISSION_POLICY,
+        visual_model_xml_sha256=visual_model_manifest,
+        style_texture_path_by_material=style_texture_paths,
+        style_texture_sha256=style_texture_hashes,
         collaborator_manifest_sha256=dependency.manifest_sha256,
     )
     plan.validate()
@@ -310,6 +520,38 @@ def _prefix_assets(temp_root: ET.Element, target_root: ET.Element) -> None:
             geom.set("material", maps["material"][material])
         if mesh in maps["mesh"]:
             geom.set("mesh", maps["mesh"][mesh])
+
+
+def _apply_style_textures(
+    root: ET.Element,
+    plan: RollingIslandScenePlan,
+    *,
+    asset_root: Path,
+) -> None:
+    asset = root.find("asset")
+    if asset is None:
+        raise RuntimeError("rolling-island appearance lacks an asset section")
+    for material_name, relative in plan.style_texture_path_by_material.items():
+        path = (asset_root / relative).resolve(strict=True)
+        if sha256_file(path) != plan.style_texture_sha256[relative]:
+            raise RuntimeError(f"RoboCasa style texture changed after planning: {relative}")
+        texture_name = f"drd_style_{material_name}"
+        ET.SubElement(
+            asset,
+            "texture",
+            name=texture_name,
+            type="2d",
+            file=str(path),
+        )
+        material = asset.find(f"./material[@name='{material_name}']")
+        if material is None:
+            raise RuntimeError(
+                f"rolling-island appearance omitted material {material_name}"
+            )
+        material.set("texture", texture_name)
+        material.set("rgba", "1 1 1 1")
+        material.set("texrepeat", "3 3" if material_name == "countertop" else "1 1")
+        material.set("texuniform", "true")
 
 
 def _prefix_scene_names(element: ET.Element, selected_geom_name: str) -> None:
@@ -378,7 +620,7 @@ def install_rolling_island_scene(
     """Replace the old miniature room with a normalized full RoboCasa island."""
 
     plan.validate()
-    scene, _, variants, scene_builder = _resolved_scene(
+    scene, _, _, variants, scene_builder = _resolved_scene(
         dependency,
         robocasa,
         layout_id=plan.layout_id,
@@ -400,10 +642,10 @@ def install_rolling_island_scene(
     original_resolver = variants.resolve_scene
     original_style_models = variants._append_style_models
     variants.resolve_scene = lambda layout_id, style_id: scene
-    # The audited task geometry comes from RoboCasa YAML.  Imported appliance
-    # meshes are not needed for support and would require a second catalog of
-    # descendant mesh identities; retain the full layout boxes and materials.
-    variants._append_style_models = lambda root, fixtures: None
+    variants._append_style_models = lambda model_root, fixtures: original_style_models(
+        model_root,
+        _admitted_visual_fixtures(scene, counter_name=plan.counter_name),
+    )
     try:
         camera_pose = variants.add_variant_xml(
             temp_root,
@@ -416,6 +658,12 @@ def install_rolling_island_scene(
     finally:
         variants.resolve_scene = original_resolver
         variants._append_style_models = original_style_models
+
+    _apply_style_textures(
+        temp_root,
+        plan,
+        asset_root=Path(robocasa.asset_root).resolve(strict=True),
+    )
 
     world = root.find("worldbody")
     if world is None:
@@ -482,6 +730,10 @@ def install_rolling_island_scene(
             "style_id": plan.style_id,
             "counter_name": plan.counter_name,
             "scene_resolution_backend": "audited_yaml_fallback",
+            "asset_selection_policy": plan.asset_selection_policy,
+            "visual_model_admission_policy": plan.visual_model_admission_policy,
+            "visual_model_xml_count": len(plan.visual_model_xml_sha256),
+            "style_texture_count": len(plan.style_texture_sha256),
         }
     }
 

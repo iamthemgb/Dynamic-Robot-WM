@@ -3824,6 +3824,9 @@ class SourceMujocoBackend:
             "rolling_island_dependency_manifest": (
                 self.rolling_island_dependency.manifest_sha256
             ),
+            "rolling_island_robocasa_assets_py": PINNED_ROLLING_ISLAND_SOURCE_FILES[
+                "robocasa_assets.py"
+            ],
             "rolling_island_scene_builder_py": PINNED_ROLLING_ISLAND_SOURCE_FILES[
                 "scene_builder.py"
             ],

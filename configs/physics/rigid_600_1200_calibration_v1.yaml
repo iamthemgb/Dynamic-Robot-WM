@@ -22,15 +22,15 @@ admission:
 
 source_binding:
   backend: source_mujoco
-  compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v4
-  backend_version: 0.13.0-review
+  compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v6
+  backend_version: 0.15.0-review
   objective_evaluator_version: 1.4.0
   visibility_qc_schema: source-mujoco-visibility-qc/v3
   background_clearance_schema: source-mujoco-background-clearance/v4
   rebound_acceptance_schema: dynamic-robot-rebound-acceptance/v1
   backend_capability_registry: configs/backends/capabilities_v1.yaml
   external_dependency_manifest_sha256: 823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99
-  rolling_island_dependency_manifest_sha256: cf6a9ec045b8392f8ca6351b9d749021aab8973ed5ffff78499b51497d55d384
+  rolling_island_dependency_manifest_sha256: 138c74962dfa7fc3272100e643d0b995c1c8b6e6e053af9caf8523ae770738a6
   evidence_artifacts_hash_bound: false
   source_trees_read_only: true
 

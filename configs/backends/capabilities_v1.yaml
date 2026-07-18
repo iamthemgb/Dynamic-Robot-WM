@@ -8,7 +8,8 @@ backends:
     release_state: blocked
     source_hashes:
       external_dependency_manifest: 823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99
-      rolling_island_dependency_manifest: cf6a9ec045b8392f8ca6351b9d749021aab8973ed5ffff78499b51497d55d384
+      rolling_island_dependency_manifest: 138c74962dfa7fc3272100e643d0b995c1c8b6e6e053af9caf8523ae770738a6
+      rolling_island_robocasa_assets_py: 5c14d63d5f7ae4ab5717f36aff63828bddde9b6800c223dcaf38e51aafb8c5f3
       rolling_island_scene_builder_py: 61887be9dc7ee1b80076b9c2bf60ebf56474baf3db031ac57ccdca20be6ec5c7
       rolling_island_utils_py: 618720ecfe64e354311500e9c6e19852c3debf5eec8850ec6eeb0fc4b91a45c8
       rolling_island_variants_py: fce9fbaf623668f4532a48f30b67106ee1014b7bceffee7ee7d7d77e30246d40
