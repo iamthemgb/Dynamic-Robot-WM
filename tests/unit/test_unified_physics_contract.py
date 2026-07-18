@@ -670,6 +670,7 @@ def test_review_artifact_binding_derives_strict_qc_and_event_indices(
                 "schema_version": "dynamic-robot-qc-report/v2",
                 "strict_all": True,
                 "passed": True,
+                "global_failures": [],
                 "episodes": [{"episode_uuid": episode_uuid, "passed": True}],
             }
         ),
@@ -709,6 +710,21 @@ def test_review_artifact_binding_derives_strict_qc_and_event_indices(
     assert artifact.event_strip_indices["final"] == 30
 
     value = json.loads(qc.read_text(encoding="utf-8"))
+    value["passed"] = False
+    value["episodes"].append(
+        {
+            "episode_uuid": "00000000-0000-4000-8000-000000000001",
+            "passed": False,
+        }
+    )
+    qc.write_text(json.dumps(value), encoding="utf-8")
+    artifact = bind_review_artifacts(
+        tmp_path,
+        **binding_arguments,
+        unsafe_compatibility_acknowledged=True,
+    )
+    assert artifact.automated_qc_passed is True
+
     value["strict_all"] = False
     qc.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(ValueError, match="strict_all"):
@@ -742,6 +758,37 @@ def test_six_rollout_review_ledger_is_hash_bound_and_blocks_any_failure() -> Non
         tuple([*items[:2], failed_item, *items[3:]]), HEX_A, HEX_C
     )
     assert failed.activation_failures("F1a") == ["rollout 2 failed human review"]
+
+
+def test_review_ledger_gates_leaves_independently() -> None:
+    items: list[ReviewItem] = []
+    for leaf_id in ("F1a", "F1b"):
+        for index, scene in enumerate(REVIEW_SCENE_SEQUENCE):
+            artifact = _review_artifact(leaf_id, index)
+            if leaf_id == "F1b" and index == 2:
+                artifact = replace(artifact, automated_qc_passed=False)
+            review = HumanReview(
+                artifact_binding_sha256=artifact.binding_sha256,
+                reviewer="reviewer@example.org",
+                reviewed_at="2026-07-17T12:00:00+00:00",
+                checks={name: True for name in REVIEW_CHECKS},
+            )
+            items.append(
+                ReviewItem(
+                    index,
+                    scene,
+                    artifact,
+                    artifact.automated_qc_passed,
+                    review,
+                )
+            )
+
+    ledger = HumanReviewLedger(tuple(items), HEX_A, HEX_C)
+
+    assert ledger.activation_failures("F1a") == []
+    assert ledger.activation_failures("F1b") == [
+        "rollout 2 failed automated strict-all QC"
+    ]
 
 
 def test_review_rejects_signature_for_different_artifacts() -> None:

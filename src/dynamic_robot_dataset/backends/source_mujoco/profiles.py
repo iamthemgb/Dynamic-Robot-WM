@@ -13,9 +13,14 @@ from dataclasses import asdict, dataclass
 import math
 from typing import Any, Mapping
 
+from ...common.rebound import (
+    DEFAULT_REBOUND_ACCEPTANCE,
+    ReboundAcceptanceThresholds,
+)
+
 
 SOURCE_MUJOCO_PROFILE_SCHEMA = "dynamic-robot-source-mujoco-profile/v1"
-SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v6"
+SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v7"
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +35,23 @@ class RigidReviewProfile:
     width: int = 832
     height: int = 480
     wall_solref: tuple[float, float] = (0.012, 0.7)
+    table_rebound_solref: tuple[float, float] = (0.0045, 0.42)
     wall_effective_restitution: float = 0.20
+    minimum_rebound_effective_restitution: float = (
+        DEFAULT_REBOUND_ACCEPTANCE.minimum_effective_restitution
+    )
+    minimum_rebound_outgoing_normal_speed_m_s: float = (
+        DEFAULT_REBOUND_ACCEPTANCE.minimum_outgoing_normal_speed_m_s
+    )
+    minimum_rebound_normal_separation_m: float = (
+        DEFAULT_REBOUND_ACCEPTANCE.minimum_normal_separation_m
+    )
+    minimum_rebound_normal_separation_radius_fraction: float = (
+        DEFAULT_REBOUND_ACCEPTANCE.minimum_normal_separation_radius_fraction
+    )
+    minimum_rebound_separation_duration_s: float = (
+        DEFAULT_REBOUND_ACCEPTANCE.minimum_separation_duration_s
+    )
     robotiq_pad_condim: int = 3
     robotiq_pad_friction: tuple[float, float, float] = (0.9, 0.005, 0.0001)
     robotiq_pad_solref: tuple[float, float] = (0.012, 0.7)
@@ -57,7 +78,6 @@ class RigidReviewProfile:
     # a relaxed penetration or event-evidence threshold.
     reference_rate_required_case_classes: tuple[str, ...] = (
         "P0c/lower_initial_speed",
-        "P0c/higher_initial_speed",
         "F1a/franka_hand/deterministic_negative_controller_timing",
         "F1b/franka_hand/deterministic_negative_controller_timing",
     )
@@ -77,6 +97,10 @@ class RigidReviewProfile:
             raise ValueError("canonical source media must remain 832x480 at 30 Hz")
         if self.wall_solref != (0.012, 0.7):
             raise ValueError("wall restitution calibration changed without a profile version")
+        if self.table_rebound_solref != (0.0045, 0.42):
+            raise ValueError(
+                "table rebound calibration changed without a profile version"
+            )
         if self.robotiq_pad_condim != 3:
             raise ValueError("Robotiq thick pads must use condim=3")
         if self.robotiq_pad_friction != (0.9, 0.005, 0.0001):
@@ -91,16 +115,25 @@ class RigidReviewProfile:
             raise ValueError("600 Hz cannot be admitted when the 1200 Hz outcome differs")
         if self.reference_rate_required_case_classes != (
             "P0c/lower_initial_speed",
-            "P0c/higher_initial_speed",
             "F1a/franka_hand/deterministic_negative_controller_timing",
             "F1b/franka_hand/deterministic_negative_controller_timing",
         ):
             raise ValueError("reference-rate exception classes changed without calibration")
         if self.wall_effective_restitution > self.maximum_effective_restitution:
             raise ValueError("wall calibration injects contact energy")
+        if self.rebound_acceptance() != DEFAULT_REBOUND_ACCEPTANCE:
+            raise ValueError(
+                "rebound acceptance changed without an evaluator/profile version"
+            )
         numeric = (
             *self.wall_solref,
+            *self.table_rebound_solref,
             self.wall_effective_restitution,
+            self.minimum_rebound_effective_restitution,
+            self.minimum_rebound_outgoing_normal_speed_m_s,
+            self.minimum_rebound_normal_separation_m,
+            self.minimum_rebound_normal_separation_radius_fraction,
+            self.minimum_rebound_separation_duration_s,
             *self.robotiq_pad_friction,
             *self.robotiq_pad_solref,
             self.robotiq_tendon_target,
@@ -123,6 +156,28 @@ class RigidReviewProfile:
     def to_dict(self) -> dict[str, Any]:
         self.validate()
         return asdict(self)
+
+    def rebound_acceptance(self) -> ReboundAcceptanceThresholds:
+        result = ReboundAcceptanceThresholds(
+            minimum_effective_restitution=(
+                self.minimum_rebound_effective_restitution
+            ),
+            maximum_effective_restitution=self.maximum_effective_restitution,
+            minimum_outgoing_normal_speed_m_s=(
+                self.minimum_rebound_outgoing_normal_speed_m_s
+            ),
+            minimum_normal_separation_m=(
+                self.minimum_rebound_normal_separation_m
+            ),
+            minimum_normal_separation_radius_fraction=(
+                self.minimum_rebound_normal_separation_radius_fraction
+            ),
+            minimum_separation_duration_s=(
+                self.minimum_rebound_separation_duration_s
+            ),
+        )
+        result.validate()
+        return result
 
 
 RIGID_REVIEW_PROFILE = RigidReviewProfile()
@@ -169,8 +224,39 @@ def timestep_comparison_failures(
     """Apply the calibrated 600-vs-1200 admission thresholds."""
 
     failures: list[str] = []
+    # Passive rows historically used the constant display label
+    # ``passive_observation`` as ``outcome``.  That can hide a strict-QC or
+    # saved-artifact replay failure at one of the two rates.  Require semantic
+    # booleans and make missing evidence fail closed; retain the label check as
+    # an additional actuated-outcome guard.
     if coarse.get("outcome") != fine.get("outcome"):
         failures.append("outcome_changed_at_1200_hz")
+    for field, failure in (
+        ("task_success", "task_success_changed_at_1200_hz"),
+        ("physics_qc_pass", "physics_qc_changed_at_1200_hz"),
+        (
+            "saved_artifact_objective_replay_matches",
+            "saved_artifact_replay_changed_at_1200_hz",
+        ),
+    ):
+        if field not in coarse or field not in fine:
+            failures.append(f"{field}_missing")
+        elif not isinstance(coarse[field], bool) or not isinstance(fine[field], bool):
+            failures.append(f"{field}_invalid")
+        elif coarse[field] != fine[field]:
+            failures.append(failure)
+    if all(isinstance(row.get("physics_qc_pass"), bool) for row in (coarse, fine)):
+        if not bool(coarse["physics_qc_pass"] and fine["physics_qc_pass"]):
+            failures.append("physics_qc_failed_at_comparison_rate")
+    if all(
+        isinstance(row.get("saved_artifact_objective_replay_matches"), bool)
+        for row in (coarse, fine)
+    ):
+        if not bool(
+            coarse["saved_artifact_objective_replay_matches"]
+            and fine["saved_artifact_objective_replay_matches"]
+        ):
+            failures.append("saved_artifact_replay_failed_at_comparison_rate")
     try:
         event_delta = abs(
             float(coarse["key_event_time_s"]) - float(fine["key_event_time_s"])

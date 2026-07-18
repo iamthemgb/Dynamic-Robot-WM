@@ -22,7 +22,7 @@ NATIVE_VISUAL_THRESHOLDS = {
 # presence therefore uses a small, explicit segmentation floor, while the
 # key event retains the stronger 64-pixel requirement.  Final and apex frames
 # are checked separately so a 90% aggregate cannot hide their disappearance.
-SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA = "source-mujoco-visibility-qc/v1"
+SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA = "source-mujoco-visibility-qc/v2"
 SOURCE_MUJOCO_VISIBILITY_MEDIA_BINDING_SCHEMA = (
     "source-mujoco-visibility-media-binding/v1"
 )
@@ -33,6 +33,12 @@ SOURCE_MUJOCO_VISUAL_THRESHOLDS = {
     "minimum_key_event_object_area_px": 64,
     "minimum_counterpart_area_px": 16,
     "minimum_planned_counterpart_area_px": 8,
+    # Structural legs are much narrower than task surfaces, especially for
+    # the sloped P0d fixture.  Four segmentation pixels in either persisted
+    # view is enough to prove that a physical leg is rendered, while the
+    # grounded/interface geometry is established independently by compiled
+    # MuJoCo distances in the background-clearance contract.
+    "minimum_structural_support_area_px": 4,
     "maximum_underexposed_fraction": 0.35,
     "maximum_overexposed_fraction": 0.30,
 }

@@ -10,10 +10,15 @@ from .contract_v2 import (
     ObjectiveRecomputeInput,
     ObjectiveRecomputeResult,
 )
+from .rebound import (
+    DEFAULT_REBOUND_ACCEPTANCE,
+    ReboundAcceptanceThresholds,
+    measure_rebound_kinematics,
+)
 from .schema import ActualOutcomeClass
 
 
-SOURCE_OBJECTIVE_EVALUATOR_VERSION = "1.1.0"
+SOURCE_OBJECTIVE_EVALUATOR_VERSION = "1.3.0"
 SOURCE_OBJECTIVE_EVALUATOR_IDS = (
     "passive_freeflight_v1",
     "passive_projectile_v1",
@@ -23,6 +28,33 @@ SOURCE_OBJECTIVE_EVALUATOR_IDS = (
     "rigid_projectile_interception_v2",
     "rigid_rebound_v2",
 )
+
+PASSIVE_EVENT_TASK_SURFACE_CONTACT = "task_surface_contact"
+PASSIVE_EVENT_PROJECTILE_APEX = "projectile_apex"
+
+_PASSIVE_EVENT_BY_EVALUATOR = {
+    "passive_freeflight_v1": PASSIVE_EVENT_TASK_SURFACE_CONTACT,
+    "passive_projectile_v1": PASSIVE_EVENT_PROJECTILE_APEX,
+    "passive_rebound_v1": PASSIVE_EVENT_TASK_SURFACE_CONTACT,
+}
+_PASSIVE_EVENT_BY_MOTION_KIND = {
+    "passive_freefall": PASSIVE_EVENT_TASK_SURFACE_CONTACT,
+    "passive_projectile": PASSIVE_EVENT_PROJECTILE_APEX,
+    "passive_table_bounce": PASSIVE_EVENT_TASK_SURFACE_CONTACT,
+    "passive_wall_rebound": PASSIVE_EVENT_TASK_SURFACE_CONTACT,
+}
+
+
+def passive_event_semantics_for_evaluator(evaluator_id: str) -> str | None:
+    """Return the persisted event definition owned by a passive evaluator."""
+
+    return _PASSIVE_EVENT_BY_EVALUATOR.get(str(evaluator_id))
+
+
+def passive_event_semantics_for_motion_kind(motion_kind: str) -> str | None:
+    """Return the same persisted event definition from a compiled motion kind."""
+
+    return _PASSIVE_EVENT_BY_MOTION_KIND.get(str(motion_kind))
 
 
 def _vector(row: Mapping[str, Any], name: str) -> tuple[float, ...] | None:
@@ -85,6 +117,7 @@ def select_source_key_event(
     event_rows: Sequence[Mapping[str, Any]],
     passive: bool,
     contact_time_tolerance_s: float = 1e-9,
+    passive_event_semantics: str | None = None,
 ) -> dict[str, Any]:
     """Select the same persisted event for objective replay and visibility QC."""
 
@@ -94,6 +127,104 @@ def select_source_key_event(
         raise ValueError("source key-event name cannot be empty")
     if not math.isfinite(planned_time) or planned_time < 0.0:
         raise ValueError("source key-event time is invalid")
+    if passive and passive_event_semantics == PASSIVE_EVENT_TASK_SURFACE_CONTACT:
+        surface_rows = [
+            row
+            for row in event_rows
+            if row.get("contact_category") == "task_surface"
+            and isinstance(row.get("timestamp"), (int, float))
+            and not isinstance(row.get("timestamp"), bool)
+            and math.isfinite(float(row["timestamp"]))
+        ]
+        if surface_rows:
+            measured_time = min(float(row["timestamp"]) for row in surface_rows)
+            counterpart_ids = sorted(
+                {
+                    int(row["counterpart_geom_id"])
+                    for row in surface_rows
+                    if abs(float(row["timestamp"]) - measured_time)
+                    <= float(contact_time_tolerance_s) + 1e-12
+                    and isinstance(row.get("counterpart_geom_id"), int)
+                    and not isinstance(row.get("counterpart_geom_id"), bool)
+                    and int(row["counterpart_geom_id"]) >= 0
+                }
+            )
+            return {
+                "key_event_name": "task_surface_contact_onset",
+                "key_event_time_s": measured_time,
+                "key_event_source": "persisted_task_surface_contact",
+                "physical_contact_applicable": True,
+                "contact_counterpart_geom_ids": counterpart_ids,
+            }
+        return {
+            "key_event_name": planned_name,
+            "key_event_time_s": planned_time,
+            "key_event_source": "planned_source_scenario_event",
+            "physical_contact_applicable": False,
+            "contact_counterpart_geom_ids": [],
+        }
+
+    if passive and passive_event_semantics == PASSIVE_EVENT_PROJECTILE_APEX:
+        persisted_samples: list[tuple[float, float, float, str]] = []
+        for row in state_rows:
+            timestamp = row.get("timestamp")
+            position = _vector(row, "object.position")
+            velocity = _vector(row, "object.linear_velocity")
+            if (
+                not isinstance(timestamp, (int, float))
+                or isinstance(timestamp, bool)
+                or not math.isfinite(float(timestamp))
+                or position is None
+                or len(position) < 3
+                or velocity is None
+                or len(velocity) < 3
+            ):
+                continue
+            persisted_samples.append(
+                (
+                    float(timestamp),
+                    float(position[2]),
+                    float(velocity[2]),
+                    str(row.get("object.motion_mode") or row.get("motion_mode") or ""),
+                )
+            )
+
+        free_flight = [
+            sample[:3] for sample in persisted_samples if sample[3] == "free_flight"
+        ]
+        candidates = [sample[:3] for sample in persisted_samples]
+        samples = sorted(free_flight or candidates, key=lambda value: value[0])
+        measured_time: float | None = None
+        for first, second in zip(samples, samples[1:]):
+            first_time, _, first_vz = first
+            second_time, _, second_vz = second
+            if second_time <= first_time:
+                continue
+            if first_vz == 0.0:
+                measured_time = first_time
+                break
+            if first_vz > 0.0 and second_vz <= 0.0:
+                fraction = first_vz / (first_vz - second_vz)
+                measured_time = first_time + fraction * (second_time - first_time)
+                break
+        if measured_time is None and samples:
+            measured_time = max(samples, key=lambda value: (value[1], -value[0]))[0]
+        if measured_time is not None:
+            return {
+                "key_event_name": "projectile_apex",
+                "key_event_time_s": measured_time,
+                "key_event_source": "persisted_free_flight_apex",
+                "physical_contact_applicable": False,
+                "contact_counterpart_geom_ids": [],
+            }
+        return {
+            "key_event_name": planned_name,
+            "key_event_time_s": planned_time,
+            "key_event_source": "planned_source_scenario_event",
+            "physical_contact_applicable": False,
+            "contact_counterpart_geom_ids": [],
+        }
+
     if passive:
         return {
             "key_event_name": planned_name,
@@ -184,6 +315,38 @@ def _invalid_result(
     )
 
 
+def _bound_rebound_acceptance(
+    source_spec: Mapping[str, Any],
+) -> tuple[ReboundAcceptanceThresholds, float]:
+    """Validate the version-owned rebound contract before reading rollout rows.
+
+    Scenario/config incompatibility is independent of whether a persisted
+    rollout is complete.  Checking it up front keeps a missing or truncated
+    state table from masking an unbound evaluator threshold change.
+    """
+
+    physics = source_spec.get("physics")
+    if not isinstance(physics, Mapping):
+        raise ValueError("persisted rebound evaluator lacks scenario physics")
+    raw_thresholds = physics.get("rebound_acceptance")
+    if not isinstance(raw_thresholds, Mapping):
+        raise ValueError(
+            "persisted rebound evaluator lacks bound acceptance thresholds"
+        )
+    thresholds = ReboundAcceptanceThresholds.from_dict(raw_thresholds)
+    if thresholds != DEFAULT_REBOUND_ACCEPTANCE:
+        raise ValueError(
+            "persisted rebound acceptance differs from evaluator v1.3.0"
+        )
+    try:
+        object_radius_m = float(physics["object_radius_m"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("persisted rebound evaluator lacks object radius") from error
+    if not math.isfinite(object_radius_m) or object_radius_m <= 0.0:
+        raise ValueError("persisted rebound evaluator has invalid object radius")
+    return thresholds, object_radius_m
+
+
 def evaluate_source_rows(
     *,
     evaluator_id: str,
@@ -197,6 +360,11 @@ def evaluate_source_rows(
 
     if evaluator_id not in SOURCE_OBJECTIVE_EVALUATOR_IDS:
         raise ValueError(f"unsupported source objective evaluator {evaluator_id!r}")
+    rebound_contract = (
+        _bound_rebound_acceptance(source_spec)
+        if evaluator_id == "passive_rebound_v1"
+        else None
+    )
     if not state_rows:
         raise ValueError("source objective replay requires persisted state rows")
     planned_key_event_name, planned_key_event_time_s = _key_event(source_spec)
@@ -217,6 +385,9 @@ def evaluate_source_rows(
         event_rows=event_rows,
         passive=evaluator_id.startswith("passive_"),
         contact_time_tolerance_s=_contact_time_tolerance(source_spec),
+        passive_event_semantics=passive_event_semantics_for_evaluator(
+            evaluator_id
+        ),
     )
     if invalid_penetration:
         return _invalid_result(
@@ -246,10 +417,23 @@ def evaluate_source_rows(
             str(row.get("object.motion_mode") or row.get("motion_mode")) == "free_flight"
             for row in state_rows
         )
+        rebound_evidence: Mapping[str, Any] = {}
         if evaluator_id in {"passive_freeflight_v1", "passive_projectile_v1"}:
             objective_valid = finite_state and free_flight_samples >= 2
         elif evaluator_id == "passive_rebound_v1":
-            objective_valid = finite_state and bool(surface_contacts)
+            assert rebound_contract is not None
+            thresholds, object_radius_m = rebound_contract
+            rebound_evidence = measure_rebound_kinematics(
+                state_rows,
+                event_rows,
+                object_radius_m=object_radius_m,
+                thresholds=thresholds,
+            )
+            objective_valid = bool(
+                finite_state
+                and surface_contacts
+                and rebound_evidence["rebound_acceptance_pass"]
+            )
         else:
             objective_valid = finite_state and bool(surface_contacts) and any(
                 math.hypot(*(_vector(row, "object.linear_velocity") or (0.0, 0.0))[:2])
@@ -262,6 +446,11 @@ def evaluate_source_rows(
             "free_flight_sample_count": free_flight_samples,
             "task_surface_contact_count": len(surface_contacts),
             "passive_observation_valid": objective_valid,
+            **(
+                {"rebound": dict(rebound_evidence)}
+                if rebound_evidence
+                else {}
+            ),
             "penetration_within_limits": True,
             "planned_key_event_name": planned_key_event_name,
             "planned_key_event_time_s": planned_key_event_time_s,
@@ -391,10 +580,14 @@ def register_source_objective_evaluators() -> None:
 
 
 __all__ = [
+    "PASSIVE_EVENT_PROJECTILE_APEX",
+    "PASSIVE_EVENT_TASK_SURFACE_CONTACT",
     "SOURCE_OBJECTIVE_EVALUATOR_IDS",
     "SOURCE_OBJECTIVE_EVALUATOR_VERSION",
     "evaluate_source_persisted",
     "evaluate_source_rows",
+    "passive_event_semantics_for_evaluator",
+    "passive_event_semantics_for_motion_kind",
     "register_source_objective_evaluators",
     "select_source_key_event",
 ]

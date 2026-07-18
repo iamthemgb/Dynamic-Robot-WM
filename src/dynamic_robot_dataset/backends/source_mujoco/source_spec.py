@@ -182,6 +182,29 @@ def _fixtures(mujoco: Any, compiled: CompiledSourceModel, scenario: SourceMujoco
                     "half_size_m": list(surface.half_size_m),
                     "friction": list(surface.friction),
                     "solref": list(surface.solref),
+                    "expected_task_contact": surface.expected_task_contact,
+                    "fixture_class": (
+                        "structural_support"
+                        if not surface.expected_task_contact
+                        else "task_fixture"
+                    ),
+                    "supports_fixture_id": surface.supports_fixture_id,
+                    "grounded_plane_z_m": surface.grounded_plane_z_m,
+                    "support_interface_maximum_mismatch_m": (
+                        surface.support_interface_maximum_mismatch_m
+                    ),
+                    "support_interface_tolerance_m": (
+                        0.002 if not surface.expected_task_contact else None
+                    ),
+                    "contact_material_profile": (
+                        "owned_grounded_structural_support_v1"
+                        if not surface.expected_task_contact
+                        else "p0c_table_rebound_v1"
+                        if surface.name == "supported_bounce_table"
+                        else "wall_rebound_v1"
+                        if surface.role == "wall"
+                        else "hard_support_v1"
+                    ),
                     "collision_enabled": True,
                 },
             )
@@ -321,7 +344,32 @@ def prepare_review_case(
         mujoco, compiled
     )
     fixture_clearance_static_rows = _fixture_clearance_static_rows(
-        compiled, scenario
+        mujoco, compiled, scenario
+    )
+    structural_support_fixture_ids = sorted(
+        str(row["fixture_id"])
+        for row in fixture_clearance_static_rows
+        if row["fixture_class"] == "structural_support"
+    )
+    structural_support_geom_ids = sorted(
+        int(row["geom_id"])
+        for row in fixture_clearance_static_rows
+        if row["fixture_class"] == "structural_support"
+    )
+    structural_support_station_by_geom = {
+        str(int(row["geom_id"])): str(row["fixture_id"]).rsplit("_y", 1)[0]
+        for row in fixture_clearance_static_rows
+        if row["fixture_class"] == "structural_support"
+    }
+    task_contact_fixture_ids = sorted(
+        str(row["fixture_id"])
+        for row in fixture_clearance_static_rows
+        if row["expected_task_contact"] is True
+    )
+    task_contact_geom_ids = sorted(
+        int(row["geom_id"])
+        for row in fixture_clearance_static_rows
+        if row["expected_task_contact"] is True
     )
     tool_visibility_topology = _compiled_tool_visibility_topology(compiled)
     spec = SourceScenarioSpec(
@@ -348,6 +396,12 @@ def prepare_review_case(
             "randomization_level": scenario.randomization_level,
             "requires_real_robocasa": scenario.requires_real_robocasa,
             "passive_variation_profile": scenario.passive_variation_profile,
+            "rebound_acceptance": (
+                RIGID_REVIEW_PROFILE.rebound_acceptance().to_dict()
+                if "rebound" in scenario.motion_kind
+                or "bounce" in scenario.motion_kind
+                else None
+            ),
             "relocated_visual_backgrounds": [
                 dict(value) for value in compiled.relocated_visual_backgrounds
             ],
@@ -372,6 +426,13 @@ def prepare_review_case(
             "fixture_clearance_static_row_count": len(
                 fixture_clearance_static_rows
             ),
+            "structural_support_fixture_ids": structural_support_fixture_ids,
+            "structural_support_geom_ids": structural_support_geom_ids,
+            "structural_support_station_by_geom": (
+                structural_support_station_by_geom
+            ),
+            "task_contact_fixture_ids": task_contact_fixture_ids,
+            "task_contact_geom_ids": task_contact_geom_ids,
             "tool_visibility_topology": tool_visibility_topology,
             "tool_visibility_topology_sha256": sha256_json(
                 tool_visibility_topology

@@ -28,9 +28,21 @@ def test_rigid_profile_evidence_is_versioned_source_bound_and_fail_closed() -> N
 
     assert evidence["schema_version"] == "dynamic-robot-rigid-profile-calibration/v1"
     assert evidence["contract_version"] == "dynamic-robot-dataset/v2"
+    assert evidence["calibration_id"].endswith("_v7")
+    assert evidence["current_runtime_profile"].endswith("-v7")
     assert evidence["evidence_status"] == "exploratory_unbound"
     assert evidence["release_state"] == "blocked"
     assert evidence["release_eligible"] is False
+    assert evidence["source_binding"]["compiled_scenario_schema"].endswith("/v3")
+    assert evidence["source_binding"]["backend_version"] == "0.7.0-review"
+    assert evidence["source_binding"]["objective_evaluator_version"] == "1.3.0"
+    assert evidence["source_binding"]["visibility_qc_schema"].endswith("/v2")
+    assert evidence["source_binding"]["background_clearance_schema"].endswith(
+        "/v3"
+    )
+    assert evidence["source_binding"]["rebound_acceptance_schema"].endswith(
+        "/v1"
+    )
     assert evidence["admission"]["admitted"] is False
     assert evidence["admission"]["preferred_profile"] is None
     assert evidence["admission"]["cheaper_profile_admitted"] is False
@@ -41,6 +53,75 @@ def test_rigid_profile_evidence_is_versioned_source_bound_and_fail_closed() -> N
         == source_mujoco["source_hashes"]["external_dependency_manifest"]
     )
     assert all(not profile["admitted"] for profile in evidence["profiles"].values())
+
+
+def test_v7_table_rebound_repair_is_same_seed_bounded_and_not_admitted() -> None:
+    evidence = _mapping(EVIDENCE_PATH)
+    thresholds = evidence["acceptance_thresholds"]
+    repair = evidence["measurements"]["p0c_table_rebound_v7_repair"]
+
+    assert repair["runtime_profile"].endswith("-v7")
+    assert repair["backend_version"] == "0.7.0-review"
+    assert repair["fixed_review_case_ids"] == [
+        "P0c-review-00",
+        "P0c-review-02",
+        "P0c-review-04",
+    ]
+    assert repair["fixed_seeds_preserved"] is True
+    assert repair["table_contact"]["solref"] == [0.0045, 0.42]
+    assert repair["table_contact"]["normal_profile_fixed_across_fixed_cases"] is True
+    assert repair["table_contact"]["contact_parameter_counterfactual"] == (
+        "tangential_friction_only"
+    )
+    assert repair["online_and_persisted_replay_share_thresholds"] is True
+    assert repair["admission_claimed"] is False
+
+    cases = repair["fixed_compiled_rate_measurements"]
+    assert [case["review_case_id"] for case in cases] == repair[
+        "fixed_review_case_ids"
+    ]
+    assert [case["simulation_hz"] for case in cases] == [600, 600, 600]
+    required_separation = max(
+        thresholds["minimum_rebound_normal_separation_m"],
+        thresholds["minimum_rebound_normal_separation_radius_fraction"]
+        * 0.0245,
+    )
+    for case in cases:
+        assert (
+            case["measured_effective_restitution"]
+            >= thresholds["minimum_rebound_effective_restitution"]
+        )
+        assert (
+            case["measured_effective_restitution"]
+            <= thresholds["maximum_measured_effective_restitution"]
+        )
+        assert (
+            case["outgoing_normal_velocity_m_s"]
+            >= thresholds["minimum_rebound_outgoing_normal_speed_m_s"]
+        )
+        assert case["maximum_normal_separation_m"] >= required_separation
+        assert (
+            case["separation_duration_s"]
+            >= thresholds["minimum_rebound_separation_duration_s"]
+        )
+        assert (
+            case["maximum_object_task_surface_penetration_m"]
+            <= thresholds["maximum_object_task_surface_penetration_m"]
+        )
+        assert case["rebound_acceptance_pass"] is True
+
+    comparisons = repair["non_rendered_timestep_halving_measurements"]
+    assert [case["review_case_id"] for case in comparisons] == repair[
+        "fixed_review_case_ids"
+    ]
+    for case in comparisons:
+        assert case["rigid_600hz_physics_qc_pass"] is True
+        assert case["rigid_1200hz_physics_qc_pass"] is True
+        assert case["rigid_600hz_saved_artifact_replay_pass"] is True
+        assert case["rigid_1200hz_saved_artifact_replay_pass"] is True
+        assert case["outcome_match"] is True
+        assert case["absolute_event_time_shift_s"] <= 1.0 / 30.0
+        assert case["key_event_position_shift_m"] <= 0.01
 
 
 def test_rigid_profiles_are_exact_600_and_1200_hz_candidates() -> None:
@@ -144,7 +225,6 @@ def test_reference_rate_exceptions_preserve_strict_thresholds() -> None:
     cases = {value["review_case_id"]: value for value in measurement["cases"]}
     assert set(cases) == {
         "P0c-review-01",
-        "P0c-review-02",
         "F1a-review-04",
         "F1b-review-04",
     }
@@ -152,8 +232,6 @@ def test_reference_rate_exceptions_preserve_strict_thresholds() -> None:
         case = cases[case_id]
         assert case["rigid_600hz_observation"] > case["threshold"]
         assert case["rigid_1200hz_observation"] <= case["threshold"]
-    assert cases["P0c-review-02"]["rigid_600hz_observation"] is False
-    assert cases["P0c-review-02"]["rigid_1200hz_observation"] is True
 
 
 def test_persisted_artifact_repair_keeps_the_failed_seed() -> None:

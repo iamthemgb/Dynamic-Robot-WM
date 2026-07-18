@@ -121,6 +121,7 @@ def _strict_binding_inputs(tmp_path: Path):
                 "schema_version": "dynamic-robot-qc-report/v2",
                 "strict_all": True,
                 "passed": True,
+                "global_failures": [],
                 "episodes": [
                     {
                         "episode_uuid": case.episode_uuid,
@@ -221,6 +222,59 @@ def test_strict_binder_derives_every_identity_and_event_time(tmp_path: Path) -> 
         "post_0p3_s": 24,
         "final": 30,
     }
+
+
+def test_strict_binder_uses_episode_qc_when_another_leaf_fails(
+    tmp_path: Path,
+) -> None:
+    value = _strict_binding_inputs(tmp_path)
+    qc = json.loads(value["qc_path"].read_text(encoding="utf-8"))
+    qc["passed"] = False
+    qc["episodes"].append(
+        {
+            "episode_uuid": "00000000-0000-4000-8000-000000000001",
+            "episode_index": 6,
+            "passed": False,
+            "hard_failures": ["failure from another leaf"],
+        }
+    )
+    value["qc_path"].write_text(
+        json.dumps(qc, sort_keys=True), encoding="utf-8"
+    )
+
+    artifact = _bind(value)
+
+    assert artifact.automated_qc_passed is True
+
+
+def test_strict_binder_keeps_dataset_global_failures_fail_closed(
+    tmp_path: Path,
+) -> None:
+    value = _strict_binding_inputs(tmp_path)
+    qc = json.loads(value["qc_path"].read_text(encoding="utf-8"))
+    qc["passed"] = False
+    qc["global_failures"] = ["finalized metadata binding changed"]
+    value["qc_path"].write_text(
+        json.dumps(qc, sort_keys=True), encoding="utf-8"
+    )
+
+    artifact = _bind(value)
+
+    assert artifact.automated_qc_passed is False
+
+
+def test_strict_binder_rejects_missing_global_failure_evidence(
+    tmp_path: Path,
+) -> None:
+    value = _strict_binding_inputs(tmp_path)
+    qc = json.loads(value["qc_path"].read_text(encoding="utf-8"))
+    del qc["global_failures"]
+    value["qc_path"].write_text(
+        json.dumps(qc, sort_keys=True), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="global failure evidence"):
+        _bind(value)
 
 
 def test_strict_binder_rejects_replacement_seed_source_pin_and_evaluator(

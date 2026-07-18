@@ -19,12 +19,16 @@ from ..actuator_only import ACTION_FIELD, ACTION_SEMANTICS, ControlObservation
 from ...common.cameras import CameraCalibration
 from ...common.embodiments import FRANKA_HAND, ROBOTIQ_2F85_THICK_PAD
 from ...common.hashing import combined_manifest_hash, sha256_file, sha256_json
-from ...common.source_evaluators import select_source_key_event
+from ...common.source_evaluators import (
+    passive_event_semantics_for_motion_kind,
+    select_source_key_event,
+)
 from ...common.physics_contract import (
     STRICT_RIGID_QC_SCHEMA,
     rigid_task_evidence_failures,
     strict_contact_penetration_check,
 )
+from ...common.rebound import measure_rebound_kinematics
 from ...common.synchronization import (
     fixed_duration_frame_timestamps,
     validate_persisted_render_schedule,
@@ -72,7 +76,7 @@ ROBOTIQ_OPEN_Q = np.array(
 )
 
 SOURCE_MUJOCO_BACKGROUND_CLEARANCE_SCHEMA = (
-    "source-mujoco-background-clearance/v2"
+    "source-mujoco-background-clearance/v3"
 )
 SOURCE_MUJOCO_TOOL_VISIBILITY_TOPOLOGY_SCHEMA = (
     "source-mujoco-tool-visibility-topology/v1"
@@ -450,6 +454,11 @@ def _geom_name(mujoco: Any, model: Any, geom_id: int) -> str:
 def _contact_category(other: int, name: str, ids: Any) -> str:
     if other in ids.left_gripper_geom_ids or other in ids.right_gripper_geom_ids:
         return "gripper"
+    if other in ids.structural_support_geom_ids:
+        # Structural legs are physical fixtures but can never satisfy a task
+        # contact predicate.  Their complete object-sweep clearance is checked
+        # independently below and any contact remains visible in the event log.
+        return "structural_support"
     if other in ids.surface_geom_ids.values() or any(
         token in name.lower() for token in ("floor", "table", "wall", "ramp", "surface")
     ):
@@ -810,6 +819,64 @@ def _compiled_tool_visibility_topology(
     }
 
 
+def _tool_render_geom_ids_by_side(
+    topology: Mapping[str, Any],
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Resolve visible finger geometry without changing contact identities.
+
+    The canonical left/right geom IDs are collision/contact identities.  The
+    Robotiq thick pads are intentionally rendered by separate visual geoms on
+    the same rigid finger bodies, so masking only the collision IDs reports a
+    physically visible finger as absent.  The complete compiled geom/body map
+    is already hash-bound in ``SourceScenarioSpec``; derive each render mask
+    from that immutable topology while retaining the collision IDs for event
+    and bilateral-contact replay.
+    """
+
+    raw_body_map = topology.get("tool_geom_body_ids")
+    if not isinstance(raw_body_map, Mapping):
+        raise RuntimeError("compiled tool visibility topology lacks its geom/body map")
+    left_body_id = topology.get("left_tool_body_id")
+    right_body_id = topology.get("right_tool_body_id")
+    left_contact_ids = topology.get("left_tool_geom_ids")
+    right_contact_ids = topology.get("right_tool_geom_ids")
+    if left_body_id is None and right_body_id is None:
+        return (), ()
+    if (
+        not isinstance(left_body_id, int)
+        or isinstance(left_body_id, bool)
+        or not isinstance(right_body_id, int)
+        or isinstance(right_body_id, bool)
+        or not isinstance(left_contact_ids, Sequence)
+        or isinstance(left_contact_ids, (str, bytes, bytearray))
+        or not isinstance(right_contact_ids, Sequence)
+        or isinstance(right_contact_ids, (str, bytes, bytearray))
+    ):
+        raise RuntimeError("compiled tool visibility topology has invalid side identities")
+    try:
+        body_map = {
+            int(geom_id): int(body_id)
+            for geom_id, body_id in raw_body_map.items()
+        }
+        left_contacts = {int(value) for value in left_contact_ids}
+        right_contacts = {int(value) for value in right_contact_ids}
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(
+            "compiled tool visibility topology has non-integer identities"
+        ) from error
+    left = sorted(
+        left_contacts
+        | {geom_id for geom_id, body_id in body_map.items() if body_id == left_body_id}
+    )
+    right = sorted(
+        right_contacts
+        | {geom_id for geom_id, body_id in body_map.items() if body_id == right_body_id}
+    )
+    if not left_contacts.issubset(left) or not right_contacts.issubset(right):
+        raise RuntimeError("compiled tool render masks lost contact identities")
+    return tuple(left), tuple(right)
+
+
 def _measured_visibility_key_event(
     scenario: SourceMujocoCompiledScenario,
     state_rows: Sequence[Mapping[str, Any]],
@@ -832,17 +899,23 @@ def _measured_visibility_key_event(
         event_rows=contact_rows,
         passive=scenario.embodiment == "no_robot",
         contact_time_tolerance_s=1.0 / scenario.simulation_hz,
+        passive_event_semantics=passive_event_semantics_for_motion_kind(
+            scenario.motion_kind
+        ),
     )
     physical_contact_applicable = selected["physical_contact_applicable"]
     counterpart_geom_ids = list(selected["contact_counterpart_geom_ids"])
-    if scenario.embodiment == "no_robot":
+    if (
+        scenario.embodiment == "no_robot"
+        and selected["key_event_source"] == "planned_source_scenario_event"
+    ):
         nearby_fixture_contacts = [
             row
             for row in contact_rows
             if row.get("contact_category") == "task_surface"
             and isinstance(row.get("timestamp"), (int, float))
             and not isinstance(row.get("timestamp"), bool)
-            and abs(float(row["timestamp"]) - planned_time_s)
+            and abs(float(row["timestamp"]) - float(selected["key_event_time_s"]))
             <= 1.0 / scenario.video_hz + 1e-12
         ]
         physical_contact_applicable = bool(nearby_fixture_contacts)
@@ -971,6 +1044,9 @@ def _source_visibility_qc(
     frames: Mapping[str, Sequence[np.ndarray]],
     segmentation_observations: Mapping[str, Sequence[Mapping[str, Any]]],
     key_event: Mapping[str, Any],
+    *,
+    structural_support_geom_ids: Sequence[int] = (),
+    structural_support_station_by_geom: Mapping[int, str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate rendered target and applicable counterpart visibility.
 
@@ -988,6 +1064,19 @@ def _source_visibility_qc(
     physical_contact_applicable = bool(
         key_event.get("physical_contact_applicable") is True
     )
+    support_geom_ids = sorted({int(value) for value in structural_support_geom_ids})
+    support_station_by_geom = {
+        int(geom_id): str(station_id)
+        for geom_id, station_id in (structural_support_station_by_geom or {}).items()
+    }
+    if set(support_station_by_geom) != set(support_geom_ids) or any(
+        not value for value in support_station_by_geom.values()
+    ):
+        if support_geom_ids:
+            raise RuntimeError(
+                "structural support visibility lacks its frame-station identities"
+            )
+    support_station_ids = sorted(set(support_station_by_geom.values()))
     streams_complete = bool(expected_count) and all(
         len(frames.get(name, ())) == expected_count
         and len(segmentation_observations.get(name, ())) == expected_count
@@ -1044,6 +1133,29 @@ def _source_visibility_qc(
         "maximum_underexposed_fraction": 1.0,
         "maximum_overexposed_fraction": 1.0,
         "thresholds": thresholds,
+        "structural_support_visibility": {
+            "applicable": bool(support_geom_ids),
+            "evaluated": False,
+            "support_geom_ids": support_geom_ids,
+            "minimum_visible_area_px": int(
+                thresholds["minimum_structural_support_area_px"]
+            ),
+            "maximum_pixel_count_by_geom": {
+                str(geom_id): 0 for geom_id in support_geom_ids
+            },
+            "visible_geom_ids_by_view": {
+                name: [] for name in expected_views
+            },
+            "visible_geom_ids_any_view": [],
+            "all_supports_visible_in_any_view": not support_geom_ids,
+            "support_station_by_geom": {
+                str(geom_id): support_station_by_geom[geom_id]
+                for geom_id in support_geom_ids
+            },
+            "support_station_ids": support_station_ids,
+            "visible_support_station_ids": [],
+            "all_support_stations_visible": not support_station_ids,
+        },
         "checkpoints": {},
         "views": {},
     }
@@ -1261,6 +1373,64 @@ def _source_visibility_qc(
             "checkpoints": view_checkpoints,
         }
 
+    support_threshold = int(thresholds["minimum_structural_support_area_px"])
+    maximum_support_pixels = {geom_id: 0 for geom_id in support_geom_ids}
+    visible_supports_by_view: dict[str, list[int]] = {}
+    for name in expected_views:
+        frames_for_view = result["views"][name]["frames"]
+        visible_in_view: list[int] = []
+        for geom_id in support_geom_ids:
+            maximum = max(
+                (
+                    int(frame["geom_pixel_counts"].get(str(geom_id), 0))
+                    for frame in frames_for_view
+                ),
+                default=0,
+            )
+            maximum_support_pixels[geom_id] = max(
+                maximum_support_pixels[geom_id], maximum
+            )
+            if maximum >= support_threshold:
+                visible_in_view.append(geom_id)
+        visible_supports_by_view[name] = visible_in_view
+    visible_supports_any_view = sorted(
+        {
+            geom_id
+            for values in visible_supports_by_view.values()
+            for geom_id in values
+        }
+    )
+    visible_support_station_ids = sorted(
+        {
+            support_station_by_geom[geom_id]
+            for geom_id in visible_supports_any_view
+        }
+    )
+    result["structural_support_visibility"] = {
+        "applicable": bool(support_geom_ids),
+        "evaluated": True,
+        "support_geom_ids": support_geom_ids,
+        "minimum_visible_area_px": support_threshold,
+        "maximum_pixel_count_by_geom": {
+            str(geom_id): maximum_support_pixels[geom_id]
+            for geom_id in support_geom_ids
+        },
+        "visible_geom_ids_by_view": visible_supports_by_view,
+        "visible_geom_ids_any_view": visible_supports_any_view,
+        "all_supports_visible_in_any_view": (
+            visible_supports_any_view == support_geom_ids
+        ),
+        "support_station_by_geom": {
+            str(geom_id): support_station_by_geom[geom_id]
+            for geom_id in support_geom_ids
+        },
+        "support_station_ids": support_station_ids,
+        "visible_support_station_ids": visible_support_station_ids,
+        "all_support_stations_visible": (
+            visible_support_station_ids == support_station_ids
+        ),
+    }
+
     visible_any_view_by_frame = [
         any(per_view_presence[name][index] for name in expected_views)
         for index in range(expected_count)
@@ -1453,85 +1623,15 @@ def _free_flight_energy_drift(
 def _restitution_evidence(
     rows: Sequence[Mapping[str, Any]],
     contacts: Sequence[Mapping[str, Any]],
+    *,
+    object_radius_m: float = 0.0245,
 ) -> dict[str, Any]:
-    surface = [row for row in contacts if row.get("contact_category") == "task_surface"]
-    if not surface:
-        return {
-            "applicable": False,
-            "separated_pre_post_contact_samples": False,
-            "measured_contact_normal": False,
-            "effective_restitution": None,
-            "no_unexplained_contact_energy_gain": False,
-        }
-    event_time = min(float(row["timestamp"]) for row in surface)
-    event_rows = [row for row in surface if abs(float(row["timestamp"]) - event_time) < 1e-9]
-    normal = np.mean(
-        np.asarray([row["normal_world"] for row in event_rows], dtype=np.float64), axis=0
+    return measure_rebound_kinematics(
+        rows,
+        contacts,
+        object_radius_m=object_radius_m,
+        thresholds=RIGID_REVIEW_PROFILE.rebound_acceptance(),
     )
-    norm = float(np.linalg.norm(normal))
-    if norm <= 1e-12:
-        return {
-            "applicable": True,
-            "separated_pre_post_contact_samples": False,
-            "measured_contact_normal": False,
-            "effective_restitution": None,
-            "no_unexplained_contact_energy_gain": False,
-        }
-    normal /= norm
-    incoming = next(
-        (
-            row
-            for row in reversed(rows)
-            if float(row["timestamp"]) < event_time
-            and int(row["contact.count"]) == 0
-        ),
-        None,
-    )
-    outgoing = next(
-        (
-            row
-            for row in rows
-            if float(row["timestamp"]) > event_time
-            and int(row["contact.count"]) == 0
-        ),
-        None,
-    )
-    if incoming is None or outgoing is None:
-        final_velocity = np.asarray(rows[-1]["object.linear_velocity"], dtype=np.float64)
-        initial_supported_contact = bool(
-            incoming is None
-            and rows
-            and abs(event_time - float(rows[0]["timestamp"])) <= 1e-9
-            and int(rows[0]["contact.count"]) > 0
-        )
-        settled_static_contact = bool(
-            (incoming is not None or initial_supported_contact)
-            and int(rows[-1]["contact.count"]) > 0
-            and abs(float(np.dot(final_velocity, normal))) <= 0.1
-        )
-        return {
-            "applicable": True,
-            "separated_pre_post_contact_samples": False,
-            "measured_contact_normal": True,
-            "effective_restitution": 0.0 if settled_static_contact else None,
-            "no_unexplained_contact_energy_gain": settled_static_contact,
-        }
-    incoming_velocity = np.asarray(incoming["object.linear_velocity"], dtype=np.float64)
-    outgoing_velocity = np.asarray(outgoing["object.linear_velocity"], dtype=np.float64)
-    vn_in = float(np.dot(incoming_velocity, normal))
-    vn_out = float(np.dot(outgoing_velocity, normal))
-    effective = vn_out / -vn_in if vn_in < -1e-4 and vn_out > 0 else math.inf
-    return {
-        "applicable": True,
-        "separated_pre_post_contact_samples": True,
-        "measured_contact_normal": True,
-        "event_time_s": event_time,
-        "event_position_m": list(incoming["object.position"]),
-        "incoming_normal_velocity_m_s": vn_in,
-        "outgoing_normal_velocity_m_s": vn_out,
-        "effective_restitution": effective,
-        "no_unexplained_contact_energy_gain": bool(math.isfinite(effective) and effective <= 1.05),
-    }
 
 
 def _catch_evidence(
@@ -1695,7 +1795,11 @@ def _energy_drift_within_limit(value: float) -> bool:
     )
 
 
-def _effective_restitution_within_limit(value: Any) -> bool:
+def _effective_restitution_within_limit(
+    value: Any,
+    *,
+    minimum: float = 0.0,
+) -> bool:
     if value is None:
         return False
     try:
@@ -1704,7 +1808,9 @@ def _effective_restitution_within_limit(value: Any) -> bool:
         return False
     return bool(
         math.isfinite(number)
-        and 0.0 <= number <= RIGID_REVIEW_PROFILE.maximum_effective_restitution
+        and minimum
+        <= number
+        <= RIGID_REVIEW_PROFILE.maximum_effective_restitution
     )
 
 
@@ -1717,7 +1823,11 @@ def _physics_qc(
 ) -> tuple[dict[str, Any], dict[str, Any], tuple[str, ...]]:
     penetration = strict_contact_penetration_check(contacts, require_classification=True)
     energy_applicable, energy_drift = _free_flight_energy_drift(rows, scenario)
-    restitution = _restitution_evidence(rows, contacts)
+    restitution = _restitution_evidence(
+        rows,
+        contacts,
+        object_radius_m=scenario.object_radius_m,
+    )
     catch = _catch_evidence(rows, scenario) if scenario.embodiment != "no_robot" else {}
     rolling = (
         _rolling_evidence(rows, scenario)
@@ -1725,20 +1835,30 @@ def _physics_qc(
         else {}
     )
     task_evidence: dict[str, Any] = {}
+    rebound_applicable = (
+        "rebound" in scenario.motion_kind or "bounce" in scenario.motion_kind
+    )
     if scenario.embodiment != "no_robot":
         task_evidence.update(catch)
-    if "rebound" in scenario.motion_kind or "bounce" in scenario.motion_kind:
+    if rebound_applicable:
         task_evidence.update(
             {
                 "separated_pre_post_contact_samples": restitution[
                     "separated_pre_post_contact_samples"
                 ],
                 "measured_contact_normal": restitution["measured_contact_normal"],
-                "effective_restitution_within_limit": bool(
-                    _effective_restitution_within_limit(
-                        restitution.get("effective_restitution")
-                    )
-                ),
+                "effective_restitution_within_limit": restitution[
+                    "effective_restitution_within_limits"
+                ],
+                "outgoing_normal_speed_sufficient": restitution[
+                    "outgoing_normal_speed_sufficient"
+                ],
+                "normal_separation_sufficient": restitution[
+                    "normal_separation_sufficient"
+                ],
+                "separation_duration_sufficient": restitution[
+                    "separation_duration_sufficient"
+                ],
                 "no_unexplained_contact_energy_gain": restitution[
                     "no_unexplained_contact_energy_gain"
                 ],
@@ -1824,6 +1944,18 @@ def _physics_qc(
             if restitution.get("effective_restitution") is None
             else float(restitution["effective_restitution"])
         ),
+        "minimum_required_rebound_effective_restitution": (
+            RIGID_REVIEW_PROFILE.minimum_rebound_effective_restitution
+        ),
+        "minimum_required_rebound_outgoing_normal_speed_m_s": (
+            RIGID_REVIEW_PROFILE.minimum_rebound_outgoing_normal_speed_m_s
+        ),
+        "minimum_required_rebound_normal_separation_m": restitution.get(
+            "required_minimum_normal_separation_m"
+        ),
+        "minimum_required_rebound_separation_duration_s": (
+            RIGID_REVIEW_PROFILE.minimum_rebound_separation_duration_s
+        ),
     }
     common_pass = all(
         bool(checks[name])
@@ -1843,10 +1975,14 @@ def _physics_qc(
         not energy_applicable
         or _energy_drift_within_limit(energy_drift)
     )
-    restitution_pass = (
+    restitution_pass = bool(
         not restitution["applicable"]
-        or _effective_restitution_within_limit(
-            restitution.get("effective_restitution")
+        or (
+            restitution["rebound_acceptance_pass"]
+            if rebound_applicable
+            else _effective_restitution_within_limit(
+                restitution.get("effective_restitution")
+            )
         )
     )
     if scenario.embodiment == "no_robot":
@@ -2088,19 +2224,204 @@ def _evaluate_background_clearance_rows(
         fixture_id = str(raw.get("fixture_id") or "")
         if not fixture_id:
             raise RuntimeError("runtime clearance fixture lacks a stable ID")
+        role = str(raw.get("role") or "")
+        fixture_class = str(
+            raw.get("fixture_class")
+            or ("structural_support" if role == "structural_support" else "task_fixture")
+        )
+        structural = fixture_class == "structural_support"
+        if structural != (role == "structural_support"):
+            raise RuntimeError(
+                f"runtime clearance fixture {fixture_id} has inconsistent support semantics"
+            )
         aabb = raw.get("world_aabb")
         if not isinstance(aabb, Mapping):
             raise RuntimeError(f"runtime clearance fixture {fixture_id} lacks an AABB")
         _flatten_aabb(aabb)
+        expected_task_contact = raw.get(
+            "expected_task_contact", not structural
+        )
+        if not isinstance(expected_task_contact, bool):
+            raise RuntimeError(
+                f"runtime clearance fixture {fixture_id} has invalid contact semantics"
+            )
+        if expected_task_contact == structural:
+            raise RuntimeError(
+                f"runtime clearance fixture {fixture_id} cannot use structural "
+                "support as an expected task contact"
+            )
         normalized_fixtures.append(
             {
                 "fixture_id": fixture_id,
-                "role": str(raw.get("role") or ""),
+                "role": role,
                 "geom_id": int(raw.get("geom_id", -1)),
+                "fixture_class": fixture_class,
+                "expected_task_contact": expected_task_contact,
+                "supports_fixture_id": raw.get("supports_fixture_id"),
+                "grounded_fixture_id": raw.get("grounded_fixture_id"),
+                "body_id": int(raw.get("body_id", 0)),
+                "body_weld_id": int(raw.get("body_weld_id", 0)),
+                "contype": int(raw.get("contype", 1)),
+                "conaffinity": int(raw.get("conaffinity", 1)),
+                "ground_contact_distance_m": raw.get(
+                    "ground_contact_distance_m"
+                ),
+                "supported_contact_distance_m": raw.get(
+                    "supported_contact_distance_m"
+                ),
+                "support_interface_maximum_mismatch_m": raw.get(
+                    "support_interface_maximum_mismatch_m"
+                ),
+                "support_interface_tolerance_m": raw.get(
+                    "support_interface_tolerance_m"
+                ),
                 "world_aabb": dict(aabb),
             }
         )
     normalized_fixtures.sort(key=lambda value: value["fixture_id"])
+    fixture_by_id = {
+        str(value["fixture_id"]): value for value in normalized_fixtures
+    }
+    if len(fixture_by_id) != len(normalized_fixtures):
+        raise RuntimeError("runtime clearance fixture IDs are not unique")
+
+    evaluated_fixtures: list[dict[str, Any]] = []
+    for fixture in normalized_fixtures:
+        structural = fixture["fixture_class"] == "structural_support"
+        body_weld_id = int(fixture["body_weld_id"])
+        contype = int(fixture["contype"])
+        conaffinity = int(fixture["conaffinity"])
+        anchored = body_weld_id == 0
+        collision_enabled = contype > 0 and conaffinity > 0
+        evidence = dict(fixture)
+        evidence.update(
+            {
+                "anchored": anchored,
+                "collision_enabled": collision_enabled,
+                "object_swept_clear": True,
+                "object_intersection_sample_count": 0,
+                "maximum_object_overlap_m_by_axis": [0.0, 0.0, 0.0],
+                "maximum_object_penetration_depth_m": 0.0,
+                "first_object_intersection": None,
+                "ground_contact_within_tolerance": None,
+                "supported_contact_within_tolerance": None,
+                "declared_interface_within_tolerance": None,
+                "support_target_valid": None,
+                "support_chain_valid": None,
+            }
+        )
+        if structural:
+            try:
+                tolerance = float(fixture["support_interface_tolerance_m"])
+                ground_distance = float(fixture["ground_contact_distance_m"])
+                supported_distance = float(
+                    fixture["supported_contact_distance_m"]
+                )
+                interface_mismatch = float(
+                    fixture["support_interface_maximum_mismatch_m"]
+                )
+            except (TypeError, ValueError) as error:
+                raise RuntimeError(
+                    f"structural support {fixture['fixture_id']} lacks finite interface evidence"
+                ) from error
+            if (
+                not all(
+                    math.isfinite(value)
+                    for value in (
+                        tolerance,
+                        ground_distance,
+                        supported_distance,
+                        interface_mismatch,
+                    )
+                )
+                or tolerance <= 0.0
+            ):
+                raise RuntimeError(
+                    f"structural support {fixture['fixture_id']} has invalid interface evidence"
+                )
+            target_id = str(fixture.get("supports_fixture_id") or "")
+            target = fixture_by_id.get(target_id)
+            target_valid = bool(
+                target is not None
+                and target.get("fixture_class") == "task_fixture"
+                and target.get("expected_task_contact") is True
+                and int(target.get("body_weld_id", -1)) == 0
+                and int(target.get("contype", 0)) > 0
+                and int(target.get("conaffinity", 0)) > 0
+            )
+            ground_valid = bool(
+                fixture.get("grounded_fixture_id") == "floor"
+                and abs(ground_distance) <= tolerance + 1e-12
+            )
+            supported_valid = abs(supported_distance) <= tolerance + 1e-12
+            declared_interface_valid = bool(
+                0.0 <= interface_mismatch <= tolerance + 1e-12
+            )
+
+            fixture_aabb = _flatten_aabb(fixture["world_aabb"])
+            fixture_minimum = np.asarray(fixture_aabb[:3], dtype=np.float64)
+            fixture_maximum = np.asarray(fixture_aabb[3:], dtype=np.float64)
+            intersects_sweep = np.all(
+                (position_array - radius) <= fixture_maximum,
+                axis=1,
+            ) & np.all(
+                fixture_minimum <= (position_array + radius),
+                axis=1,
+            )
+            intersection_indices = np.flatnonzero(intersects_sweep)
+            overlap_by_axis = np.zeros(3, dtype=np.float64)
+            maximum_penetration = 0.0
+            for sample_index in intersection_indices:
+                sphere_minimum = position_array[sample_index] - radius
+                sphere_maximum = position_array[sample_index] + radius
+                overlap = np.minimum(fixture_maximum, sphere_maximum) - np.maximum(
+                    fixture_minimum, sphere_minimum
+                )
+                overlap_by_axis = np.maximum(overlap_by_axis, overlap)
+                maximum_penetration = max(
+                    maximum_penetration, float(np.min(overlap))
+                )
+            first_index = (
+                int(intersection_indices[0])
+                if len(intersection_indices)
+                else None
+            )
+            evidence.update(
+                {
+                    "object_swept_clear": first_index is None,
+                    "object_intersection_sample_count": int(
+                        len(intersection_indices)
+                    ),
+                    "maximum_object_overlap_m_by_axis": [
+                        float(value) for value in overlap_by_axis
+                    ],
+                    "maximum_object_penetration_depth_m": maximum_penetration,
+                    "first_object_intersection": (
+                        None
+                        if first_index is None
+                        else {
+                            "sample_index": first_index,
+                            "timestamp_s": timestamps[first_index],
+                            "object_position_m": list(positions[first_index]),
+                        }
+                    ),
+                    "ground_contact_within_tolerance": ground_valid,
+                    "supported_contact_within_tolerance": supported_valid,
+                    "declared_interface_within_tolerance": (
+                        declared_interface_valid
+                    ),
+                    "support_target_valid": target_valid,
+                    "support_chain_valid": bool(
+                        anchored
+                        and collision_enabled
+                        and ground_valid
+                        and supported_valid
+                        and declared_interface_valid
+                        and target_valid
+                    ),
+                }
+            )
+        evaluated_fixtures.append(evidence)
 
     evaluated_backgrounds: list[dict[str, Any]] = []
     for raw in background_rows:
@@ -2135,7 +2456,7 @@ def _evaluate_background_clearance_rows(
                 float(np.min(overlap)),
             )
         fixture_intersection_rows = []
-        for fixture in normalized_fixtures:
+        for fixture in evaluated_fixtures:
             fixture_aabb = _flatten_aabb(fixture["world_aabb"])
             overlap = [
                 min(aabb[index + 3], fixture_aabb[index + 3])
@@ -2202,6 +2523,31 @@ def _evaluate_background_clearance_rows(
             }
         )
     evaluated_backgrounds.sort(key=lambda value: value["stable_id"])
+    structural_support_rows = [
+        row
+        for row in evaluated_fixtures
+        if row["fixture_class"] == "structural_support"
+    ]
+    fixture_anchoring_failures = [
+        row["fixture_id"]
+        for row in evaluated_fixtures
+        if row["anchored"] is not True
+    ]
+    fixture_collision_failures = [
+        row["fixture_id"]
+        for row in evaluated_fixtures
+        if row["collision_enabled"] is not True
+    ]
+    structural_support_chain_failures = [
+        row["fixture_id"]
+        for row in structural_support_rows
+        if row["support_chain_valid"] is not True
+    ]
+    structural_support_sweep_failures = [
+        row["fixture_id"]
+        for row in structural_support_rows
+        if row["object_swept_clear"] is not True
+    ]
     object_failures = [
         row["stable_id"]
         for row in evaluated_backgrounds
@@ -2235,8 +2581,26 @@ def _evaluate_background_clearance_rows(
             },
             "exact_rows_sha256": sha256_json(sweep_hash_rows),
         },
-        "fixture_rows": normalized_fixtures,
-        "fixture_rows_sha256": sha256_json(normalized_fixtures),
+        "fixture_rows": evaluated_fixtures,
+        "fixture_rows_sha256": sha256_json(evaluated_fixtures),
+        "fixture_count": len(evaluated_fixtures),
+        "task_contact_fixture_ids": sorted(
+            str(row["fixture_id"])
+            for row in evaluated_fixtures
+            if row["expected_task_contact"] is True
+        ),
+        "structural_support_fixture_ids": sorted(
+            str(row["fixture_id"]) for row in structural_support_rows
+        ),
+        "structural_support_count": len(structural_support_rows),
+        "all_physical_fixtures_anchored": not fixture_anchoring_failures,
+        "all_physical_fixtures_collision_enabled": not fixture_collision_failures,
+        "structural_support_chain_pass": not structural_support_chain_failures,
+        "structural_support_swept_volume_clear": not structural_support_sweep_failures,
+        "fixture_anchoring_failure_ids": fixture_anchoring_failures,
+        "fixture_collision_failure_ids": fixture_collision_failures,
+        "structural_support_chain_failure_ids": structural_support_chain_failures,
+        "structural_support_sweep_failure_ids": structural_support_sweep_failures,
         "background_rows": evaluated_backgrounds,
         "background_rows_sha256": sha256_json(evaluated_backgrounds),
         "background_geom_count": len(evaluated_backgrounds),
@@ -2254,24 +2618,83 @@ def _evaluate_background_clearance_rows(
         and result["all_background_anchored"]
         and result["object_swept_volume_clear"]
         and result["fixture_intersection_clear"]
+        and result["all_physical_fixtures_anchored"]
+        and result["all_physical_fixtures_collision_enabled"]
+        and result["structural_support_chain_pass"]
+        and result["structural_support_swept_volume_clear"]
     )
     return result
 
 
 def _fixture_clearance_static_rows(
+    mujoco: Any,
     compiled: CompiledSourceModel,
     scenario: SourceMujocoCompiledScenario,
 ) -> list[dict[str, Any]]:
     """Return the immutable compiled fixture geometry used by replay QC."""
 
     rows = []
+    floor_geom_id = int(
+        mujoco.mj_name2id(
+            compiled.model, mujoco.mjtObj.mjOBJ_GEOM, "floor"
+        )
+    )
     for surface in scenario.surfaces:
         geom_id = int(compiled.ids.surface_geom_ids[surface.name])
+        body_id = int(compiled.model.geom_bodyid[geom_id])
+        structural = not surface.expected_task_contact
+        ground_distance_m: float | None = None
+        supported_distance_m: float | None = None
+        if structural:
+            if floor_geom_id < 0 or surface.supports_fixture_id is None:
+                raise RuntimeError(
+                    f"structural support {surface.name} lacks a compiled relationship"
+                )
+            target_geom_id = int(
+                compiled.ids.surface_geom_ids[surface.supports_fixture_id]
+            )
+            from_to = np.empty(6, dtype=np.float64)
+            ground_distance_m = float(
+                mujoco.mj_geomDistance(
+                    compiled.model,
+                    compiled.data,
+                    floor_geom_id,
+                    geom_id,
+                    1.0,
+                    from_to,
+                )
+            )
+            supported_distance_m = float(
+                mujoco.mj_geomDistance(
+                    compiled.model,
+                    compiled.data,
+                    geom_id,
+                    target_geom_id,
+                    1.0,
+                    from_to,
+                )
+            )
         rows.append(
             {
                 "fixture_id": surface.name,
                 "role": surface.role,
                 "geom_id": geom_id,
+                "fixture_class": (
+                    "structural_support" if structural else "task_fixture"
+                ),
+                "expected_task_contact": surface.expected_task_contact,
+                "supports_fixture_id": surface.supports_fixture_id,
+                "grounded_fixture_id": "floor" if structural else None,
+                "body_id": body_id,
+                "body_weld_id": int(compiled.model.body_weldid[body_id]),
+                "contype": int(compiled.model.geom_contype[geom_id]),
+                "conaffinity": int(compiled.model.geom_conaffinity[geom_id]),
+                "ground_contact_distance_m": ground_distance_m,
+                "supported_contact_distance_m": supported_distance_m,
+                "support_interface_maximum_mismatch_m": (
+                    surface.support_interface_maximum_mismatch_m
+                ),
+                "support_interface_tolerance_m": 0.002 if structural else None,
                 "world_aabb": _world_geom_aabb(
                     compiled.model, compiled.data, geom_id
                 ),
@@ -2320,7 +2743,7 @@ def _runtime_background_clearance(
 ) -> dict[str, Any]:
     """Resolve classified compiled geoms into hashable runtime evidence."""
 
-    fixture_rows = _fixture_clearance_static_rows(compiled, scenario)
+    fixture_rows = _fixture_clearance_static_rows(mujoco, compiled, scenario)
     background_rows = _background_clearance_static_rows(mujoco, compiled)
     result = _evaluate_background_clearance_rows(
         background_rows=background_rows,
@@ -2665,6 +3088,11 @@ class SourceMujocoBackend:
             )
             for name, camera_id in camera_ids.items()
         }
+        tool_visibility_topology = _compiled_tool_visibility_topology(compiled)
+        (
+            left_tool_render_geom_ids,
+            right_tool_render_geom_ids,
+        ) = _tool_render_geom_ids_by_side(tool_visibility_topology)
 
         target_frame_times = fixed_duration_frame_timestamps(
             scenario.duration_s, scenario.video_hz
@@ -2762,8 +3190,8 @@ class SourceMujocoBackend:
                                 renderer,
                                 rgb,
                                 object_geom_id=compiled.ids.object_geom,
-                                left_tool_geom_ids=compiled.ids.left_gripper_geom_ids,
-                                right_tool_geom_ids=compiled.ids.right_gripper_geom_ids,
+                                left_tool_geom_ids=left_tool_render_geom_ids,
+                                right_tool_geom_ids=right_tool_render_geom_ids,
                                 fixture_geom_ids=tuple(
                                     compiled.ids.surface_geom_ids.values()
                                 ),
@@ -2842,7 +3270,6 @@ class SourceMujocoBackend:
             contact_rows,
             runtime_audit,
         )
-        tool_visibility_topology = _compiled_tool_visibility_topology(compiled)
         measured_key_event = _measured_visibility_key_event(
             scenario,
             high_rate_rows,
@@ -2872,6 +3299,16 @@ class SourceMujocoBackend:
             frames,
             segmentation_observations,
             measured_key_event,
+            structural_support_geom_ids=(
+                compiled.ids.structural_support_geom_ids
+            ),
+            structural_support_station_by_geom={
+                int(compiled.ids.surface_geom_ids[surface.name]): (
+                    surface.name.rsplit("_y", 1)[0]
+                )
+                for surface in scenario.surfaces
+                if not surface.expected_task_contact
+            },
         )
         background_clearance = _runtime_background_clearance(
             mujoco,

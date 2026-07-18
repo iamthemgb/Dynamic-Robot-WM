@@ -523,12 +523,116 @@ def _validate_source_mujoco_visibility_qc(
     required_views = ("main", "secondary")
     required_checkpoints = ("initial", "apex", "key_event", "final")
     tool_applicable = end_effector != "no_robot"
+    source_physics = (
+        source_scenario.get("physics")
+        if isinstance(source_scenario, Mapping)
+        else None
+    )
+    support_identity_declared = bool(
+        isinstance(source_physics, Mapping)
+        and "structural_support_geom_ids" in source_physics
+    )
+    structural_support_geom_ids: list[int] = []
+    structural_support_station_by_geom: dict[int, str] = {}
+    if support_identity_declared:
+        raw_support_geom_ids = source_physics.get("structural_support_geom_ids")
+        if not isinstance(raw_support_geom_ids, Sequence) or isinstance(
+            raw_support_geom_ids, (str, bytes, bytearray)
+        ):
+            result.fail(
+                "source_mujoco visibility QC lacks bound structural support geom IDs"
+            )
+        elif any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in raw_support_geom_ids
+        ):
+            result.fail(
+                "source_mujoco visibility QC structural support geom IDs are invalid"
+            )
+        else:
+            structural_support_geom_ids = sorted(set(raw_support_geom_ids))
+            if structural_support_geom_ids != list(raw_support_geom_ids):
+                result.fail(
+                    "source_mujoco visibility QC structural support geom IDs are not canonical"
+                )
+            raw_support_fixture_ids = source_physics.get(
+                "structural_support_fixture_ids"
+            )
+            if (
+                not isinstance(raw_support_fixture_ids, Sequence)
+                or isinstance(
+                    raw_support_fixture_ids, (str, bytes, bytearray)
+                )
+                or len(raw_support_fixture_ids)
+                != len(structural_support_geom_ids)
+            ):
+                result.fail(
+                    "source_mujoco visibility QC support geom/fixture identities disagree"
+                )
+            raw_station_by_geom = source_physics.get(
+                "structural_support_station_by_geom"
+            )
+            if not isinstance(raw_station_by_geom, Mapping):
+                result.fail(
+                    "source_mujoco visibility QC lacks bound support-station identities"
+                )
+            else:
+                try:
+                    structural_support_station_by_geom = {
+                        int(geom_id): str(station_id)
+                        for geom_id, station_id in raw_station_by_geom.items()
+                    }
+                except (TypeError, ValueError):
+                    structural_support_station_by_geom = {}
+                if set(structural_support_station_by_geom) != set(
+                    structural_support_geom_ids
+                ) or any(
+                    not value
+                    for value in structural_support_station_by_geom.values()
+                ):
+                    result.fail(
+                        "source_mujoco visibility QC support-station identities are invalid"
+                    )
     _validate_source_mujoco_visibility_topology(
         result,
         visibility,
         source_scenario=source_scenario,
         tool_applicable=tool_applicable,
     )
+    # Reconstruct the renderer's left/right masks from the immutable compiled
+    # geom/body topology.  Contact geoms alone are not enough for Robotiq: its
+    # visible pad geoms share the same rigid finger bodies.  Keeping these IDs
+    # here lets persisted QC independently replay each claimed side-pixel count
+    # instead of trusting a self-authored aggregate.
+    render_geom_ids_by_side: dict[str, set[int]] = {
+        "left": set(),
+        "right": set(),
+    }
+    physics = (
+        source_scenario.get("physics")
+        if isinstance(source_scenario, Mapping)
+        else None
+    )
+    topology = (
+        physics.get("tool_visibility_topology")
+        if isinstance(physics, Mapping)
+        else None
+    )
+    if isinstance(topology, Mapping):
+        raw_body_map = topology.get("tool_geom_body_ids")
+        left_body_id = topology.get("left_tool_body_id")
+        right_body_id = topology.get("right_tool_body_id")
+        if isinstance(raw_body_map, Mapping):
+            for raw_geom_id, raw_body_id in raw_body_map.items():
+                try:
+                    geom_id = int(raw_geom_id)
+                    body_id = int(raw_body_id)
+                except (TypeError, ValueError):
+                    continue
+                if body_id == left_body_id:
+                    render_geom_ids_by_side["left"].add(geom_id)
+                if body_id == right_body_id:
+                    render_geom_ids_by_side["right"].add(geom_id)
     if visibility.get("schema_version") != SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA:
         result.fail(
             "source_mujoco visibility QC does not use "
@@ -800,11 +904,49 @@ def _validate_source_mujoco_visibility_qc(
             if not isinstance(geom_counts, Mapping):
                 result.fail(f"source_mujoco visibility QC {view_name} lacks per-geom segmentation counts")
             else:
+                normalized_geom_counts: dict[int, int] = {}
                 for geom_id, count in geom_counts.items():
-                    if not str(geom_id).isdigit():
+                    canonical_geom_id = (
+                        isinstance(geom_id, str)
+                        and geom_id.isdigit()
+                        and str(int(geom_id)) == geom_id
+                    )
+                    if not canonical_geom_id:
                         result.fail(f"source_mujoco visibility QC {view_name} has invalid geom ID")
                     if not isinstance(count, int) or isinstance(count, bool) or count < 0:
                         result.fail(f"source_mujoco visibility QC {view_name} has invalid geom pixel count")
+                    if canonical_geom_id and isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                        normalized_geom_counts[int(geom_id)] = count
+                expected_left_pixels = sum(
+                    normalized_geom_counts.get(geom_id, 0)
+                    for geom_id in render_geom_ids_by_side["left"]
+                )
+                expected_right_pixels = sum(
+                    normalized_geom_counts.get(geom_id, 0)
+                    for geom_id in render_geom_ids_by_side["right"]
+                )
+                expected_tool_pixels = sum(
+                    normalized_geom_counts.get(geom_id, 0)
+                    for geom_id in (
+                        render_geom_ids_by_side["left"]
+                        | render_geom_ids_by_side["right"]
+                    )
+                )
+                if left_pixels != expected_left_pixels:
+                    result.fail(
+                        f"source_mujoco visibility QC {view_name} left-tool pixels "
+                        "differ from compiled same-body render geoms"
+                    )
+                if right_pixels != expected_right_pixels:
+                    result.fail(
+                        f"source_mujoco visibility QC {view_name} right-tool pixels "
+                        "differ from compiled same-body render geoms"
+                    )
+                if tool_pixels != expected_tool_pixels:
+                    result.fail(
+                        f"source_mujoco visibility QC {view_name} tool pixels differ "
+                        "from the compiled side-mask union"
+                    )
             if under is not None:
                 recomputed_under.append(float(under))
             if over is not None:
@@ -858,6 +1000,112 @@ def _validate_source_mujoco_visibility_qc(
             if checkpoint.get("visible") is not expected_visible:
                 result.fail(f"source_mujoco visibility QC {view_name}/{checkpoint_name} visibility changed")
             recomputed_checkpoints[view_name][checkpoint_name] = expected_visible
+
+    if support_identity_declared:
+        support_visibility = visibility.get("structural_support_visibility")
+        if not isinstance(support_visibility, Mapping):
+            result.fail(
+                "source_mujoco visibility QC lacks structural support render evidence"
+            )
+        else:
+            minimum_support_area = int(
+                thresholds["minimum_structural_support_area_px"]
+            )
+            maximum_pixels = {
+                geom_id: max(
+                    (
+                        int(
+                            metric.get("geom_pixel_counts", {}).get(
+                                str(geom_id), 0
+                            )
+                        )
+                        for metrics in frame_metrics_by_view.values()
+                        for metric in metrics
+                        if isinstance(metric.get("geom_pixel_counts"), Mapping)
+                    ),
+                    default=0,
+                )
+                for geom_id in structural_support_geom_ids
+            }
+            visible_by_view = {
+                view_name: [
+                    geom_id
+                    for geom_id in structural_support_geom_ids
+                    if max(
+                        (
+                            int(
+                                metric.get("geom_pixel_counts", {}).get(
+                                    str(geom_id), 0
+                                )
+                            )
+                            for metric in frame_metrics_by_view.get(
+                                view_name, ()
+                            )
+                            if isinstance(
+                                metric.get("geom_pixel_counts"), Mapping
+                            )
+                        ),
+                        default=0,
+                    )
+                    >= minimum_support_area
+                ]
+                for view_name in required_views
+            }
+            visible_any_view = sorted(
+                {
+                    geom_id
+                    for values in visible_by_view.values()
+                    for geom_id in values
+                }
+            )
+            support_station_ids = sorted(
+                set(structural_support_station_by_geom.values())
+            )
+            visible_support_station_ids = sorted(
+                {
+                    structural_support_station_by_geom[geom_id]
+                    for geom_id in visible_any_view
+                    if geom_id in structural_support_station_by_geom
+                }
+            )
+            expected_support_visibility = {
+                "applicable": bool(structural_support_geom_ids),
+                "evaluated": True,
+                "support_geom_ids": structural_support_geom_ids,
+                "minimum_visible_area_px": minimum_support_area,
+                "maximum_pixel_count_by_geom": {
+                    str(geom_id): maximum_pixels[geom_id]
+                    for geom_id in structural_support_geom_ids
+                },
+                "visible_geom_ids_by_view": visible_by_view,
+                "visible_geom_ids_any_view": visible_any_view,
+                "all_supports_visible_in_any_view": (
+                    visible_any_view == structural_support_geom_ids
+                ),
+                "support_station_by_geom": {
+                    str(geom_id): structural_support_station_by_geom[geom_id]
+                    for geom_id in structural_support_geom_ids
+                    if geom_id in structural_support_station_by_geom
+                },
+                "support_station_ids": support_station_ids,
+                "visible_support_station_ids": visible_support_station_ids,
+                "all_support_stations_visible": (
+                    visible_support_station_ids == support_station_ids
+                ),
+            }
+            if support_visibility != expected_support_visibility:
+                result.fail(
+                    "source_mujoco structural support render evidence cannot be replayed"
+                )
+            if structural_support_geom_ids and (
+                expected_support_visibility[
+                    "all_support_stations_visible"
+                ]
+                is not True
+            ):
+                result.fail(
+                    "source_mujoco structural support frame is not visually grounded in either view"
+                )
 
     if expected_frame_count and all(
         len(recomputed_presence.get(name, ())) == expected_frame_count
@@ -1167,6 +1415,35 @@ def _validate_source_mujoco_visibility_qc(
         if not expected_contact_rows:
             result.fail(
                 "source_mujoco contact event source lacks persisted contact rows"
+            )
+    elif actual_source == "persisted_task_surface_contact":
+        expected_physical_contact = True
+        if tool_applicable:
+            result.fail(
+                "source_mujoco actuated episode claims a passive task-surface contact"
+            )
+        if actual_time is not None:
+            expected_contact_rows = [
+                row
+                for row in valid_event_rows
+                if row.get("contact_category") == "task_surface"
+                and event_timestamp(row) is not None
+                and abs(float(event_timestamp(row)) - float(actual_time))
+                <= float(event_time_tolerance_s) + 1e-12
+            ]
+        if not expected_contact_rows:
+            result.fail(
+                "source_mujoco task-surface event source lacks persisted contact rows"
+            )
+    elif actual_source == "persisted_free_flight_apex":
+        expected_physical_contact = False
+        if tool_applicable:
+            result.fail(
+                "source_mujoco actuated episode claims a passive free-flight apex"
+            )
+        if actual_name != "projectile_apex":
+            result.fail(
+                "source_mujoco free-flight apex source has the wrong event name"
             )
     elif actual_source == "planned_interception_for_measured_miss":
         expected_physical_contact = False
@@ -1567,7 +1844,7 @@ def _validate_source_mujoco_background_clearance(
 ) -> None:
     """Bind runtime background clearance to the complete persisted trajectory."""
 
-    schema = "source-mujoco-background-clearance/v2"
+    schema = "source-mujoco-background-clearance/v3"
     if clearance.get("schema_version") != schema:
         result.fail("source_mujoco background clearance schema changed")
     for name in (
@@ -1577,6 +1854,10 @@ def _validate_source_mujoco_background_clearance(
         "all_background_anchored",
         "object_swept_volume_clear",
         "fixture_intersection_clear",
+        "all_physical_fixtures_anchored",
+        "all_physical_fixtures_collision_enabled",
+        "structural_support_chain_pass",
+        "structural_support_swept_volume_clear",
     ):
         if clearance.get(name) is not True:
             result.fail(f"source_mujoco background clearance failed {name}")
@@ -1754,8 +2035,29 @@ def _validate_source_mujoco_background_clearance(
             for row in fixture_row_values
         ):
             result.fail("source_mujoco fixture clearance AABB method changed")
+        fixture_static_fields = (
+            "fixture_id",
+            "role",
+            "geom_id",
+            "fixture_class",
+            "expected_task_contact",
+            "supports_fixture_id",
+            "grounded_fixture_id",
+            "body_id",
+            "body_weld_id",
+            "contype",
+            "conaffinity",
+            "ground_contact_distance_m",
+            "supported_contact_distance_m",
+            "support_interface_maximum_mismatch_m",
+            "support_interface_tolerance_m",
+            "world_aabb",
+        )
         normalized_fixture_rows = sorted(
-            (dict(row) for row in fixture_row_values),
+            (
+                {name: row.get(name) for name in fixture_static_fields}
+                for row in fixture_row_values
+            ),
             key=lambda row: str(row["fixture_id"]),
         )
         fixture_static_sha256 = sha256_json(normalized_fixture_rows)
@@ -1774,6 +2076,140 @@ def _validate_source_mujoco_background_clearance(
             result.fail(
                 "source_mujoco fixture geometry differs from SourceScenarioSpec"
             )
+
+        source_fixtures = (
+            source_scenario.get("fixtures")
+            if isinstance(source_scenario, Mapping)
+            else None
+        )
+        if not isinstance(source_fixtures, Sequence) or isinstance(
+            source_fixtures, (str, bytes, bytearray)
+        ):
+            result.fail(
+                "source_mujoco structural support contract lacks SourceScenarioSpec fixtures"
+            )
+        else:
+            expected_fixtures: dict[str, Mapping[str, Any]] = {}
+            malformed_source_fixture = False
+            for raw_fixture in source_fixtures:
+                if not isinstance(raw_fixture, Mapping):
+                    malformed_source_fixture = True
+                    continue
+                fixture_id = str(raw_fixture.get("fixture_id") or "")
+                if not fixture_id or fixture_id in expected_fixtures:
+                    malformed_source_fixture = True
+                    continue
+                expected_fixtures[fixture_id] = raw_fixture
+            if malformed_source_fixture or set(expected_fixtures) != set(
+                fixture_ids
+            ):
+                result.fail(
+                    "source_mujoco fixture identities differ from SourceScenarioSpec"
+                )
+            for row in fixture_row_values:
+                fixture_id = str(row.get("fixture_id") or "")
+                expected = expected_fixtures.get(fixture_id)
+                if expected is None:
+                    continue
+                parameters = expected.get("parameters")
+                if not isinstance(parameters, Mapping):
+                    result.fail(
+                        f"source_mujoco fixture {fixture_id} lacks bound parameters"
+                    )
+                    continue
+                expected_values = {
+                    "role": expected.get("fixture_type"),
+                    "fixture_class": parameters.get("fixture_class"),
+                    "expected_task_contact": parameters.get(
+                        "expected_task_contact"
+                    ),
+                    "supports_fixture_id": parameters.get(
+                        "supports_fixture_id"
+                    ),
+                    "grounded_fixture_id": (
+                        "floor"
+                        if parameters.get("fixture_class")
+                        == "structural_support"
+                        else None
+                    ),
+                    "support_interface_maximum_mismatch_m": parameters.get(
+                        "support_interface_maximum_mismatch_m"
+                    ),
+                    "support_interface_tolerance_m": parameters.get(
+                        "support_interface_tolerance_m"
+                    ),
+                }
+                if any(
+                    row.get(name) != value
+                    for name, value in expected_values.items()
+                ):
+                    result.fail(
+                        f"source_mujoco fixture {fixture_id} semantics differ "
+                        "from SourceScenarioSpec"
+                    )
+                expected_anchored = expected.get("anchored") is True
+                expected_physical = expected.get("physical") is True
+                expected_collision = parameters.get("collision_enabled") is True
+                derived_anchored = row.get("body_weld_id") == 0
+                derived_collision = bool(
+                    isinstance(row.get("contype"), int)
+                    and not isinstance(row.get("contype"), bool)
+                    and int(row["contype"]) > 0
+                    and isinstance(row.get("conaffinity"), int)
+                    and not isinstance(row.get("conaffinity"), bool)
+                    and int(row["conaffinity"]) > 0
+                )
+                if not expected_anchored or derived_anchored is not True:
+                    result.fail(
+                        f"source_mujoco fixture {fixture_id} is not physically anchored"
+                    )
+                if (
+                    not expected_physical
+                    or not expected_collision
+                    or derived_collision is not True
+                ):
+                    result.fail(
+                        f"source_mujoco fixture {fixture_id} is not a physical collision fixture"
+                    )
+
+            structural_ids = sorted(
+                fixture_id
+                for fixture_id, expected in expected_fixtures.items()
+                if isinstance(expected.get("parameters"), Mapping)
+                and expected["parameters"].get("fixture_class")
+                == "structural_support"
+            )
+            task_contact_ids = sorted(
+                fixture_id
+                for fixture_id, expected in expected_fixtures.items()
+                if isinstance(expected.get("parameters"), Mapping)
+                and expected["parameters"].get("expected_task_contact") is True
+            )
+            if set(structural_ids).intersection(task_contact_ids):
+                result.fail(
+                    "source_mujoco structural supports are expected task contacts"
+                )
+            if (
+                clearance.get("structural_support_fixture_ids")
+                != structural_ids
+                or clearance.get("structural_support_count")
+                != len(structural_ids)
+                or clearance.get("task_contact_fixture_ids")
+                != task_contact_ids
+            ):
+                result.fail(
+                    "source_mujoco structural support identity aggregates changed"
+                )
+            if isinstance(physics, Mapping) and (
+                physics.get("structural_support_fixture_ids")
+                != structural_ids
+                or physics.get("task_contact_fixture_ids")
+                != task_contact_ids
+            ):
+                result.fail(
+                    "source_mujoco structural support identities differ from "
+                    "SourceScenarioSpec physics"
+                )
 
     if isinstance(classification, Mapping):
         exclusions = classification.get("exclusions")

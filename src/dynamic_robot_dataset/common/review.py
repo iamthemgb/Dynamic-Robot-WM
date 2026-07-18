@@ -514,6 +514,13 @@ def bind_review_artifacts(
         raise ValueError("review QC report must use dynamic-robot-qc-report/v2")
     if qc_report.get("strict_all") is not True:
         raise ValueError("review QC report must be generated with strict_all=True")
+    global_failures = qc_report.get("global_failures")
+    if (
+        not isinstance(global_failures, Sequence)
+        or isinstance(global_failures, (str, bytes, bytearray))
+        or any(not isinstance(value, str) for value in global_failures)
+    ):
+        raise ValueError("review QC report lacks canonical global failure evidence")
     episode_results = qc_report.get("episodes")
     if not isinstance(episode_results, Sequence) or isinstance(
         episode_results, (str, bytes, bytearray)
@@ -527,8 +534,13 @@ def bind_review_artifacts(
     if len(selected) != 1:
         raise ValueError("review QC report must contain the target episode exactly once")
     episode_qc = dict(selected[0])
+    # ``qc_report.passed`` is the dataset-wide strict-all aggregate.  Binding it
+    # here would let an unrelated leaf poison this episode's review artifact.
+    # Leaf activation remains fail-closed in ``HumanReviewLedger`` by requiring
+    # all six episode-level results for that leaf to pass. Dataset-global hard
+    # failures still block every artifact because they are not leaf-local.
     automated_qc_passed = bool(
-        qc_report.get("passed") is True and episode_qc.get("passed") is True
+        episode_qc.get("passed") is True and not global_failures
     )
     timestamps = tuple(float(value) for value in frame_timestamps_s)
     event_indices = event_strip_frame_indices(timestamps, key_event_time_s)
@@ -610,6 +622,13 @@ def _strict_qc_episode(
         raise ValueError("review QC report must use dynamic-robot-qc-report/v2")
     if qc_report.get("strict_all") is not True:
         raise ValueError("review QC report must be generated with strict_all=True")
+    global_failures = qc_report.get("global_failures")
+    if (
+        not isinstance(global_failures, Sequence)
+        or isinstance(global_failures, (str, bytes, bytearray))
+        or any(not isinstance(value, str) for value in global_failures)
+    ):
+        raise ValueError("review QC report lacks canonical global failure evidence")
     episode_results = qc_report.get("episodes")
     if not isinstance(episode_results, Sequence) or isinstance(
         episode_results, (str, bytes, bytearray)
@@ -1384,8 +1403,13 @@ def bind_review_artifacts_strict(
         qc_report_schema=str(qc_report["schema_version"]),
         qc_episode_result_sha256=sha256_json(episode_qc),
         qc_strict_all=True,
+        # The report is already required to be strict-all by
+        # ``_strict_qc_episode``.  Use the selected episode result here so a
+        # failure in another leaf cannot poison this artifact. Dataset-global
+        # hard failures remain applicable to every episode.
         automated_qc_passed=bool(
-            qc_report.get("passed") is True and episode_qc.get("passed") is True
+            episode_qc.get("passed") is True
+            and not qc_report["global_failures"]
         ),
         source_manifest_sha256=sha256_file(source_path),
         frame_timestamps_sha256=sha256_json(timestamps),

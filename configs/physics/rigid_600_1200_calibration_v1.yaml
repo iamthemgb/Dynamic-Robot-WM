@@ -1,6 +1,7 @@
 schema_version: dynamic-robot-rigid-profile-calibration/v1
-calibration_id: source_mujoco_rigid_600_1200_candidate_v6
+calibration_id: source_mujoco_rigid_600_1200_candidate_v7
 contract_version: dynamic-robot-dataset/v2
+current_runtime_profile: source-mujoco-rigid-review-2026-07-v7
 
 # This file records exploratory measurements made while repairing the owned
 # source_mujoco controller/contact path.  It is deliberately not an admission
@@ -21,6 +22,12 @@ admission:
 
 source_binding:
   backend: source_mujoco
+  compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v3
+  backend_version: 0.7.0-review
+  objective_evaluator_version: 1.3.0
+  visibility_qc_schema: source-mujoco-visibility-qc/v2
+  background_clearance_schema: source-mujoco-background-clearance/v3
+  rebound_acceptance_schema: dynamic-robot-rebound-acceptance/v1
   backend_capability_registry: configs/backends/capabilities_v1.yaml
   external_dependency_manifest_sha256: 823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99
   evidence_artifacts_hash_bound: false
@@ -29,7 +36,12 @@ source_binding:
 acceptance_thresholds:
   maximum_object_gripper_penetration_m: 0.002
   maximum_object_task_surface_penetration_m: 0.003
+  minimum_rebound_effective_restitution: 0.15
   maximum_measured_effective_restitution: 1.05
+  minimum_rebound_outgoing_normal_speed_m_s: 0.15
+  minimum_rebound_normal_separation_m: 0.01
+  minimum_rebound_normal_separation_radius_fraction: 0.5
+  minimum_rebound_separation_duration_s: 0.03333333333333333
   maximum_free_flight_energy_drift_fraction: 0.05
   timestep_halving_maximum_event_shift_s: 0.03333333333333333
   timestep_halving_maximum_key_position_shift_m: 0.01
@@ -68,6 +80,82 @@ profiles:
       closure_duration_s: 0.10
 
 measurements:
+  p0c_table_rebound_v7_repair:
+    description: same-seed table-rebound material and semantic acceptance repair
+    runtime_profile: source-mujoco-rigid-review-2026-07-v7
+    backend_version: 0.7.0-review
+    fixed_review_case_ids: [P0c-review-00, P0c-review-02, P0c-review-04]
+    fixed_seeds_preserved: true
+    table_contact:
+      solref: [0.0045, 0.42]
+      friction: [0.9, 0.005, 0.0001]
+      normal_profile_fixed_across_fixed_cases: true
+      contact_parameter_counterfactual: tangential_friction_only
+    acceptance:
+      minimum_effective_restitution: 0.15
+      maximum_effective_restitution: 1.05
+      minimum_outgoing_normal_speed_m_s: 0.15
+      minimum_normal_separation_m: 0.01
+      minimum_normal_separation_radius_fraction: 0.5
+      minimum_separation_duration_s: 0.03333333333333333
+    online_and_persisted_replay_share_thresholds: true
+    fixed_compiled_rate_measurements:
+      - review_case_id: P0c-review-00
+        simulation_hz: 600
+        measured_effective_restitution: 0.1820
+        outgoing_normal_velocity_m_s: 0.7022
+        maximum_normal_separation_m: 0.0281
+        separation_duration_s: 0.1500
+        maximum_object_task_surface_penetration_m: 0.0
+        rebound_acceptance_pass: true
+      - review_case_id: P0c-review-02
+        simulation_hz: 600
+        measured_effective_restitution: 0.1558
+        outgoing_normal_velocity_m_s: 0.6072
+        maximum_normal_separation_m: 0.0214
+        separation_duration_s: 0.1300
+        maximum_object_task_surface_penetration_m: 0.0
+        rebound_acceptance_pass: true
+      - review_case_id: P0c-review-04
+        simulation_hz: 600
+        measured_effective_restitution: 0.1820
+        outgoing_normal_velocity_m_s: 0.7022
+        maximum_normal_separation_m: 0.0281
+        separation_duration_s: 0.1500
+        maximum_object_task_surface_penetration_m: 0.0
+        rebound_acceptance_pass: true
+    non_rendered_timestep_halving_measurements:
+      - review_case_id: P0c-review-00
+        rigid_600hz_physics_qc_pass: true
+        rigid_1200hz_physics_qc_pass: true
+        rigid_600hz_saved_artifact_replay_pass: true
+        rigid_1200hz_saved_artifact_replay_pass: true
+        absolute_event_time_shift_s: 7.4e-13
+        key_event_position_shift_m: 0.002511070
+        outcome_match: true
+      - review_case_id: P0c-review-02
+        rigid_600hz_physics_qc_pass: true
+        rigid_1200hz_physics_qc_pass: true
+        rigid_600hz_saved_artifact_replay_pass: true
+        rigid_1200hz_saved_artifact_replay_pass: true
+        absolute_event_time_shift_s: 7.1e-13
+        key_event_position_shift_m: 0.001845697
+        outcome_match: true
+      - review_case_id: P0c-review-04
+        rigid_600hz_physics_qc_pass: true
+        rigid_1200hz_physics_qc_pass: true
+        rigid_600hz_saved_artifact_replay_pass: true
+        rigid_1200hz_saved_artifact_replay_pass: true
+        absolute_event_time_shift_s: 7.4e-13
+        key_event_position_shift_m: 0.002511070
+        outcome_match: true
+    admission_claimed: false
+    required_reruns:
+      - same_fixed_seed_rendered_P0c_review_00
+      - same_fixed_seed_rendered_P0c_review_02
+      - same_fixed_seed_rendered_P0c_review_04
+      - hash_bound_human_review
+
   wall_rebound:
     description: repaired ballistic wall contact, measured from separated pre/post-contact samples
     review_case_id: P0c-review-01
@@ -123,10 +211,6 @@ measurements:
         rigid_600hz_observation: 0.0033322342866883847
         rigid_1200hz_observation: 0.0025323783420552193
         threshold: 0.003
-      - review_case_id: P0c-review-02
-        reason: separated_rebound_samples
-        rigid_600hz_observation: false
-        rigid_1200hz_observation: true
       - review_case_id: F1a-review-04
         reason: object_task_surface_penetration
         rigid_600hz_observation: 0.003989257183182181

@@ -32,6 +32,7 @@ from dynamic_robot_dataset.backends.source_mujoco.backend import (
 )
 from dynamic_robot_dataset.common.review import event_strip_frame_indices
 from dynamic_robot_dataset.common.review_suite import build_review_suite_plan
+from dynamic_robot_dataset.common.source_evaluators import evaluate_source_rows
 from dynamic_robot_dataset.common.synchronization import (
     fixed_duration_frame_timestamps,
 )
@@ -52,12 +53,14 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
         "823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99"
     )
     assert RIGID_REVIEW_PROFILE.simulation_hz == 600
-    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v6")
+    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v7")
     assert RIGID_REVIEW_PROFILE.wall_solref == (0.012, 0.7)
+    assert RIGID_REVIEW_PROFILE.table_rebound_solref == (0.0045, 0.42)
+    assert RIGID_REVIEW_PROFILE.minimum_rebound_effective_restitution == 0.15
     assert RIGID_REVIEW_PROFILE.robotiq_pad_friction == (0.9, 0.005, 0.0001)
     assert RIGID_REVIEW_PROFILE.robotiq_tendon_target == 115.0
-    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.6.0-review"
-    assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v2")
+    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.7.0-review"
+    assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v3")
 
 
 def test_f1_r0_r1_share_owned_physics_base_and_planned_robot_state() -> None:
@@ -138,10 +141,47 @@ def test_p0_supports_use_fixed_six_sweep_envelopes_and_normalized_r1_thickness()
         assert horizontal.position_m[2] + horizontal.half_size_m[2] == 0.74
 
 
+@pytest.mark.parametrize("leaf", ("P0c", "P0d"))
+def test_randomized_elevated_p0_fixture_has_four_owned_grounded_supports(
+    leaf: str,
+) -> None:
+    scenario = compile_review_case(_case(leaf, rollout=2))
+    supports = [
+        surface
+        for surface in scenario.surfaces
+        if surface.role == "structural_support"
+    ]
+    task_fixtures = {
+        surface.name: surface
+        for surface in scenario.surfaces
+        if surface.expected_task_contact
+    }
+
+    assert len(supports) == 4
+    assert len({support.name for support in supports}) == 4
+    for support in supports:
+        assert support.expected_task_contact is False
+        assert support.supports_fixture_id in task_fixtures
+        assert support.grounded_plane_z_m == 0.0
+        assert support.position_m[2] - support.half_size_m[2] == pytest.approx(
+            0.0, abs=1e-12
+        )
+        assert support.support_interface_maximum_mismatch_m is not None
+        assert support.support_interface_maximum_mismatch_m <= 0.002
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize(
     ("leaf", "rollout", "expected_outcome"),
-    (("F1a", 0, "success"), ("F1a", 2, "miss"), ("F1d", 3, "miss")),
+    (
+        ("F1a", 0, "success"),
+        ("F1a", 2, "miss"),
+        ("F1a", 4, "contact_failure"),
+        ("F1b", 4, "contact_failure"),
+        ("F1c", 4, "contact_failure"),
+        ("F1d", 3, "miss"),
+        ("F1d", 4, "contact_failure"),
+    ),
 )
 def test_repaired_f1_fixed_cases_render_physical_complete_outcomes(
     leaf: str,
@@ -176,9 +216,61 @@ def test_signed_energy_and_restitution_metrics_fail_closed() -> None:
     assert not _energy_drift_within_limit(-0.051)
     assert not _energy_drift_within_limit(math.inf)
     assert _effective_restitution_within_limit(0.0)
+    assert not _effective_restitution_within_limit(0.149, minimum=0.15)
+    assert _effective_restitution_within_limit(0.15, minimum=0.15)
     assert _effective_restitution_within_limit(1.05)
     assert not _effective_restitution_within_limit(-0.01)
     assert not _effective_restitution_within_limit(1.051)
+
+
+def test_timestep_gate_uses_passive_qc_and_replay_not_constant_display_label() -> None:
+    common = {
+        "outcome": "passive_observation",
+        "key_event_time_s": 0.3,
+        "key_event_position_m": [0.0, 0.0, 0.025],
+    }
+    failures = timestep_comparison_failures(
+        {
+            **common,
+            "task_success": False,
+            "physics_qc_pass": False,
+            "saved_artifact_objective_replay_matches": False,
+        },
+        {
+            **common,
+            "task_success": True,
+            "physics_qc_pass": True,
+            "saved_artifact_objective_replay_matches": True,
+        },
+    )
+
+    assert set(failures) == {
+        "task_success_changed_at_1200_hz",
+        "physics_qc_changed_at_1200_hz",
+        "saved_artifact_replay_changed_at_1200_hz",
+        "physics_qc_failed_at_comparison_rate",
+        "saved_artifact_replay_failed_at_comparison_rate",
+    }
+
+
+def test_timestep_gate_fails_closed_without_semantic_evidence() -> None:
+    failures = timestep_comparison_failures(
+        {
+            "outcome": "passive_observation",
+            "key_event_time_s": 0.3,
+            "key_event_position_m": [0.0, 0.0, 0.025],
+        },
+        {
+            "outcome": "passive_observation",
+            "key_event_time_s": 0.3,
+            "key_event_position_m": [0.0, 0.0, 0.025],
+        },
+    )
+    assert set(failures) == {
+        "task_success_missing",
+        "physics_qc_pass_missing",
+        "saved_artifact_objective_replay_matches_missing",
+    }
 
 
 def test_initial_persistent_support_contact_is_zero_restitution_not_missing() -> None:
@@ -211,6 +303,33 @@ def test_initial_persistent_support_contact_is_zero_restitution_not_missing() ->
     assert evidence["no_unexplained_contact_energy_gain"] is True
 
 
+def test_p0c_table_uses_rebound_material_without_changing_p0d_support() -> None:
+    bounce = compile_review_case(_case("P0c", rollout=0))
+    rolling = compile_review_case(_case("P0d", rollout=0))
+
+    assert bounce.surfaces[0].solref == RIGID_REVIEW_PROFILE.table_rebound_solref
+    assert rolling.surfaces[0].solref == (0.003, 1.0)
+    for rollout, expected_dynamic_friction in ((0, 0.9), (2, 0.9), (4, 0.72)):
+        scenario = compile_review_case(_case("P0c", rollout=rollout))
+        bounce_spec = prepare_review_case(_case("P0c", rollout=rollout))
+        fixture = bounce_spec.fixtures[0]
+        assert scenario.surfaces[0].solref == (
+            RIGID_REVIEW_PROFILE.table_rebound_solref
+        )
+        assert fixture.parameters["solref"] == list(
+            RIGID_REVIEW_PROFILE.table_rebound_solref
+        )
+        assert fixture.parameters["friction"][0] == pytest.approx(
+            expected_dynamic_friction
+        )
+        assert fixture.parameters["contact_material_profile"] == (
+            "p0c_table_rebound_v1"
+        )
+        assert bounce_spec.physics["rebound_acceptance"] == (
+            RIGID_REVIEW_PROFILE.rebound_acceptance().to_dict()
+        )
+
+
 def test_all_executable_r0_recipes_have_distinct_complete_event_strips() -> None:
     for case in build_review_suite_plan().cases:
         if case.rollout_index != 0:
@@ -237,7 +356,12 @@ def test_wall_rebound_recipe_completes_an_airborne_arc_at_the_wall() -> None:
         scenario.gravity_m_s2[2]
     )
     assert math.isclose(apex_time, scenario.key_event_time_s / 2.0)
-    assert scenario.surfaces[-1].role == "wall"
+    wall = next(
+        surface
+        for surface in scenario.surfaces
+        if surface.expected_task_contact and surface.role == "wall"
+    )
+    assert wall.name == "supported_wall"
 
 
 def test_wall_rebound_main_camera_stays_on_visible_incoming_side() -> None:
@@ -364,7 +488,7 @@ def test_p0_fixed_variation_profiles_change_physics_not_only_appearance() -> Non
     faster_bounce = compile_review_case(_case("P0c", rollout=2))
     assert faster_bounce.object_initial_linear_velocity_m_s[0] > 0.55
     assert slower_wall.simulation_hz == 1200
-    assert faster_bounce.simulation_hz == 1200
+    assert faster_bounce.simulation_hz == 600
 
     rolling_spin = compile_review_case(_case("P0d", rollout=3))
     nominal_spin = rolling_spin.object_initial_linear_velocity_m_s[0] / (
@@ -376,6 +500,8 @@ def test_p0_fixed_variation_profiles_change_physics_not_only_appearance() -> Non
 
 
 def test_reference_rate_is_selected_only_for_failed_fixed_case_classes() -> None:
+    assert compile_review_case(_case("P0c", rollout=1)).simulation_hz == 1200
+    assert compile_review_case(_case("P0c", rollout=2)).simulation_hz == 600
     assert compile_review_case(_case("F1a", rollout=4)).simulation_hz == 1200
     assert compile_review_case(_case("F1b", rollout=4)).simulation_hz == 1200
     assert compile_review_case(_case("F1c", rollout=4)).simulation_hz == 600
@@ -485,11 +611,113 @@ def test_fixed_robotiq_catch_passes_the_600_1200_timestep_gate() -> None:
         observations.append(
             {
                 "outcome": result.outcome["actual_outcome"],
+                "task_success": result.outcome["task_success"],
+                "physics_qc_pass": result.physics_qc["physics_qc_pass"],
+                "saved_artifact_objective_replay_matches": result.outcome[
+                    "saved_artifact_objective_replay_matches"
+                ],
                 "key_event_time_s": event["timestamp"],
                 "key_event_position_m": event["object.position"],
             }
         )
     assert timestep_comparison_failures(*observations) == ()
+
+
+@pytest.mark.integration
+def test_fixed_p0c_table_cases_pass_600_1200_semantic_gate() -> None:
+    backend = SourceMujocoBackend()
+    for rollout in (0, 2, 4):
+        case = _case("P0c", rollout=rollout)
+        scenario = backend.compile_case(case)
+        assert scenario.simulation_hz == 600
+        assert scenario.surfaces[0].solref == RIGID_REVIEW_PROFILE.table_rebound_solref
+        observations = []
+        for simulation_hz in (
+            RIGID_REVIEW_PROFILE.simulation_hz,
+            RIGID_REVIEW_PROFILE.comparison_simulation_hz,
+        ):
+            result = backend.run(
+                replace(scenario, simulation_hz=simulation_hz), render=False
+            )
+            rebound = result.physics_qc["restitution"]
+            source_spec = prepare_review_case(case).to_dict()
+            source_spec["physics"]["simulation_hz"] = simulation_hz
+            replay = evaluate_source_rows(
+                evaluator_id=case.evaluator,
+                corpus_leaf_id="P0c",
+                task_variant=case.task_variant,
+                source_spec=source_spec,
+                state_rows=result.high_rate_rows,
+                event_rows=result.contact_rows,
+            )
+            assert result.physics_qc["physics_qc_pass"] is True
+            assert result.outcome["task_success"] is True
+            assert replay.task_success is True
+            observations.append(
+                {
+                    "outcome": result.outcome["actual_outcome"],
+                    "task_success": result.outcome["task_success"],
+                    "physics_qc_pass": result.physics_qc["physics_qc_pass"],
+                    "saved_artifact_objective_replay_matches": (
+                        replay.task_success == result.outcome["task_success"]
+                    ),
+                    "key_event_time_s": rebound["event_time_s"],
+                    "key_event_position_m": rebound["event_position_m"],
+                }
+            )
+        assert timestep_comparison_failures(*observations) == ()
+
+
+@pytest.mark.integration
+def test_fixed_p0c_wall_cases_select_rate_from_semantic_timestep_gate() -> None:
+    backend = SourceMujocoBackend()
+    for rollout in (1, 3, 5):
+        case = _case("P0c", rollout=rollout)
+        scenario = backend.compile_case(case)
+        observations = []
+        for simulation_hz in (
+            RIGID_REVIEW_PROFILE.simulation_hz,
+            RIGID_REVIEW_PROFILE.comparison_simulation_hz,
+        ):
+            result = backend.run(
+                replace(scenario, simulation_hz=simulation_hz), render=False
+            )
+            rebound = result.physics_qc["restitution"]
+            source_spec = prepare_review_case(case).to_dict()
+            source_spec["physics"]["simulation_hz"] = simulation_hz
+            replay = evaluate_source_rows(
+                evaluator_id=case.evaluator,
+                corpus_leaf_id="P0c",
+                task_variant=case.task_variant,
+                source_spec=source_spec,
+                state_rows=result.high_rate_rows,
+                event_rows=result.contact_rows,
+            )
+            observations.append(
+                {
+                    "outcome": result.outcome["actual_outcome"],
+                    "task_success": result.outcome["task_success"],
+                    "physics_qc_pass": result.physics_qc["physics_qc_pass"],
+                    "saved_artifact_objective_replay_matches": (
+                        replay.task_success == result.outcome["task_success"]
+                    ),
+                    "key_event_time_s": rebound["event_time_s"],
+                    "key_event_position_m": rebound["event_position_m"],
+                }
+            )
+        failures = timestep_comparison_failures(*observations)
+        if rollout == 1:
+            assert scenario.simulation_hz == 1200
+            assert observations[0]["physics_qc_pass"] is False
+            assert observations[1]["physics_qc_pass"] is True
+            assert set(failures) == {
+                "task_success_changed_at_1200_hz",
+                "physics_qc_changed_at_1200_hz",
+                "physics_qc_failed_at_comparison_rate",
+            }
+        else:
+            assert scenario.simulation_hz == 600
+            assert failures == ()
 
 
 @pytest.mark.integration

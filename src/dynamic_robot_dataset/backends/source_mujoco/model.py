@@ -75,6 +75,7 @@ class SourceModelIds:
     hand_body: int | None
     grasp_site: int | None
     surface_geom_ids: Mapping[str, int]
+    structural_support_geom_ids: tuple[int, ...]
     object_linked_equality_ids: tuple[int, ...]
 
 
@@ -149,6 +150,7 @@ def _load_external_scene_builder(source_root: Path) -> Any:
 
 def _surface_dict(value: PhysicalSurface) -> dict[str, Any]:
     value.validate()
+    structural = value.role == "structural_support"
     return {
         "name": value.name,
         "type": "box",
@@ -160,9 +162,17 @@ def _surface_dict(value: PhysicalSurface) -> dict[str, Any]:
         "solref": " ".join(f"{item:.9g}" for item in value.solref),
         "solimp": "0.94 0.995 0.001",
         "priority": 2,
-        "material": "source_mujoco_task_fixture",
-        "material_rgba": (0.20, 0.36, 0.58, 1.0),
-        "roughness": 0.62,
+        "material": (
+            "source_mujoco_structural_support"
+            if structural
+            else "source_mujoco_task_fixture"
+        ),
+        "material_rgba": (
+            (0.12, 0.16, 0.20, 1.0)
+            if structural
+            else (0.20, 0.36, 0.58, 1.0)
+        ),
+        "roughness": 0.72 if structural else 0.62,
     }
 
 
@@ -203,8 +213,12 @@ def _build_external_sample(scene_builder: Any, scenario: SourceMujocoCompiledSce
         if scenario.requires_real_robocasa
         else None
     )
+    task_surfaces = tuple(
+        surface for surface in scenario.surfaces if surface.expected_task_contact
+    )
     contact_groups = tuple(
-        {"name": surface.role, "geoms": (surface.name,)} for surface in scenario.surfaces
+        {"name": surface.role, "geoms": (surface.name,)}
+        for surface in task_surfaces
     )
     return replace(
         sample,
@@ -229,7 +243,7 @@ def _build_external_sample(scene_builder: Any, scenario: SourceMujocoCompiledSce
         planned_intercept_time_s=scenario.ballistic_event_time_s,
         planned_intercept_position=scenario.controller_target_position_m,
         interception_subfamily=scenario.subfamily,
-        expected_contact_sequence=tuple(surface.role for surface in scenario.surfaces),
+        expected_contact_sequence=tuple(surface.role for surface in task_surfaces),
         interception_surface_specs=tuple(_surface_dict(surface) for surface in scenario.surfaces),
         surface_contact_groups=contact_groups,
         scene_randomization_level=("balanced" if scenario.requires_real_robocasa else "clean"),
@@ -671,19 +685,33 @@ def _add_secondary_camera(
         name="secondary_camera",
     )
     if scenario.motion_kind == "direct_free_contact_interception":
-        anchor = scenario.physical_target_position_m or scenario.controller_target_position_m
+        anchor = scenario.physical_target_position_m
         if anchor is None:
-            raise RuntimeError("F1 camera lacks its physical/controller target")
-        # Anchor framing to the owned free-space task, never the R1 furniture
-        # height.  A close right-side angle resolves both opposed finger pads
-        # at bilateral contact (the main view looks nearly along their axis),
-        # while the main stream retains the complete ballistic/floor outcome.
-        _set_camera_look_at(
-            camera,
-            position_m=(anchor[0] + 1.05, anchor[1] - 0.35, anchor[2] + 0.45),
-            target_m=(anchor[0], anchor[1], anchor[2] + 0.05),
-            fovy_deg=55.0,
-        )
+            raise RuntimeError("F1 camera lacks its physical target")
+        if scenario.scene_profile == "robocasa_storage":
+            # A high deterministic overview covers the complete storage F1
+            # envelope: release near z=1.50, free-contact interaction near the
+            # gripper, and collision-derived failures reaching y=-1.61 on the
+            # room floor.  The close view lost the last third of three fixed
+            # storage/Panda trajectories.  Restrict this overview to storage:
+            # other RoboCasa profiles contain tall appearance geometry that
+            # can occlude an overhead camera.
+            _set_camera_look_at(
+                camera,
+                position_m=(0.30, -1.20, 2.80),
+                target_m=(0.90, -0.90, 0.65),
+                fovy_deg=72.0,
+            )
+        else:
+            # The close right-side angle resolves the key-event target and
+            # both opposed finger pads when the main view looks nearly along
+            # their axis.
+            _set_camera_look_at(
+                camera,
+                position_m=(anchor[0] + 1.05, anchor[1] - 0.35, anchor[2] + 0.45),
+                target_m=(anchor[0], anchor[1], anchor[2] + 0.05),
+                fovy_deg=55.0,
+            )
     elif scenario.motion_kind == "passive_projectile":
         # P0b-review-02 reaches 1.395 m above its support and exceeded both old
         # views near the apex.  Express this overview relative to the support
@@ -830,16 +858,39 @@ def _patch_calibrated_model(
     if world is None:
         raise RuntimeError("external scene lacks worldbody")
     declared_surfaces = {surface.name for surface in scenario.surfaces}
+    clean_visual_ground_center_z = None
+    if (
+        not scenario.requires_real_robocasa
+        and scenario.corpus_leaf_id.startswith("P0")
+        and any(
+            surface.role in {"floor", "table", "slope"}
+            for surface in scenario.surfaces
+        )
+    ):
+        # The external clean scene's room floor is coplanar with the owned P0
+        # task surface.  Removing it leaves large black voids outside narrow
+        # rolling/bounce fixtures.  Replace it with a thin, collision-disabled
+        # visual box whose top is 1 mm below the lowest owned fixture.  It is
+        # therefore visible but neither coplanar nor part of task contact.
+        lowest_fixture_bottom = min(
+            surface.position_m[2] - surface.half_size_m[2]
+            for surface in scenario.surfaces
+            if surface.role in {"floor", "table", "slope"}
+        )
+        clean_visual_ground_center_z = lowest_fixture_bottom - 0.006
     # Scene furniture/walls are appearance context, not undeclared task
     # fixtures.  Only the room floor (when distinct from the task plane) and
     # explicitly declared owned surfaces retain collision.
     for geom in list(world.findall("./geom")):
         name = str(geom.get("name") or "")
-        if name == "floor" and not scenario.requires_real_robocasa and any(
-            surface.role in {"floor", "table", "slope"}
-            for surface in scenario.surfaces
-        ):
-            world.remove(geom)
+        if name == "floor" and clean_visual_ground_center_z is not None:
+            geom.set("name", "clean_visual_ground")
+            geom.set("type", "box")
+            geom.set("size", "3 3 0.005")
+            geom.set("pos", f"0 0 {clean_visual_ground_center_z:.9g}")
+            geom.set("contype", "0")
+            geom.set("conaffinity", "0")
+            geom.set("condim", "3")
         elif name not in declared_surfaces and name != "floor":
             geom.set("contype", "0")
             geom.set("conaffinity", "0")
@@ -971,6 +1022,11 @@ def _resolve_model_ids(mujoco: Any, model: Any, scenario: SourceMujocoCompiledSc
         surface.name: _name2id(mujoco, model, mujoco.mjtObj.mjOBJ_GEOM, surface.name)
         for surface in scenario.surfaces
     }
+    structural_support_ids = tuple(
+        surface_ids[surface.name]
+        for surface in scenario.surfaces
+        if not surface.expected_task_contact
+    )
     object_linked_equalities: list[int] = []
     for equality_id in range(model.neq):
         equality_type = int(model.eq_type[equality_id])
@@ -1004,6 +1060,7 @@ def _resolve_model_ids(mujoco: Any, model: Any, scenario: SourceMujocoCompiledSc
             hand_body=None,
             grasp_site=None,
             surface_geom_ids=surface_ids,
+            structural_support_geom_ids=structural_support_ids,
             object_linked_equality_ids=tuple(object_linked_equalities),
         )
 
@@ -1083,6 +1140,7 @@ def _resolve_model_ids(mujoco: Any, model: Any, scenario: SourceMujocoCompiledSc
         hand_body=hand_body,
         grasp_site=grasp_site,
         surface_geom_ids=surface_ids,
+        structural_support_geom_ids=structural_support_ids,
         object_linked_equality_ids=tuple(object_linked_equalities),
     )
 
@@ -1151,10 +1209,16 @@ def _background_geometry_contract(
     unnamed.  Stable IDs remain independent of a worker or rollout process.
     """
 
-    exclusions: dict[str, str] = {"floor": "physical_room_support"}
+    exclusions: dict[str, str] = {}
+    if int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")) >= 0:
+        exclusions["floor"] = "physical_room_support"
     exclusions.update(
         {
-            surface.name: f"owned_task_fixture:{surface.role}"
+            surface.name: (
+                "owned_structural_support"
+                if not surface.expected_task_contact
+                else f"owned_task_fixture:{surface.role}"
+            )
             for surface in scenario.surfaces
         }
     )

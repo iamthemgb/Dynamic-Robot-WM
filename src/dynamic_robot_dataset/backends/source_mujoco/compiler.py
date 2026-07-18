@@ -16,8 +16,8 @@ from ...common.synchronization import fixed_duration_frame_timestamps
 from .profiles import RIGID_REVIEW_PROFILE
 
 
-SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v2"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.6.0-review"
+SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v3"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.7.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):
@@ -89,9 +89,20 @@ class PhysicalSurface:
     euler_rad: tuple[float, float, float] = (0.0, 0.0, 0.0)
     friction: tuple[float, float, float] = (0.9, 0.005, 0.0001)
     solref: tuple[float, float] = (0.012, 0.7)
+    expected_task_contact: bool = True
+    supports_fixture_id: str | None = None
+    grounded_plane_z_m: float | None = None
+    support_interface_maximum_mismatch_m: float | None = None
 
     def validate(self) -> None:
-        if not self.name or self.role not in {"floor", "table", "wall", "ramp", "slope"}:
+        if not self.name or self.role not in {
+            "floor",
+            "table",
+            "wall",
+            "ramp",
+            "slope",
+            "structural_support",
+        }:
             raise SourceMujocoUnsupported("physical surface identity/role is invalid")
         _finite_tuple(self.position_m, 3, "surface position")
         size = _finite_tuple(self.half_size_m, 3, "surface size")
@@ -104,6 +115,39 @@ class PhysicalSurface:
         solref = _finite_tuple(self.solref, 2, "surface solref")
         if solref[0] <= 0 or solref[1] <= 0:
             raise SourceMujocoUnsupported("surface solref must be positive")
+        if self.role == "structural_support":
+            if self.expected_task_contact:
+                raise SourceMujocoUnsupported(
+                    "structural supports cannot be expected task contacts"
+                )
+            if not self.supports_fixture_id or self.grounded_plane_z_m is None:
+                raise SourceMujocoUnsupported(
+                    "structural support lacks its grounded fixture relationship"
+                )
+            if self.support_interface_maximum_mismatch_m is None:
+                raise SourceMujocoUnsupported(
+                    "structural support lacks its interface tolerance evidence"
+                )
+            ground = float(self.grounded_plane_z_m)
+            mismatch = float(self.support_interface_maximum_mismatch_m)
+            if (
+                not math.isfinite(ground)
+                or not math.isfinite(mismatch)
+                or mismatch < 0.0
+                or mismatch > 0.002 + 1e-12
+            ):
+                raise SourceMujocoUnsupported(
+                    "structural support interface exceeds the 2 mm contract"
+                )
+        elif (
+            not self.expected_task_contact
+            or self.supports_fixture_id is not None
+            or self.grounded_plane_z_m is not None
+            or self.support_interface_maximum_mismatch_m is not None
+        ):
+            raise SourceMujocoUnsupported(
+                "task fixtures cannot carry structural-support semantics"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,6 +289,59 @@ class SourceMujocoCompiledScenario:
             )
         for surface in self.surfaces:
             surface.validate()
+        surface_by_name = {surface.name: surface for surface in self.surfaces}
+        if len(surface_by_name) != len(self.surfaces):
+            raise SourceMujocoUnsupported("physical fixture names must be unique")
+        structural_supports = tuple(
+            surface
+            for surface in self.surfaces
+            if surface.role == "structural_support"
+        )
+        requires_owned_supports = bool(
+            self.requires_real_robocasa
+            and self.corpus_leaf_id in {"P0c", "P0d"}
+        )
+        if requires_owned_supports and len(structural_supports) != 4:
+            raise SourceMujocoUnsupported(
+                "elevated R1 P0c/P0d fixtures require four owned grounded supports"
+            )
+        if not requires_owned_supports and structural_supports:
+            raise SourceMujocoUnsupported(
+                "owned elevated structural supports are restricted to R1 P0c/P0d"
+            )
+        for support in structural_supports:
+            target = surface_by_name.get(str(support.supports_fixture_id))
+            if target is None or target.role not in {"floor", "table", "slope"}:
+                raise SourceMujocoUnsupported(
+                    "structural support targets an unavailable horizontal fixture"
+                )
+            assert support.grounded_plane_z_m is not None
+            bottom_z = support.position_m[2] - support.half_size_m[2]
+            if abs(bottom_z - support.grounded_plane_z_m) > 1e-12:
+                raise SourceMujocoUnsupported(
+                    "structural support bottom does not contact the room floor"
+                )
+            expected_top_z, maximum_mismatch = _support_interface_geometry(
+                target,
+                world_x_m=support.position_m[0],
+                support_half_x_m=support.half_size_m[0],
+            )
+            actual_top_z = support.position_m[2] + support.half_size_m[2]
+            if abs(actual_top_z - expected_top_z) > 1e-12:
+                raise SourceMujocoUnsupported(
+                    "structural support top is not constructed against its task surface"
+                )
+            if (
+                support.support_interface_maximum_mismatch_m is None
+                or abs(
+                    support.support_interface_maximum_mismatch_m
+                    - maximum_mismatch
+                )
+                > 1e-12
+            ):
+                raise SourceMujocoUnsupported(
+                    "structural support interface evidence differs from geometry"
+                )
         required_rng = {
             "physics",
             "initial_state",
@@ -290,6 +387,65 @@ def _sphere_mass(radius_m: float, density_kg_m3: float = 44.0) -> float:
     return 4.0 / 3.0 * math.pi * radius_m**3 * density_kg_m3
 
 
+def _surface_lower_face_z_at_world_x(
+    surface: PhysicalSurface,
+    world_x_m: float,
+) -> float:
+    """Return the lower box face height for the owned X/Z fixture profiles.
+
+    Current P0 fixtures are either horizontal or pitched about MuJoCo's Y
+    Euler axis.  Keeping this calculation in the compiler makes each support
+    position a deterministic consequence of the task fixture, not a visual
+    afterthought in the renderer.
+    """
+
+    roll, pitch, yaw = surface.euler_rad
+    if abs(roll) > 1e-12 or abs(yaw) > 1e-12:
+        raise SourceMujocoUnsupported(
+            "owned structural supports require an X/Z-aligned task fixture"
+        )
+    cosine = math.cos(pitch)
+    if abs(cosine) <= 1e-9:
+        raise SourceMujocoUnsupported(
+            "owned structural support cannot resolve a vertical task fixture"
+        )
+    sine = math.sin(pitch)
+    local_x = (
+        float(world_x_m)
+        - surface.position_m[0]
+        + sine * surface.half_size_m[2]
+    ) / cosine
+    if abs(local_x) > surface.half_size_m[0] + 1e-12:
+        raise SourceMujocoUnsupported(
+            "owned structural support lies outside its task fixture"
+        )
+    return (
+        surface.position_m[2]
+        - sine * local_x
+        - cosine * surface.half_size_m[2]
+    )
+
+
+def _support_interface_geometry(
+    surface: PhysicalSurface,
+    *,
+    world_x_m: float,
+    support_half_x_m: float,
+) -> tuple[float, float]:
+    """Return center contact height and worst top/underside mismatch."""
+
+    center = _surface_lower_face_z_at_world_x(surface, world_x_m)
+    edges = (
+        _surface_lower_face_z_at_world_x(
+            surface, float(world_x_m) - float(support_half_x_m)
+        ),
+        _surface_lower_face_z_at_world_x(
+            surface, float(world_x_m) + float(support_half_x_m)
+        ),
+    )
+    return center, max(abs(value - center) for value in edges)
+
+
 def _surface(
     name: str,
     role: str,
@@ -297,12 +453,22 @@ def _surface(
     half_size: Sequence[float],
     *,
     euler: Sequence[float] = (0.0, 0.0, 0.0),
+    table_rebound: bool = False,
+    expected_task_contact: bool = True,
+    supports_fixture_id: str | None = None,
+    grounded_plane_z_m: float | None = None,
+    support_interface_maximum_mismatch_m: float | None = None,
 ) -> PhysicalSurface:
-    solref = (
-        RIGID_REVIEW_PROFILE.wall_solref
-        if role == "wall"
-        else (0.003, 1.0)
-    )
+    if role == "wall":
+        solref = RIGID_REVIEW_PROFILE.wall_solref
+    elif table_rebound:
+        if role != "table":
+            raise SourceMujocoUnsupported(
+                "the table rebound contact profile requires a table surface"
+            )
+        solref = RIGID_REVIEW_PROFILE.table_rebound_solref
+    else:
+        solref = (0.003, 1.0)
     return PhysicalSurface(
         name=name,
         role=role,
@@ -310,7 +476,91 @@ def _surface(
         half_size_m=_finite_tuple(half_size, 3, "surface size"),  # type: ignore[arg-type]
         euler_rad=_finite_tuple(euler, 3, "surface rotation"),  # type: ignore[arg-type]
         solref=solref,
+        expected_task_contact=expected_task_contact,
+        supports_fixture_id=supports_fixture_id,
+        grounded_plane_z_m=grounded_plane_z_m,
+        support_interface_maximum_mismatch_m=(
+            None
+            if support_interface_maximum_mismatch_m is None
+            else float(support_interface_maximum_mismatch_m)
+        ),
     )
+
+
+def _owned_grounded_structural_supports(
+    *,
+    leaf_id: str,
+    tabletop_height_m: float,
+    task_surfaces: Sequence[PhysicalSurface],
+) -> tuple[PhysicalSurface, ...]:
+    """Construct the fixed four-leg frame beneath elevated P0c/P0d fixtures.
+
+    The legs are world-fixed collision geoms whose bottoms meet the room floor
+    at z=0.  They sit near the task fixture's lateral edges, safely outside the
+    complete fixed-six object corridor around y=0.  P0d uses narrow X extents
+    so a vertical leg follows a pitched underside to within 2 mm.
+    """
+
+    if tabletop_height_m <= 0.0 or leaf_id not in {"P0c", "P0d"}:
+        return ()
+    target = next(
+        (
+            surface
+            for surface in task_surfaces
+            if surface.role in {"floor", "table", "slope"}
+            and surface.expected_task_contact
+        ),
+        None,
+    )
+    if target is None:
+        raise SourceMujocoUnsupported(
+            "elevated P0 structural frame lacks its task surface"
+        )
+    if leaf_id == "P0c":
+        local_x_positions = (-0.50, 0.50)
+        support_y_positions = (-0.125, 0.125)
+        support_half_x = 0.04
+        support_half_y = 0.025
+    else:
+        local_x_positions = (-1.0, 1.0)
+        support_y_positions = (-0.47, 0.47)
+        support_half_x = 0.01
+        support_half_y = 0.04
+    pitch = target.euler_rad[1]
+    cosine = math.cos(pitch)
+    sine = math.sin(pitch)
+    result: list[PhysicalSurface] = []
+    for x_index, local_x in enumerate(local_x_positions):
+        # Transform the selected local underside point into world X.  The
+        # center top of the vertical support meets that exact point.
+        world_x = (
+            target.position_m[0]
+            + cosine * local_x
+            - sine * target.half_size_m[2]
+        )
+        top_z, mismatch = _support_interface_geometry(
+            target,
+            world_x_m=world_x,
+            support_half_x_m=support_half_x,
+        )
+        if top_z <= 0.0:
+            raise SourceMujocoUnsupported(
+                "owned structural support has no positive grounded height"
+            )
+        for y_index, world_y in enumerate(support_y_positions):
+            result.append(
+                _surface(
+                    f"owned_structural_leg_x{x_index}_y{y_index}",
+                    "structural_support",
+                    (world_x, world_y, top_z / 2.0),
+                    (support_half_x, support_half_y, top_z / 2.0),
+                    expected_task_contact=False,
+                    supports_fixture_id=target.name,
+                    grounded_plane_z_m=0.0,
+                    support_interface_maximum_mismatch_m=mismatch,
+                )
+            )
+    return tuple(result)
 
 
 def _recipe(
@@ -393,7 +643,15 @@ def _recipe(
             motion_kind="passive_table_bounce",
             object_initial_position_m=(-0.30, 0.0, tabletop_height_m + 0.75),
             object_initial_linear_velocity_m_s=(0.55, 0.0, -0.85),
-            surfaces=(_surface("supported_bounce_table", "table", (0, 0, r1_support_center_z), (*support_xy, r1_support_half_height)),),
+            surfaces=(
+                _surface(
+                    "supported_bounce_table",
+                    "table",
+                    (0, 0, r1_support_center_z),
+                    (*support_xy, r1_support_half_height),
+                    table_rebound=True,
+                ),
+            ),
         )
     elif leaf_id == "P0c" and task_variant == "wall_rebound":
         support_xy = (
@@ -648,7 +906,15 @@ def _apply_passive_variation(
             surface,
             friction=tuple(value * contact_factor for value in surface.friction),
             solref=(
-                surface.solref[0] * (1.15 if contact_factor < 1.0 else 0.85),
+                # P0c's v7 rebound calibration owns one normal-contact
+                # profile at both solver rates.  The fixed contact-parameter
+                # counterfactual varies tangential friction only; changing
+                # solref here made review-04 pass at 600 Hz but exceed the
+                # 3 mm penetration limit at the 1200 Hz reference.
+                surface.solref[0]
+                if leaf_id == "P0c" and task_variant == "table_bounce"
+                else surface.solref[0]
+                * (1.15 if contact_factor < 1.0 else 0.85),
                 surface.solref[1],
             ),
         )
@@ -718,16 +984,24 @@ def compile_review_case(
             task_variant=task_variant,
             profile=str(passive_variation_profile),
         )
+    task_surfaces = tuple(recipe.get("surfaces", ()))
+    recipe["surfaces"] = (
+        *task_surfaces,
+        *_owned_grounded_structural_supports(
+            leaf_id=leaf_id,
+            tabletop_height_m=task_height,
+            task_surfaces=task_surfaces,
+        ),
+    )
     # The 600 Hz candidate is admitted only for fixed cases that preserve the
-    # strict contact/rebound result at the 1200 Hz reference.  These cases
-    # demonstrably do not: fast P0c speed variants lose rebound separation or
-    # exceed 3 mm, and the Panda F1a/F1b negative-timing drops reach the room
-    # floor at about 5 m/s.  Compile those cases directly at the calibrated
-    # reference rate instead of weakening QC.
+    # strict contact/rebound result at the 1200 Hz reference.  The lower-speed
+    # P0c wall case exceeds 3 mm at 600 Hz, and the Panda F1a/F1b
+    # negative-timing drops reach the room floor at about 5 m/s.  Compile only
+    # those measured exception classes directly at the calibrated reference
+    # rate instead of weakening QC.
     requires_reference_rate = (
         leaf_id == "P0c"
-        and passive_variation_profile
-        in {"lower_initial_speed", "higher_initial_speed"}
+        and passive_variation_profile == "lower_initial_speed"
     ) or (
         leaf_id in {"F1a", "F1b"}
         and embodiment == FRANKA_HAND

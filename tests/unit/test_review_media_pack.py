@@ -279,6 +279,7 @@ def _write_finalized_fixture(
                 "metadata_content_hashes": metadata_hashes,
                 "strict_all": True,
                 "passed": True,
+                "global_failures": [],
                 "episodes": [
                     {
                         "episode_uuid": case.episode_uuid,

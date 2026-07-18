@@ -8,8 +8,10 @@ from dynamic_robot_dataset.backends.source_mujoco import SourceMujocoBackend
 from dynamic_robot_dataset.backends.source_mujoco.backend import (
     _contact_body_proxy_visibility,
     _measured_visibility_key_event,
+    _tool_render_geom_ids_by_side,
 )
 from dynamic_robot_dataset.common.hashing import sha256_json
+from dynamic_robot_dataset.common.review import event_strip_frame_indices
 from dynamic_robot_dataset.common.qc import (
     EpisodeQC,
     QCValidator,
@@ -29,6 +31,9 @@ from dynamic_robot_dataset.common.visual_qc import (
     source_mujoco_visibility_media_binding,
 )
 from dynamic_robot_dataset.common.schema import EpisodeRecord
+from dynamic_robot_dataset.common.synchronization import (
+    fixed_duration_frame_timestamps,
+)
 
 
 def _case(case_id: str):
@@ -414,11 +419,12 @@ def test_no_contact_planned_checkpoint_accepts_eight_pixel_tool_evidence() -> No
     )
     for view in visibility["views"].values():
         for frame in view["frames"]:
-            frame.update(
-                tool_pixel_count=8,
-                left_tool_pixel_count=4,
-                right_tool_pixel_count=4,
-            )
+                frame.update(
+                    tool_pixel_count=8,
+                    left_tool_pixel_count=4,
+                    right_tool_pixel_count=4,
+                    geom_pixel_counts={"1": 4, "2": 4},
+                )
         view.update(
             key_event_tool_pixel_count=8,
             key_event_left_tool_pixel_count=4,
@@ -864,6 +870,135 @@ def test_passive_and_no_contact_events_match_persisted_evaluator_semantics() -> 
     assert miss["physical_contact_applicable"] is False
 
 
+def test_p0a_visibility_uses_first_persisted_surface_contact() -> None:
+    scenario = SourceMujocoBackend().compile_case(_case("P0a-review-00"))
+    event = _measured_visibility_key_event(
+        scenario,
+        (),
+        (
+            {
+                "timestamp": 0.305,
+                "contact_category": "task_surface",
+                "counterpart_geom_id": 17,
+            },
+            {
+                "timestamp": 0.315,
+                "contact_category": "task_surface",
+                "counterpart_geom_id": 23,
+            },
+        ),
+    )
+
+    assert event["actual_key_event_name"] == "task_surface_contact_onset"
+    assert event["actual_key_event_time_s"] == 0.305
+    assert event["actual_key_event_source"] == (
+        "persisted_task_surface_contact"
+    )
+    assert event["physical_contact_applicable"] is True
+    assert event["contact_counterpart_geom_ids"] == [17]
+
+
+def test_p0c_visibility_uses_measured_rebound_contact() -> None:
+    scenario = SourceMujocoBackend().compile_case(_case("P0c-review-00"))
+    event = _measured_visibility_key_event(
+        scenario,
+        (),
+        (
+            {
+                "timestamp": 0.308333333333,
+                "contact_category": "task_surface",
+                "counterpart_geom_id": 31,
+            },
+        ),
+    )
+
+    assert event["actual_key_event_name"] == "task_surface_contact_onset"
+    assert event["actual_key_event_time_s"] == pytest.approx(0.308333333333)
+    assert event["actual_key_event_source"] == "persisted_task_surface_contact"
+    assert event["physical_contact_applicable"] is True
+    assert event["contact_counterpart_geom_ids"] == [31]
+
+
+@pytest.mark.parametrize("rollout_index", range(6))
+def test_p0b_fixed_six_visibility_and_strips_use_persisted_apex(
+    rollout_index: int,
+) -> None:
+    scenario = SourceMujocoBackend().compile_case(
+        _case(f"P0b-review-{rollout_index:02d}")
+    )
+    apex_time_s = scenario.object_initial_linear_velocity_m_s[2] / abs(
+        scenario.gravity_m_s2[2]
+    )
+    delta_s = 0.01
+    state_rows = []
+    for timestamp_s in (apex_time_s - delta_s, apex_time_s + delta_s):
+        relative_s = timestamp_s - apex_time_s
+        state_rows.append(
+            {
+                "timestamp": timestamp_s,
+                "object.position": [0.0, 0.0, 1.0 - 0.5 * abs(scenario.gravity_m_s2[2]) * relative_s**2],
+                "object.linear_velocity": [
+                    scenario.object_initial_linear_velocity_m_s[0],
+                    scenario.object_initial_linear_velocity_m_s[1],
+                    scenario.gravity_m_s2[2] * relative_s,
+                ],
+                "object.motion_mode": "free_flight",
+            }
+        )
+    event = _measured_visibility_key_event(scenario, state_rows, ())
+
+    assert event["actual_key_event_name"] == "projectile_apex"
+    assert event["actual_key_event_time_s"] == pytest.approx(apex_time_s)
+    assert event["actual_key_event_source"] == "persisted_free_flight_apex"
+    assert event["physical_contact_applicable"] is False
+    timestamps = fixed_duration_frame_timestamps(
+        scenario.duration_s, scenario.video_hz
+    )
+    strip = event_strip_frame_indices(
+        timestamps, event["actual_key_event_time_s"]
+    )
+    assert len(strip) == 5
+    assert len(set(strip.values())) == 5
+
+
+def test_visibility_replay_accepts_persisted_passive_event_sources() -> None:
+    surface = _passing_visibility(actuated=False)
+    surface.update(
+        actual_key_event_name="task_surface_contact_onset",
+        actual_key_event_source="persisted_task_surface_contact",
+        physical_contact_applicable=True,
+        contact_counterpart_geom_ids=[3],
+        contact_exact_fixture_geom_ids=[3],
+        contact_visible_fixture_geom_ids_by_view={
+            "main": [3],
+            "secondary": [3],
+        },
+        contact_fixture_pixel_counts_by_view={"main": 16, "secondary": 16},
+        actual_contact_counterpart_visible_at_key_event=True,
+        contact_occluded_both_views=False,
+    )
+    surface_result = _replay_visibility(
+        surface,
+        actuated=False,
+        event_rows=[
+            {
+                "timestamp": surface["actual_key_event_time_s"],
+                "contact_category": "task_surface",
+                "counterpart_geom_id": 3,
+            }
+        ],
+    )
+    assert surface_result.passed, surface_result.hard_failures
+
+    apex = _passing_visibility(actuated=False)
+    apex.update(
+        actual_key_event_name="projectile_apex",
+        actual_key_event_source="persisted_free_flight_apex",
+    )
+    apex_result = _replay_visibility(apex, actuated=False)
+    assert apex_result.passed, apex_result.hard_failures
+
+
 def test_contact_collision_geom_uses_only_same_body_rendered_proxy() -> None:
     evidence = _contact_body_proxy_visibility(
         counterpart_geom_ids=[10],
@@ -886,6 +1021,60 @@ def test_contact_collision_geom_uses_only_same_body_rendered_proxy() -> None:
         "secondary": 0,
     }
     assert evidence["visible"] is True
+
+
+def test_tool_render_masks_include_hash_bound_same_body_visual_geoms() -> None:
+    left, right = _tool_render_geom_ids_by_side(
+        {
+            "tool_geom_body_ids": {
+                "89": 17,
+                "90": 17,
+                "91": 17,
+                "92": 17,
+                "103": 23,
+                "104": 23,
+                "105": 23,
+                "106": 23,
+                "200": 99,
+            },
+            "left_tool_geom_ids": [103, 104],
+            "right_tool_geom_ids": [89, 90],
+            "left_tool_body_id": 23,
+            "right_tool_body_id": 17,
+        }
+    )
+
+    assert left == (103, 104, 105, 106)
+    assert right == (89, 90, 91, 92)
+    assert 200 not in left
+    assert 200 not in right
+
+
+def test_visibility_replay_recomputes_side_pixels_from_compiled_render_geoms() -> None:
+    visibility = _passing_visibility(actuated=True)
+    # Frame 2 is not duplicated into a checkpoint, so this isolates the
+    # per-frame aggregate from all higher-level summary bindings.
+    visibility["views"]["main"]["frames"][2]["left_tool_pixel_count"] = 17
+    visibility["views"]["main"]["frames"][2]["tool_pixel_count"] = 33
+
+    result = _replay_visibility(
+        visibility,
+        actuated=True,
+        event_rows=[
+            {
+                "timestamp": visibility["actual_key_event_time_s"],
+                "contact_category": "gripper",
+                "counterpart_geom_id": geom_id,
+            }
+            for geom_id in (1, 2)
+        ],
+    )
+
+    assert not result.passed
+    assert any(
+        "left-tool pixels differ from compiled same-body render geoms" in failure
+        for failure in result.hard_failures
+    )
 
 
 @pytest.mark.parametrize(
