@@ -234,6 +234,12 @@ def _joint_ranges(model: Any, joint_ids: Sequence[int]) -> np.ndarray:
     for index, joint_id in enumerate(joint_ids):
         if not bool(model.jnt_limited[int(joint_id)]):
             ranges[index] = (-3.0, 3.0)
+    # Keep IK solutions strictly interior: the deep-fold F2c pickup ready
+    # measurably solved with the elbow exactly on its model limit, which is
+    # unreplayable on hardware and fails the joint-motion gate on the first
+    # servo wiggle.
+    ranges[:, 0] += 0.01
+    ranges[:, 1] -= 0.01
     return ranges
 
 
@@ -383,6 +389,97 @@ def _solve_arm_ik(
     return candidate, diagnostics
 
 
+def _servo_settled_intercept_correction(
+    mujoco: Any,
+    least_squares: Any,
+    compiled: CompiledSourceModel,
+    scenario: SourceMujocoCompiledScenario,
+    target: np.ndarray,
+    intercept: np.ndarray,
+    *,
+    hand_orientation: str,
+    open_gripper_command: float,
+    orientation_weight: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, tuple[IKDiagnostics, ...]]:
+    """Measure the settled position-servo grasp offset and re-aim the aim point.
+
+    The 60 Hz position servo holds a folded low interception posture against
+    gravity with a measured centimetre-scale equilibrium offset from the
+    kinematic IK solution (the F2c near-apex catch settled 3 cm from its
+    commanded grasp center and measurably grazed instead of capturing).
+    Like the two-pass fingertip correction this is measured in the compiled
+    model, never tuned: command the intercept, settle, measure the residual,
+    and re-solve against the counter-shifted aim point.  The free object is
+    parked outside the workspace during the measurement and the caller
+    re-initializes the full simulator state afterwards.
+    """
+
+    model, data, ids = compiled.model, compiled.data, compiled.ids
+    arm_qpos = np.asarray(ids.robot_qpos_adrs[:7], dtype=np.int32)
+    arm_actuators = list(ids.actuator_ids[:7])
+    gripper_actuators = list(ids.actuator_ids[7:])
+    settle_steps = int(round(0.5 * scenario.simulation_hz))
+    desired = np.asarray(target, dtype=np.float64)
+
+    def _settled_offset(candidate: np.ndarray) -> np.ndarray:
+        mujoco.mj_resetData(model, data)
+        data.qpos[arm_qpos] = candidate
+        if scenario.embodiment == FRANKA_HAND:
+            data.qpos[list(ids.robot_qpos_adrs[7:9])] = 0.04
+        else:
+            data.qpos[list(ids.robot_qpos_adrs[7:])] = ROBOTIQ_OPEN_Q
+        # Park the free object far outside the workspace so the settle
+        # measurement observes only the servo/gravity equilibrium.
+        data.qpos[ids.object_qpos_adr : ids.object_qpos_adr + 3] = (5.0, 5.0, 5.0)
+        data.qvel[:] = 0.0
+        data.ctrl[arm_actuators] = candidate
+        for index in gripper_actuators:
+            data.ctrl[index] = open_gripper_command
+        mujoco.mj_forward(model, data)
+        for _ in range(settle_steps):
+            mujoco.mj_step(model, data)
+        if scenario.embodiment == FRANKA_HAND:
+            settled = _panda_fingertip_center(model, data, ids)
+        else:
+            settled = _robotiq_thick_pad_center(data, ids)
+        return np.asarray(settled, dtype=np.float64) - desired
+
+    corrected_target = desired.copy()
+    solution = intercept.copy()
+    diagnostics: list[IKDiagnostics] = []
+    offset = _settled_offset(solution)
+    best_solution = solution
+    best_target = corrected_target
+    best_error = float(np.linalg.norm(offset))
+    for _ in range(3):
+        if best_error <= 0.002:
+            break
+        corrected_target = corrected_target - offset
+        solution, correction_diagnostics = _solve_arm_ik(
+            mujoco,
+            least_squares,
+            compiled,
+            scenario,
+            tuple(float(value) for value in corrected_target),
+            initial_arm_q=solution,
+            regularization_weight=0.1,
+            orientation_weight=orientation_weight,
+            hand_orientation=hand_orientation,
+        )
+        diagnostics.append(correction_diagnostics)
+        offset = _settled_offset(solution)
+        error = float(np.linalg.norm(offset))
+        if error < best_error:
+            best_solution, best_target, best_error = solution, corrected_target, error
+    if best_error > 0.008:
+        raise RuntimeError(
+            f"servo-settled intercept correction for {scenario.case_id} "
+            f"could not verify the aim point: residual {best_error:.4f} m"
+        )
+    mujoco.mj_resetData(model, data)
+    return best_solution, best_target, tuple(diagnostics)
+
+
 def _controller_for_scenario(
     mujoco: Any,
     least_squares: Any,
@@ -402,6 +499,11 @@ def _controller_for_scenario(
     hand_orientation = (
         "pick_down" if "pickup" in scenario.motion_kind else "catch_up"
     )
+    rebound_catch = (
+        ("bounce" in scenario.motion_kind or "rebound" in scenario.motion_kind)
+        and "pickup" not in scenario.motion_kind
+        and scenario.embodiment == FRANKA_HAND
+    )
     intercept, intercept_diagnostics = _solve_arm_ik(
         mujoco,
         least_squares,
@@ -410,6 +512,31 @@ def _controller_for_scenario(
         scenario.controller_target_position_m,
         hand_orientation=hand_orientation,
     )
+    aim_target = tuple(
+        float(value) for value in scenario.controller_target_position_m
+    )
+    if "bounce" in scenario.motion_kind or "rebound" in scenario.motion_kind:
+        # The settled Robotiq jaw measured 9 mm off its commanded aim and
+        # the drifting carom slid down the jaw flank instead of nesting, so
+        # the correction applies to both embodiments.
+        intercept, corrected_aim, correction_diagnostics = (
+            _servo_settled_intercept_correction(
+                mujoco,
+                least_squares,
+                compiled,
+                scenario,
+                np.asarray(scenario.controller_target_position_m, dtype=np.float64),
+                intercept,
+                hand_orientation=hand_orientation,
+                open_gripper_command=(
+                    0.0
+                    if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
+                    else 255.0
+                ),
+            )
+        )
+        diagnostics.extend(correction_diagnostics)
+        aim_target = tuple(float(value) for value in corrected_aim)
     # The robot initializes at a ready waypoint hovering above the intercept
     # and must descend onto it through ctrl-only minimum-jerk commands.  A
     # rollout that begins at the intercept produces a stationary interception
@@ -426,18 +553,15 @@ def _controller_for_scenario(
             else RIGID_REVIEW_PROFILE.pickup_ready_raise_z_m
         )
         ready_target = (
-            float(scenario.controller_target_position_m[0])
-            - ready_retract_x,
-            float(scenario.controller_target_position_m[1]),
-            float(scenario.controller_target_position_m[2])
-            + ready_raise_z,
+            aim_target[0] - ready_retract_x,
+            aim_target[1],
+            aim_target[2] + ready_raise_z,
         )
     else:
         ready_target = (
-            float(scenario.controller_target_position_m[0]),
-            float(scenario.controller_target_position_m[1]),
-            float(scenario.controller_target_position_m[2])
-            + RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m,
+            aim_target[0],
+            aim_target[1],
+            aim_target[2] + RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m,
         )
     ready, ready_diagnostics = _solve_arm_ik(
         mujoco,
@@ -461,10 +585,10 @@ def _controller_for_scenario(
         transport_seed = intercept
         if robotiq_pickup:
             capture_target = (
-                float(scenario.controller_target_position_m[0])
+                aim_target[0]
                 + RIGID_REVIEW_PROFILE.robotiq_pickup_capture_followthrough_x_m,
-                float(scenario.controller_target_position_m[1]),
-                float(scenario.controller_target_position_m[2]),
+                aim_target[1],
+                aim_target[2],
             )
             capture, capture_diagnostics = _solve_arm_ik(
                 mujoco,
@@ -494,11 +618,30 @@ def _controller_for_scenario(
         )
         diagnostics.append(transport_diagnostics)
     event_time = float(scenario.ballistic_event_time_s)
-    closure_lead_s = (
-        RIGID_REVIEW_PROFILE.robotiq_pickup_closure_start_before_event_s
-        if robotiq_pickup
-        else RIGID_REVIEW_PROFILE.closure_start_before_ballistic_s
-    )
+    rebound_catch_closure = (
+        "bounce" in scenario.motion_kind or "rebound" in scenario.motion_kind
+    ) and "pickup" not in scenario.motion_kind
+    if robotiq_pickup:
+        closure_lead_s = (
+            RIGID_REVIEW_PROFILE.robotiq_pickup_closure_start_before_event_s
+        )
+    elif (
+        rebound_catch_closure
+        and scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
+    ):
+        # The Robotiq rebound catch keeps the sealed F1 wedge envelope:
+        # the ball wedges into the pre-wrapped margined pads and holds.
+        closure_lead_s = RIGID_REVIEW_PROFILE.closure_start_before_ballistic_s
+    elif rebound_catch_closure:
+        # A rebound interception keeps the cage/jaw open at arrival and
+        # closes around the event: the pre-closed Panda fingertip wedge
+        # measurably deflected the carom, and the pre-closed Robotiq pad
+        # gap forced a measured 6.2 mm entry wedge past the 2 mm gripper
+        # gate; arriving between open pads, the ball settles on the jaw
+        # structure and is wrapped instead.
+        closure_lead_s = RIGID_REVIEW_PROFILE.bounce_closure_start_before_event_s
+    else:
+        closure_lead_s = RIGID_REVIEW_PROFILE.closure_start_before_ballistic_s
     closure_duration_s = (
         RIGID_REVIEW_PROFILE.robotiq_pickup_closure_duration_s
         if robotiq_pickup

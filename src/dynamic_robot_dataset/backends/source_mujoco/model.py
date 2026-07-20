@@ -112,10 +112,17 @@ def _is_floor_rooted_interception(corpus_leaf_id: str) -> bool:
 
     All of F1, plus F2a since its v10 floor rooting: these are fixtureless
     ballistic interceptions, so the procedural central robot table is false
-    appearance and the camera frame anchors at local height zero.
+    appearance and the camera frame anchors at local height zero.  F2c and
+    F2d joined with their owned floor-standing bounce pads and rebound
+    walls: a counter-raised copy of either fixture re-creates the measured
+    out-of-frame miss failures the F1/F2a rooting eliminated.
     """
 
-    return corpus_leaf_id.startswith("F1") or corpus_leaf_id == "F2a"
+    return corpus_leaf_id.startswith("F1") or corpus_leaf_id in {
+        "F2a",
+        "F2c",
+        "F2d",
+    }
 
 
 @contextmanager
@@ -708,9 +715,25 @@ def _add_secondary_camera(
         "camera",
         name="secondary_camera",
     )
-    if scenario.motion_kind in {
+    if scenario.motion_kind == "wall_rebound_interception":
+        anchor = scenario.physical_target_position_m
+        if anchor is None:
+            raise RuntimeError("interception camera lacks its physical target")
+        # The rebound wall stands behind the workspace at +X, so the default
+        # close right-side secondary would sit inside or behind it (in R1 it
+        # measurably framed the inside of a cabinet).  A -Y flank view keeps
+        # the launch, the tall wall face, and the catch in frame.
+        _set_camera_look_at(
+            camera,
+            position_m=(anchor[0] - 0.10, anchor[1] - 1.60, anchor[2] + 0.60),
+            target_m=(anchor[0] + 0.05, anchor[1], anchor[2] + 0.45),
+            fovy_deg=62.0,
+        )
+    elif scenario.motion_kind in {
         "direct_free_contact_interception",
         "rolling_pickup_interception",
+        "bounce_apex_pickup_interception",
+        "table_bounce_apex_pickup_interception",
     }:
         anchor = scenario.physical_target_position_m
         if anchor is None:
@@ -843,6 +866,9 @@ def _repair_task_camera(
     if scenario.motion_kind not in {
         "direct_free_contact_interception",
         "rolling_pickup_interception",
+        "wall_rebound_interception",
+        "bounce_apex_pickup_interception",
+        "table_bounce_apex_pickup_interception",
         "passive_projectile",
         "passive_wall_rebound",
     }:
@@ -853,6 +879,9 @@ def _repair_task_camera(
     if scenario.motion_kind in {
         "direct_free_contact_interception",
         "rolling_pickup_interception",
+        "wall_rebound_interception",
+        "bounce_apex_pickup_interception",
+        "table_bounce_apex_pickup_interception",
     }:
         anchor = scenario.physical_target_position_m or scenario.controller_target_position_m
         if anchor is None:
@@ -1017,6 +1046,29 @@ def _patch_calibrated_model(
         geom.set("condim", "3")
         geom.set("friction", " ".join(f"{value:.9g}" for value in surface.friction))
         geom.set("solref", " ".join(f"{value:.9g}" for value in surface.solref))
+        if surface.contact_profile == "rebound_wall":
+            # Same calibrated mixed wall pair as P0c, but with the 4 mm
+            # predictive margin the room floor and hand shells use: the F2d
+            # arc measurably recorded a 3.51 mm geometric wall penetration
+            # under the 2 mm margin, marginally past the 3 mm gate.
+            geom.set(
+                "margin",
+                f"{RIGID_REVIEW_PROFILE.wall_rebound_contact_margin_m:.9g}",
+            )
+            continue
+        if surface.contact_profile == "rebound_pad":
+            # The calibrated bounce pad owns its full contact response like
+            # the room floor and hand shells: mixed-pair plates measurably
+            # either exceed the 3 mm geometric-penetration gate at the fixed
+            # construction speed or inject energy through an underdamped
+            # margin catapult.
+            geom.set("solimp", "0.94 0.995 0.001")
+            geom.set("priority", "2")
+            geom.set(
+                "margin",
+                f"{RIGID_REVIEW_PROFILE.bounce_pad_contact_margin_m:.9g}",
+            )
+            continue
         # At 600 Hz a fast sphere can travel several millimetres per step.
         # A 2 mm predictive contact margin keeps geometric penetration within
         # the 3 mm hard limit without changing or scripting object motion.

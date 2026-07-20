@@ -20,7 +20,7 @@ from ...common.rebound import (
 
 
 SOURCE_MUJOCO_PROFILE_SCHEMA = "dynamic-robot-source-mujoco-profile/v1"
-SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v13"
+SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v13-f2cd1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +144,83 @@ class RigidReviewProfile:
     pickup_transport_end_s: float = 2.43
     robotiq_pickup_transport_start_s: float = 1.30
     robotiq_pickup_transport_end_s: float = 2.45
+    # v13-f2cd1 bounce/rebound interception (F2c/F2d).  The bounce pad is a
+    # priority-2 owned fixture emitted like the room floor and hand shells.
+    # The margin-sweep calibration measured that mixed-pair plates either
+    # exceed the 3 mm geometric-penetration gate above ~3.5 m/s or, when
+    # underdamped below ~0.5 damping ratio, inject energy through the 4 mm
+    # predictive margin (measured effective restitution up to 45.0 at
+    # 0.5 m/s: the margin acts as an undamped catapult).  (0.005, 0.5)
+    # keeps every measured construction-speed restitution inside
+    # [0.15, 1.05] with zero recorded geometric penetration at 1200 Hz.
+    bounce_pad_solref: tuple[float, float] = (0.005, 0.5)
+    bounce_pad_contact_margin_m: float = 0.004
+    # Measured pad restitution at the fixed 4.5 m/s construction impact,
+    # pinned from the compiled F2c scene at the 1200 Hz reference rate
+    # (isolated drop rigs measured 0.301; the full compiled contact stack
+    # measures 0.2466 and the recipe designs against the compiled value).
+    # The 600 Hz candidate under-resolves the stiff pad contact with
+    # step-phase jitter, so every F2c fixed class executes at the
+    # reference rate.
+    bounce_pad_effective_restitution: float = 0.2466
+    # Measured post-bounce lane-speed retention: the large normal impulse
+    # saturates the friction cone, the contact sticks tangentially, and the
+    # ball exits rolling at the measured fraction of its incoming lane
+    # speed (clean off-lane measurement: 0.6329 m/s out of 0.85 m/s in).
+    bounce_pad_lane_retention: float = 0.7446
+    bounce_impact_speed_m_s: float = 4.5
+    # Both variants toss the ball upward: the top-down apex pickup needs the
+    # ~0.70 s Franka-feasible reach, which measurably did not fit before a
+    # thrown-down ball's 0.47 s apex event.  A palm-up catch of the rising
+    # post-bounce arc is not physically available at this pad's measured
+    # restitution: the riser struck the hovering gripper's underside 50 ms
+    # after every bounce.
+    bounce_launch_vz_m_s: float = 3.0
+    # Rebound/bounce interceptions keep the finger cage open at arrival and
+    # close it around the event: the standard pre-closed fingertip wedge
+    # measurably deflected both the slow apex arrivals and the drifting
+    # wall carom instead of capturing them.
+    bounce_closure_start_before_event_s: float = 0.05
+    # The lane is fast enough that the post-bounce travel clears the pad
+    # laterally: at 0.45 m/s the palm bottom sits ~1 cm above the plate top
+    # with overlapping x-extents at every pad height, and the settled arm
+    # measurably rested against the plate edge instead of its commanded
+    # aim point.
+    bounce_lane_speed_m_s: float = 0.85
+    # A 0.032 m floor pad put the Robotiq apex pinch at a 0.15 m fold the
+    # arm measurably cannot reach inside any legal toss window (1.02 s
+    # Franka-feasible reach vs at most a 0.88 s arrival deadline); the low
+    # riser keeps the floor-level bounce semantics inside the proven
+    # pickup-reach envelope.
+    floor_bounce_pad_top_z_m: float = 0.17
+    # The taller pad places the post-bounce catch near z=0.48, inside the
+    # proven catch-extension band; at a 0.30 m pad the settled low folded
+    # posture measurably rested against the plate edge or could not verify
+    # its servo-settled aim.
+    table_bounce_pad_top_z_m: float = 0.40
+    # F2d reuses the P0c-calibrated wall contact pair at its proven
+    # 1.10 m/s impact speed; 0.20 effective restitution is the existing
+    # calibrated wall constant.  The arc meets the wall at 1.30 m while
+    # still rising so the carom drops into the fixed catch point.
+    wall_rebound_launch_speed_m_s: float = 1.10
+    wall_rebound_wall_time_s: float = 0.35
+    wall_rebound_post_time_s: float = 0.45
+    wall_rebound_hit_z_m: float = 1.50
+    # Measured F2d barrier restitution at the fixed 1.10 m/s impact under
+    # the 6 mm predictive wall margin.  The P0c 2 mm margin recorded a
+    # 3.51 mm geometric wall penetration on the F2d arc and 4 mm still
+    # recorded 3.09 mm, both past the 3 mm gate; the catch is placed from
+    # the measured compiled-scene restitution at the final margin (an
+    # earlier 0.1795 pin from the 4 mm measurement left the carom 1.4 cm
+    # off-aim and rammed a single pad edge 6.6 mm deep).
+    wall_rebound_contact_margin_m: float = 0.006
+    wall_rebound_effective_restitution: float = 0.1869
+    angled_barrier_yaw_rad: float = 0.4363323129985824
+    # Measured tangential speed retention through the barrier contact,
+    # pinned from the compiled-scene probe: the wall friction braked the
+    # rising tangential velocity from 0.584 to 0.472 m/s.  The same
+    # retention applies to the yawed barrier's in-plane tangent.
+    barrier_tangential_retention: float = 0.808
     maximum_gripper_penetration_m: float = 0.002
     maximum_task_surface_penetration_m: float = 0.003
     maximum_effective_restitution: float = 1.05
@@ -170,6 +247,16 @@ class RigidReviewProfile:
         "F1a/robotiq_2f85_thick_pad/nominal_success",
         "F1d/robotiq_2f85_thick_pad/nominal_success",
         "F2a/robotiq_2f85_thick_pad/nominal_success",
+        # The 600 Hz candidate under-resolves the stiff F2c bounce-pad
+        # contact: measured pad restitution 0.216 vs 0.301 at the reference
+        # rate flips the designed apex interception into a measured miss, a
+        # semantic 600 Hz defect like the listed P0c low-speed wall class.
+        "F2c/franka_hand/nominal_success",
+        "F2c/robotiq_2f85_thick_pad/nominal_success",
+        "F2c/franka_hand/deterministic_negative_initial_state",
+        "F2c/robotiq_2f85_thick_pad/deterministic_negative_initial_state",
+        "F2c/franka_hand/deterministic_negative_controller_timing",
+        "F2c/robotiq_2f85_thick_pad/deterministic_negative_controller_timing",
     )
     release_state: str = "blocked"
     schema_version: str = SOURCE_MUJOCO_PROFILE_SCHEMA
@@ -305,8 +392,59 @@ class RigidReviewProfile:
             "F1a/robotiq_2f85_thick_pad/nominal_success",
             "F1d/robotiq_2f85_thick_pad/nominal_success",
             "F2a/robotiq_2f85_thick_pad/nominal_success",
+            "F2c/franka_hand/nominal_success",
+            "F2c/robotiq_2f85_thick_pad/nominal_success",
+            "F2c/franka_hand/deterministic_negative_initial_state",
+            "F2c/robotiq_2f85_thick_pad/deterministic_negative_initial_state",
+            "F2c/franka_hand/deterministic_negative_controller_timing",
+            "F2c/robotiq_2f85_thick_pad/deterministic_negative_controller_timing",
         ):
             raise ValueError("reference-rate exception classes changed without calibration")
+        if self.bounce_pad_solref != (0.005, 0.5):
+            raise ValueError("bounce pad calibration changed without a profile version")
+        if not (
+            0.0
+            < self.bounce_pad_effective_restitution
+            <= self.maximum_effective_restitution
+        ):
+            raise ValueError("bounce pad restitution must stay within measured limits")
+        if self.bounce_pad_contact_margin_m <= 0.0:
+            raise ValueError("bounce pad predictive margin must be positive")
+        if (
+            self.bounce_impact_speed_m_s <= 0.0
+            or self.bounce_lane_speed_m_s <= 0.0
+            or self.bounce_launch_vz_m_s <= 0.0
+        ):
+            raise ValueError("bounce construction speeds lost their measured signs")
+        if self.bounce_launch_vz_m_s >= self.bounce_impact_speed_m_s:
+            raise ValueError("the tossed bounce must still fall onto its pad")
+        if not 0.0 < self.floor_bounce_pad_top_z_m < self.table_bounce_pad_top_z_m:
+            raise ValueError("bounce pad heights must stay ordered above the floor")
+        if not 0.0 < self.bounce_closure_start_before_event_s < self.closure_duration_s:
+            raise ValueError(
+                "bounce closure must start before its event and finish after it"
+            )
+        if (
+            self.wall_rebound_launch_speed_m_s <= 0.0
+            or self.wall_rebound_wall_time_s <= 0.0
+            or self.wall_rebound_post_time_s <= 0.0
+            or self.wall_rebound_hit_z_m <= 0.0
+        ):
+            raise ValueError("wall rebound construction lost its measured geometry")
+        if self.wall_rebound_contact_margin_m <= 0.0:
+            raise ValueError("wall rebound predictive margin must be positive")
+        if not (
+            self.minimum_rebound_effective_restitution
+            <= self.wall_rebound_effective_restitution
+            <= self.maximum_effective_restitution
+        ):
+            raise ValueError("wall rebound restitution must stay within measured limits")
+        if not 0.0 < self.angled_barrier_yaw_rad < math.pi / 2:
+            raise ValueError("angled barrier yaw must stay in (0, pi/2)")
+        if not 0.0 < self.barrier_tangential_retention <= 1.0:
+            raise ValueError("barrier tangential retention must be measured in (0, 1]")
+        if not 0.0 < self.bounce_pad_lane_retention <= 1.0:
+            raise ValueError("bounce pad lane retention must be measured in (0, 1]")
         if self.wall_effective_restitution > self.maximum_effective_restitution:
             raise ValueError("wall calibration injects contact energy")
         if self.rebound_acceptance() != DEFAULT_REBOUND_ACCEPTANCE:
@@ -316,6 +454,24 @@ class RigidReviewProfile:
         numeric = (
             *self.wall_solref,
             *self.table_rebound_solref,
+            *self.bounce_pad_solref,
+            self.bounce_pad_contact_margin_m,
+            self.bounce_pad_effective_restitution,
+            self.bounce_impact_speed_m_s,
+            self.bounce_launch_vz_m_s,
+            self.bounce_lane_speed_m_s,
+            self.floor_bounce_pad_top_z_m,
+            self.table_bounce_pad_top_z_m,
+            self.bounce_closure_start_before_event_s,
+            self.wall_rebound_launch_speed_m_s,
+            self.wall_rebound_wall_time_s,
+            self.wall_rebound_post_time_s,
+            self.wall_rebound_hit_z_m,
+            self.wall_rebound_contact_margin_m,
+            self.wall_rebound_effective_restitution,
+            self.angled_barrier_yaw_rad,
+            self.barrier_tangential_retention,
+            self.bounce_pad_lane_retention,
             self.wall_effective_restitution,
             self.minimum_rebound_effective_restitution,
             self.minimum_rebound_outgoing_normal_speed_m_s,

@@ -27,8 +27,8 @@ from .rolling_island import (
 )
 
 
-SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v6"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.15.0-review"
+SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v7"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.16.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):
@@ -78,7 +78,8 @@ IMPLEMENTED_REVIEW_VARIANTS: Mapping[str, tuple[str, ...]] = {
     "F1c": ("drift_catch", "drift_near_miss"),
     "F1d": ("mild_projectile_catch", "mild_projectile_near_miss"),
     "F2a": ("direct_catch", "direct_deflection"),
-    "F2d": ("wall_rebound",),
+    "F2c": ("table_bounce", "floor_bounce"),
+    "F2d": ("wall_rebound", "angled_barrier_rebound"),
     "F3b": ("rolling_pickup", "rolling_pickup_transport"),
 }
 
@@ -101,6 +102,7 @@ class PhysicalSurface:
     euler_rad: tuple[float, float, float] = (0.0, 0.0, 0.0)
     friction: tuple[float, float, float] = (0.9, 0.005, 0.0001)
     solref: tuple[float, float] = (0.012, 0.7)
+    contact_profile: str = "mixed"
     expected_task_contact: bool = True
     supports_fixture_id: str | None = None
     grounded_plane_z_m: float | None = None
@@ -127,6 +129,8 @@ class PhysicalSurface:
         solref = _finite_tuple(self.solref, 2, "surface solref")
         if solref[0] <= 0 or solref[1] <= 0:
             raise SourceMujocoUnsupported("surface solref must be positive")
+        if self.contact_profile not in {"mixed", "rebound_pad", "rebound_wall"}:
+            raise SourceMujocoUnsupported("surface contact profile is not calibrated")
         if self.role == "structural_support":
             if self.expected_task_contact:
                 raise SourceMujocoUnsupported(
@@ -342,14 +346,20 @@ class SourceMujocoCompiledScenario:
         requires_owned_supports = bool(
             self.requires_real_robocasa
             and self.corpus_leaf_id in {"P0c", "P0d"}
+        ) or (
+            # The F2c elevated bounce pad stands on its own grounded legs in
+            # every scene: the fixture is floor-rooted, so R0 needs the same
+            # physical frame R1 does.
+            self.corpus_leaf_id == "F2c"
+            and self.task_variant == "table_bounce"
         )
         if requires_owned_supports and len(structural_supports) != 4:
             raise SourceMujocoUnsupported(
-                "elevated R1 P0c/P0d fixtures require four owned grounded supports"
+                "elevated fixtures require four owned grounded supports"
             )
         if not requires_owned_supports and structural_supports:
             raise SourceMujocoUnsupported(
-                "owned elevated structural supports are restricted to R1 P0c/P0d"
+                "owned elevated structural supports are restricted to elevated fixtures"
             )
         for support in structural_supports:
             target = surface_by_name.get(str(support.supports_fixture_id))
@@ -496,12 +506,29 @@ def _surface(
     *,
     euler: Sequence[float] = (0.0, 0.0, 0.0),
     table_rebound: bool = False,
+    rebound_pad: bool = False,
+    rebound_wall: bool = False,
     expected_task_contact: bool = True,
     supports_fixture_id: str | None = None,
     grounded_plane_z_m: float | None = None,
     support_interface_maximum_mismatch_m: float | None = None,
 ) -> PhysicalSurface:
-    if role == "wall":
+    contact_profile = "mixed"
+    if rebound_pad:
+        if table_rebound or role != "table":
+            raise SourceMujocoUnsupported(
+                "the calibrated rebound pad is a dedicated table-role fixture"
+            )
+        solref = RIGID_REVIEW_PROFILE.bounce_pad_solref
+        contact_profile = "rebound_pad"
+    elif rebound_wall:
+        if role != "wall":
+            raise SourceMujocoUnsupported(
+                "the calibrated rebound wall margin requires a wall surface"
+            )
+        solref = RIGID_REVIEW_PROFILE.wall_solref
+        contact_profile = "rebound_wall"
+    elif role == "wall":
         solref = RIGID_REVIEW_PROFILE.wall_solref
     elif table_rebound:
         if role != "table":
@@ -518,6 +545,7 @@ def _surface(
         half_size_m=_finite_tuple(half_size, 3, "surface size"),  # type: ignore[arg-type]
         euler_rad=_finite_tuple(euler, 3, "surface rotation"),  # type: ignore[arg-type]
         solref=solref,
+        contact_profile=contact_profile,
         expected_task_contact=expected_task_contact,
         supports_fixture_id=supports_fixture_id,
         grounded_plane_z_m=grounded_plane_z_m,
@@ -879,61 +907,236 @@ def _recipe(
             ),
         )
     elif leaf_id == "F2c":
-        event_time = 0.68
-        bounce_time = 0.25
-        target = np.array((0.50, 0.0, catch_z), dtype=np.float64)
-        plate_top = tabletop_height_m + 0.008
-        contact_z = plate_top + radius
-        post_time = event_time - bounce_time
-        outgoing_vz = (close_z - contact_z + 0.5 * 9.81 * post_time**2) / post_time
-        incoming_vz = -outgoing_vz / RIGID_REVIEW_PROFILE.wall_effective_restitution
-        start_z = contact_z - incoming_vz * bounce_time + 0.5 * 9.81 * bounce_time**2
-        start_x = 0.22
-        vx = (target[0] - start_x) / event_time
-        controller_target = target + (np.array((0.0, 0.10, 0.0)) if negative else 0.0)
+        # Both variants share one measured launch: the ball strikes the
+        # calibrated priority-2 bounce pad at exactly the profiled impact
+        # speed and the post-bounce state follows the measured 1200 Hz pad
+        # restitution.  The old plate design demanded a ~16 m/s impact
+        # (guaranteed tunneling) to reach a 0.5 m catch through the dead
+        # 0.20 wall constant; the repaired construction instead intercepts
+        # near the measured bounce apex.
+        gravity_mag = abs(gravity[2])
+        impact = RIGID_REVIEW_PROFILE.bounce_impact_speed_m_s
+        launch_vz = RIGID_REVIEW_PROFILE.bounce_launch_vz_m_s
+        lane_vx = RIGID_REVIEW_PROFILE.bounce_lane_speed_m_s
+        fall_time = (impact + launch_vz) / gravity_mag
+        drop = (impact**2 - launch_vz**2) / (2.0 * gravity_mag)
+        vout = impact * RIGID_REVIEW_PROFILE.bounce_pad_effective_restitution
+        rise_time = vout / gravity_mag
+        rise = vout**2 / (2.0 * gravity_mag)
+        # The saturated friction cone sticks the contact tangentially: the
+        # measured post-bounce lane speed is the retained fraction, and the
+        # ball exits rolling.
+        lane_out = lane_vx * RIGID_REVIEW_PROFILE.bounce_pad_lane_retention
+        pad_half_z = 0.016
+        # Both variants are top-down apex pickups on the F3b lane (the ball
+        # travels toward the robot along -X, entering the open finger
+        # corridor), differing only in the calibrated pad's elevation.
+        # Every other arrangement measurably failed: a palm-up catch of the
+        # rising arc struck the gripper's underside 50 ms after the bounce,
+        # a +Y apex lane drove the ball broadside into a hanging finger
+        # post before the grasp point, and the low thrown-down lane clipped
+        # the reaching arm.  The tossed arc crosses the workspace more than
+        # a metre up, bounces, and hangs nearly stationary between the
+        # descending fingers at the apex — the proven F3b grasp regime.
+        pad_top = (
+            RIGID_REVIEW_PROFILE.floor_bounce_pad_top_z_m
+            if task_variant == "floor_bounce"
+            else RIGID_REVIEW_PROFILE.table_bounce_pad_top_z_m
+        )
+        contact_z = pad_top + radius
+        target = np.array((0.47, 0.0, contact_z + rise), dtype=np.float64)
+        event_time = fall_time + rise_time
+        bounce_x = float(target[0]) + lane_out * rise_time
+        pad_half = (0.10, 0.18, pad_half_z)
+        pad_center_x = bounce_x + 0.05
+        motion_kind = (
+            "bounce_apex_pickup_interception"
+            if task_variant == "floor_bounce"
+            else "table_bounce_apex_pickup_interception"
+        )
+        start_xy = np.array(
+            (bounce_x + lane_vx * fall_time, 0.0),
+            dtype=np.float64,
+        )
+        controller_target = target.copy()
+        if embodiment == ROBOTIQ_2F85_THICK_PAD:
+            controller_target[2] += RIGID_REVIEW_PROFILE.robotiq_pickup_standoff_m
+            # The pads finish closing after the apex event while the ball
+            # keeps moving along the lane at the measured retained speed;
+            # the pinch center sits where the ball will be at full closure
+            # (measured 0.063 s of pad contact before the centered pinch
+            # slid off the still-moving ball).
+            controller_target[0] -= lane_out * (
+                RIGID_REVIEW_PROFILE.robotiq_pickup_closure_duration_s
+                - RIGID_REVIEW_PROFILE.robotiq_pickup_closure_start_before_event_s
+            )
+        if negative:
+            # Keep the physical bounce and the intended difficult seed; a
+            # negative changes only its declared intervention stream along
+            # the lane's lateral axis, exactly like the F3b negatives.  The
+            # pad spans the shifted lane so the declared rebound still
+            # occurs.
+            if "initial_state" in branch_role:
+                start_xy[1] += 0.135
+            elif "controller" in branch_role:
+                controller_target[1] += 0.10
+            else:
+                controller_target[0] -= 0.10
+        pad = _surface(
+            "owned_bounce_pad",
+            "table",
+            (pad_center_x, 0.0, pad_top - pad_half_z),
+            pad_half,
+            rebound_pad=True,
+        )
+        supports: tuple[PhysicalSurface, ...] = ()
+        if task_variant == "table_bounce":
+            leg_half = (0.015, 0.015, (pad_top - 2.0 * pad_half_z) / 2.0)
+            supports = tuple(
+                PhysicalSurface(
+                    name=f"owned_bounce_pad_leg_{index}",
+                    role="structural_support",
+                    position_m=(
+                        pad_center_x + sign_x * (pad_half[0] - 0.015),
+                        sign_y * (pad_half[1] - 0.015),
+                        leg_half[2],
+                    ),
+                    half_size_m=leg_half,
+                    solref=(0.003, 1.0),
+                    expected_task_contact=False,
+                    supports_fixture_id="owned_bounce_pad",
+                    grounded_plane_z_m=0.0,
+                    support_interface_maximum_mismatch_m=0.0,
+                )
+                for index, (sign_x, sign_y) in enumerate(
+                    ((-1, -1), (-1, 1), (1, -1), (1, 1))
+                )
+            )
         base.update(
             key_event_time_s=event_time,
-            motion_kind="floor_rebound_interception",
-            object_initial_position_m=(float(start_x), 0.0, float(start_z)),
-            object_initial_linear_velocity_m_s=(float(vx), 0.0, float(incoming_vz)),
+            motion_kind=motion_kind,
+            object_initial_position_m=(
+                float(start_xy[0]),
+                float(start_xy[1]),
+                float(contact_z + drop),
+            ),
+            object_initial_linear_velocity_m_s=(
+                float(-lane_vx),
+                0.0,
+                float(launch_vz),
+            ),
             ballistic_event_time_s=event_time,
             physical_target_position_m=tuple(float(value) for value in target),
-            controller_target_position_m=tuple(float(value) for value in controller_target),
-            surfaces=(
-                _surface(
-                    "supported_floor_bounce_plate",
-                    "table",
-                    (0.32, 0.0, tabletop_height_m + 0.004),
-                    (0.30, 0.28, 0.008),
-                ),
+            controller_target_position_m=tuple(
+                float(value) for value in controller_target
             ),
+            surfaces=(pad, *supports),
         )
-    elif leaf_id == "F2d" and task_variant == "wall_rebound":
-        event_time = 0.62
-        wall_time = 0.22
-        target = np.array((0.47, 0.0, catch_z), dtype=np.float64)
-        wall_x = 0.18
-        face_x = wall_x + 0.02 + radius
-        post_time = event_time - wall_time
-        vx_post = (target[0] - face_x) / post_time
-        vx_pre = -vx_post / RIGID_REVIEW_PROFILE.wall_effective_restitution
-        start_x = face_x - vx_pre * wall_time
-        start_z = close_z + 0.5 * 9.81 * event_time**2
-        controller_target = target + (np.array((0.0, 0.10, 0.0)) if negative else 0.0)
+    elif leaf_id == "F2d":
+        # The carom reuses the P0c-calibrated wall contact pair at its
+        # proven 1.10 m/s impact speed.  The old construction dropped the
+        # ball from a free-fall column that crossed the wall plane roughly
+        # one metre above the wall top (measured: no wall contact at all,
+        # a 4.2 mm floor penetration, and every key event out of frame).
+        gravity_mag = abs(gravity[2])
+        launch = RIGID_REVIEW_PROFILE.wall_rebound_launch_speed_m_s
+        wall_time = RIGID_REVIEW_PROFILE.wall_rebound_wall_time_s
+        post_time = RIGID_REVIEW_PROFILE.wall_rebound_post_time_s
+        z_hit = RIGID_REVIEW_PROFILE.wall_rebound_hit_z_m
+        e_wall = RIGID_REVIEW_PROFILE.wall_rebound_effective_restitution
+        event_time = wall_time + post_time
+        # The wall friction brakes the rising tangential velocity by the
+        # measured retention while the ball is in contact.
+        retention = RIGID_REVIEW_PROFILE.barrier_tangential_retention
+        vz_wall = (
+            close_z - z_hit + 0.5 * gravity_mag * post_time**2
+        ) / (retention * post_time)
+        vz0 = vz_wall + gravity_mag * wall_time
+        start_z = z_hit - vz0 * wall_time + 0.5 * gravity_mag * wall_time**2
+        # The ball rises along +Y past the robot's flank and caroms off a
+        # laterally yawed wall so the retained tangential drift runs
+        # x-dominant AWAY from the base — along the jaw slot toward the
+        # fingertip taper, the regime the sealed F1c drift catches hold.
+        # Every radial wall placement measurably failed: a robot-facing
+        # wall's carom always drifts palm-ward and sank through the
+        # Robotiq jaw, an across-slot drift knifed 4.6-6.6 mm into the
+        # unmargined pads, and a wall between the base and the catch
+        # overlapped the initialized arm.  The launch starts above
+        # shoulder height so the steep rising leg clears the reaching arm.
+        in_xy = np.array((0.0, launch), dtype=np.float64)
+        wall_half = (0.18, 0.02, 0.78)
+        if task_variant == "wall_rebound":
+            # The Panda's open cage holds this straight wall's across-slot
+            # drift (measured 1.07 s retention).  The Robotiq jaw does not:
+            # its carom always drifts palm-ward for any radial wall and
+            # measurably sank through the jaw, and every lateral-yaw wall
+            # that turned the drift fingertip-ward either crossed the
+            # pedestal envelope or left the settled jaw unverifiable.  F2d
+            # therefore stays execution-blocked on the named Robotiq
+            # retention defect while this construction remains the honest
+            # shared recipe.
+            yaw = 0.0
+            aim_xy = np.array((0.47, 0.053), dtype=np.float64)
+        else:
+            yaw = -RIGID_REVIEW_PROFILE.angled_barrier_yaw_rad
+            aim_xy = np.array((0.42, 0.0), dtype=np.float64)
+        normal = np.array((math.sin(yaw), -math.cos(yaw)), dtype=np.float64)
+        normal_speed_in = float(in_xy @ normal)
+        tangent_xy = in_xy - normal_speed_in * normal
+        out_xy = -e_wall * normal_speed_in * normal + retention * tangent_xy
+        contact_xy = aim_xy - out_xy * post_time
+        wall_center_xy = contact_xy - (wall_half[1] + radius) * normal
+        wall_yaw = yaw
+        catch_xy = contact_xy + out_xy * post_time
+        target = np.array(
+            (catch_xy[0], catch_xy[1], close_z), dtype=np.float64
+        )
+        start_xy = contact_xy - in_xy * wall_time
+        controller_target = target.copy()
+        if embodiment == FRANKA_HAND:
+            # The open cage closes around the drifting carom and pins it at
+            # closure completion; the measured successful catch centered the
+            # cage on the ball's position at that instant, while centering
+            # on the event-time position measurably let the ball drift past
+            # the closing fingers.
+            wrap_lead_s = (
+                RIGID_REVIEW_PROFILE.closure_duration_s
+                - RIGID_REVIEW_PROFILE.bounce_closure_start_before_event_s
+            )
+            controller_target[0] += float(out_xy[0]) * wrap_lead_s
+            controller_target[1] += float(out_xy[1]) * wrap_lead_s
+        if negative:
+            # Same declared intervention streams as the F1/F2a negatives,
+            # applied along the lane's lateral axis (X for the +Y lane);
+            # the wall spans the shifted lane so the rebound still occurs.
+            if "initial_state" in branch_role:
+                start_xy[0] += 0.135
+            elif "controller" in branch_role:
+                controller_target[0] += 0.10
+            else:
+                controller_target[1] -= 0.10
         base.update(
             key_event_time_s=event_time,
             motion_kind="wall_rebound_interception",
-            object_initial_position_m=(float(start_x), 0.0, float(start_z)),
-            object_initial_linear_velocity_m_s=(float(vx_pre), 0.0, 0.0),
+            object_initial_position_m=(
+                float(start_xy[0]),
+                float(start_xy[1]),
+                float(start_z),
+            ),
+            object_initial_linear_velocity_m_s=(0.0, float(launch), float(vz0)),
             ballistic_event_time_s=event_time,
             physical_target_position_m=tuple(float(value) for value in target),
-            controller_target_position_m=tuple(float(value) for value in controller_target),
+            controller_target_position_m=tuple(
+                float(value) for value in controller_target
+            ),
             surfaces=(
                 _surface(
                     "supported_wall_rebound_barrier",
                     "wall",
-                    (wall_x, 0.0, tabletop_height_m + 0.58),
-                    (0.02, 0.50, 0.58),
+                    (float(wall_center_xy[0]), float(wall_center_xy[1]), wall_half[2]),
+                    wall_half,
+                    euler=(0.0, 0.0, float(wall_yaw)),
+                    rebound_wall=True,
                 ),
             ),
         )
@@ -1104,10 +1307,13 @@ def compile_review_case(
     # fixtureless ballistic interception and therefore its floor rooting:
     # counter-rooted F2a misses measurably fell 2.2 m out of frame and into
     # background furniture, failing the rendered visibility/clearance QC that
-    # the F1 rooting was introduced to satisfy.
+    # the F1 rooting was introduced to satisfy.  F2c and F2d root their owned
+    # bounce pads and rebound walls on the same room floor: their misses land
+    # and settle on that floor, and a counter-raised copy of either fixture
+    # would re-create the identical out-of-frame failure class.
     task_height = (
         0.0
-        if leaf_id.startswith("F1") or leaf_id == "F2a"
+        if leaf_id.startswith("F1") or leaf_id in {"F2a", "F2c", "F2d"}
         else external_tabletop_height
     )
     robot_base_position = (
@@ -1169,6 +1375,11 @@ def compile_review_case(
             and embodiment == ROBOTIQ_2F85_THICK_PAD
             and branch_role == "nominal_success"
         )
+        # Every F2c fixed class: the 600 Hz candidate under-resolves the
+        # stiff calibrated bounce-pad contact (measured pad restitution
+        # 0.216 vs 0.301 at the reference rate), which measurably converts
+        # the designed apex interception into a miss.
+        or leaf_id == "F2c"
     )
     result = SourceMujocoCompiledScenario(
         case_id=str(value.get("case_id") or ""),
