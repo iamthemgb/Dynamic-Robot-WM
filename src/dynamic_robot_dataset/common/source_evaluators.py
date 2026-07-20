@@ -10,6 +10,10 @@ from .contract_v2 import (
     ObjectiveRecomputeInput,
     ObjectiveRecomputeResult,
 )
+from .grasp_retention import (
+    DEFAULT_GRASP_RETENTION,
+    GraspRetentionThresholds,
+)
 from .rebound import (
     DEFAULT_REBOUND_ACCEPTANCE,
     ReboundAcceptanceThresholds,
@@ -18,7 +22,8 @@ from .rebound import (
 from .schema import ActualOutcomeClass
 
 
-SOURCE_OBJECTIVE_EVALUATOR_VERSION = "1.4.0"
+SOURCE_OBJECTIVE_EVALUATOR_VERSION = "1.5.0"
+SOURCE_OBJECTIVE_EVALUATOR_LEGACY_VERSION = "1.4.0"
 SOURCE_OBJECTIVE_EVALUATOR_IDS = (
     "passive_freeflight_v1",
     "passive_projectile_v1",
@@ -348,6 +353,29 @@ def _bound_rebound_acceptance(
     return thresholds, object_radius_m
 
 
+def _bound_grasp_retention(
+    source_spec: Mapping[str, Any],
+) -> tuple[GraspRetentionThresholds, float]:
+    physics = source_spec.get("physics")
+    if not isinstance(physics, Mapping):
+        raise ValueError("source catch evaluator lacks scenario physics")
+    raw_thresholds = physics.get("grasp_retention")
+    if not isinstance(raw_thresholds, Mapping):
+        raise ValueError("source catch evaluator lacks grasp-retention thresholds")
+    thresholds = GraspRetentionThresholds.from_dict(raw_thresholds)
+    if thresholds != DEFAULT_GRASP_RETENTION:
+        raise ValueError(
+            "persisted grasp retention differs from evaluator v1.5.0"
+        )
+    try:
+        duration_s = float(source_spec["duration_s"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("source catch evaluator lacks duration_s") from error
+    if not math.isfinite(duration_s) or duration_s < thresholds.final_window_s:
+        raise ValueError("source catch evaluator has invalid duration_s")
+    return thresholds, duration_s
+
+
 def evaluate_source_rows(
     *,
     evaluator_id: str,
@@ -356,11 +384,17 @@ def evaluate_source_rows(
     source_spec: Mapping[str, Any],
     state_rows: Sequence[Mapping[str, Any]],
     event_rows: Sequence[Mapping[str, Any]],
+    _evaluator_version: str = SOURCE_OBJECTIVE_EVALUATOR_VERSION,
 ) -> ObjectiveRecomputeResult:
     """Recompute a source outcome without branch intent or online labels."""
 
     if evaluator_id not in SOURCE_OBJECTIVE_EVALUATOR_IDS:
         raise ValueError(f"unsupported source objective evaluator {evaluator_id!r}")
+    if _evaluator_version not in {
+        SOURCE_OBJECTIVE_EVALUATOR_VERSION,
+        SOURCE_OBJECTIVE_EVALUATOR_LEGACY_VERSION,
+    }:
+        raise ValueError(f"unsupported source objective version {_evaluator_version!r}")
     rebound_contract = (
         _bound_rebound_acceptance(source_spec)
         if evaluator_id == "passive_rebound_v1"
@@ -477,29 +511,99 @@ def evaluate_source_rows(
     if not math.isfinite(simulation_hz) or simulation_hz <= 0:
         raise ValueError("source catch evaluator lacks simulation_hz")
     maximum_run = run = 0
-    relative_positions: list[tuple[float, ...]] = []
     for row in state_rows:
         bilateral = row.get("contact.bilateral") is True
         run = run + 1 if bilateral else 0
         maximum_run = max(maximum_run, run)
-        if bilateral:
+    sustained = maximum_run / simulation_hz >= 0.05
+    stable = False
+    relative_range = None
+    retention_evidence: dict[str, Any] = {}
+    if _evaluator_version == SOURCE_OBJECTIVE_EVALUATOR_VERSION:
+        retention, duration_s = _bound_grasp_retention(source_spec)
+        final_rows = [
+            row
+            for row in state_rows
+            if float(row.get("timestamp", -math.inf))
+            >= duration_s - retention.final_window_s - 1e-12
+        ]
+        final_bilateral_rows = [
+            row for row in final_rows if row.get("contact.bilateral") is True
+        ]
+        final_bilateral_fraction = (
+            len(final_bilateral_rows) / len(final_rows) if final_rows else 0.0
+        )
+        final_bilateral_contact = bool(
+            final_rows and final_rows[-1].get("contact.bilateral") is True
+        )
+        retained_through_final_state = bool(
+            final_bilateral_contact
+            and final_bilateral_fraction >= retention.minimum_bilateral_fraction
+        )
+        relative_positions = []
+        for row in final_bilateral_rows:
             object_position = _vector(row, "object.position")
             grasp_center = _vector(row, "grasp.center_position")
             if object_position is not None and grasp_center is not None:
                 relative_positions.append(
-                    tuple(left - right for left, right in zip(object_position, grasp_center))
+                    tuple(
+                        left - right
+                        for left, right in zip(object_position, grasp_center)
+                    )
                 )
-    sustained = maximum_run / simulation_hz >= 0.05
-    stable = False
-    relative_range = None
-    retention_samples = int(round(0.10 * simulation_hz))
-    if len(relative_positions) >= retention_samples > 0:
-        recent = relative_positions[-retention_samples:]
-        relative_range = max(
-            max(row[axis] for row in recent) - min(row[axis] for row in recent)
-            for axis in range(3)
+        retention_samples = max(
+            2,
+            int(
+                round(
+                    retention.final_window_s
+                    * simulation_hz
+                    * retention.minimum_bilateral_fraction
+                )
+            ),
         )
-        stable = relative_range <= 0.01
+        if (
+            retained_through_final_state
+            and len(relative_positions) >= retention_samples
+        ):
+            relative_range = max(
+                max(row[axis] for row in relative_positions)
+                - min(row[axis] for row in relative_positions)
+                for axis in range(3)
+            )
+            stable = relative_range <= retention.maximum_relative_range_m
+        retention_evidence = {
+            "retained_through_final_state": retained_through_final_state,
+            "final_bilateral_contact": final_bilateral_contact,
+            "final_retention_window_s": retention.final_window_s,
+            "final_retention_bilateral_fraction": final_bilateral_fraction,
+        }
+    else:
+        # Exact v1.4 replay for already sealed artifacts.  This historical
+        # evaluator intentionally used the last 100 ms of *bilateral rows*,
+        # even when those rows occurred before the rollout ended.  It remains
+        # registered for provenance replay only; new episodes always use v1.5.
+        relative_positions = []
+        for row in state_rows:
+            if row.get("contact.bilateral") is not True:
+                continue
+            object_position = _vector(row, "object.position")
+            grasp_center = _vector(row, "grasp.center_position")
+            if object_position is not None and grasp_center is not None:
+                relative_positions.append(
+                    tuple(
+                        left - right
+                        for left, right in zip(object_position, grasp_center)
+                    )
+                )
+        retention_samples = int(round(0.10 * simulation_hz))
+        if len(relative_positions) >= retention_samples > 0:
+            recent = relative_positions[-retention_samples:]
+            relative_range = max(
+                max(row[axis] for row in recent)
+                - min(row[axis] for row in recent)
+                for axis in range(3)
+            )
+            stable = relative_range <= 0.01
     transport_supported = True
     # A pickup is only complete when the grasp physically carries the object:
     # both rolling-pickup variants lift, so displacement evidence is required
@@ -530,6 +634,7 @@ def evaluate_source_rows(
         "maximum_contiguous_bilateral_contact_s": maximum_run / simulation_hz,
         "sustained_opposing_bilateral_contacts": sustained,
         "stable_object_to_grasp_transform": stable,
+        **retention_evidence,
         "maximum_object_to_grasp_relative_range_m": relative_range,
         "displacement_physically_supported_by_contacts": transport_supported,
         "tool_contact_count": tool_contacts,
@@ -570,23 +675,48 @@ def evaluate_source_persisted(value: ObjectiveRecomputeInput) -> ObjectiveRecomp
     )
 
 
+def _evaluate_source_persisted_legacy_v1_4(
+    value: ObjectiveRecomputeInput,
+) -> ObjectiveRecomputeResult:
+    source_spec = value.record.extras.get("source_scenario_spec")
+    if not isinstance(source_spec, Mapping):
+        raise ValueError("source objective evaluator lacks SourceScenarioSpec")
+    return evaluate_source_rows(
+        evaluator_id=value.record.objective_evaluator_id,
+        corpus_leaf_id=str(source_spec.get("corpus_leaf_id") or ""),
+        task_variant=str(source_spec.get("task_variant") or value.record.variant),
+        source_spec=source_spec,
+        state_rows=value.object_state_rows or value.frame_rows,
+        event_rows=value.event_rows,
+        _evaluator_version=SOURCE_OBJECTIVE_EVALUATOR_LEGACY_VERSION,
+    )
+
+
 def register_source_objective_evaluators() -> None:
     for evaluator_id in SOURCE_OBJECTIVE_EVALUATOR_IDS:
-        try:
-            DEFAULT_OBJECTIVE_EVALUATORS.register(
-                evaluator_id,
-                SOURCE_OBJECTIVE_EVALUATOR_VERSION,
-                evaluate_source_persisted,
-            )
-        except ValueError as error:
-            if "already registered" not in str(error):
-                raise
+        for version, evaluator in (
+            (SOURCE_OBJECTIVE_EVALUATOR_VERSION, evaluate_source_persisted),
+            (
+                SOURCE_OBJECTIVE_EVALUATOR_LEGACY_VERSION,
+                _evaluate_source_persisted_legacy_v1_4,
+            ),
+        ):
+            try:
+                DEFAULT_OBJECTIVE_EVALUATORS.register(
+                    evaluator_id,
+                    version,
+                    evaluator,
+                )
+            except ValueError as error:
+                if "already registered" not in str(error):
+                    raise
 
 
 __all__ = [
     "PASSIVE_EVENT_PROJECTILE_APEX",
     "PASSIVE_EVENT_TASK_SURFACE_CONTACT",
     "SOURCE_OBJECTIVE_EVALUATOR_IDS",
+    "SOURCE_OBJECTIVE_EVALUATOR_LEGACY_VERSION",
     "SOURCE_OBJECTIVE_EVALUATOR_VERSION",
     "evaluate_source_persisted",
     "evaluate_source_rows",

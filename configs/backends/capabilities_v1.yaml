@@ -98,16 +98,16 @@ backends:
         family: projectile_rebound
         subfamily: table_floor_bounce
         embodiments: [franka_hand, robotiq_2f85_thick_pad]
-        implemented_task_variants: []
-        execution_state: blocked
-        blockers: [floor_bounce_interception_profile_not_accepted]
+        implemented_task_variants: [table_bounce, floor_bounce]
+        execution_state: review
+        blockers: []
       - leaf: F2d
         family: projectile_rebound
         subfamily: wall_barrier_rebound
         embodiments: [franka_hand, robotiq_2f85_thick_pad]
-        implemented_task_variants: [wall_rebound]
+        implemented_task_variants: [wall_rebound, angled_barrier_rebound]
         execution_state: blocked
-        blockers: [angled_barrier_rebound_not_implemented]
+        blockers: [robotiq_rebound_retention_geometry_not_validated, fixed_review_penetration_failures_unresolved]
       - leaf: F2e
         family: projectile_rebound
         subfamily: multi_surface_rebound

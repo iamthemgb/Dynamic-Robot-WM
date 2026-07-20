@@ -25,9 +25,11 @@ from .corpus_registry import (
     load_corpus_registry,
 )
 from .hashing import canonical_json_bytes, sha256_json
+from .grasp_retention import DEFAULT_GRASP_RETENTION, GraspRetentionThresholds
 
 
-SOURCE_SCENARIO_SCHEMA_VERSION = "dynamic-robot-source-scenario/v1"
+LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION = "dynamic-robot-source-scenario/v1"
+SOURCE_SCENARIO_SCHEMA_VERSION = "dynamic-robot-source-scenario/v2"
 _CONTENT_HASH_PATTERN = re.compile(
     r"^(?:[0-9a-f]{64}|sha256:[0-9a-f]{64}|git:[0-9a-f]{40})$"
 )
@@ -476,7 +478,10 @@ class SourceScenarioSpec:
         backend_registry: BackendCapabilityRegistry | None = None,
         require_released: bool = False,
     ) -> None:
-        if self.schema_version != SOURCE_SCENARIO_SCHEMA_VERSION:
+        if self.schema_version not in {
+            LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION,
+            SOURCE_SCENARIO_SCHEMA_VERSION,
+        }:
             raise SourceScenarioValidationError(
                 f"unsupported source scenario schema {self.schema_version!r}"
             )
@@ -512,6 +517,28 @@ class SourceScenarioSpec:
             raise SourceScenarioValidationError("physics and initial_state cannot be empty")
         _validate_json_value(self.physics, "physics")
         _validate_json_value(self.initial_state, "initial_state")
+        if (
+            self.schema_version == SOURCE_SCENARIO_SCHEMA_VERSION
+            and self.backend == "source_mujoco"
+        ):
+            if self.physics.get("evaluator") != leaf.evaluator:
+                raise SourceScenarioValidationError(
+                    "source_mujoco physics evaluator differs from the corpus registry"
+                )
+            if self.embodiment.end_effector != "no_robot":
+                raw_retention = self.physics.get("grasp_retention")
+                if not isinstance(raw_retention, Mapping):
+                    raise SourceScenarioValidationError(
+                        "actuated source_mujoco physics lacks grasp retention"
+                    )
+                try:
+                    retention = GraspRetentionThresholds.from_dict(raw_retention)
+                except ValueError as error:
+                    raise SourceScenarioValidationError(str(error)) from error
+                if retention != DEFAULT_GRASP_RETENTION:
+                    raise SourceScenarioValidationError(
+                        "source_mujoco grasp retention differs from evaluator v1.5.0"
+                    )
         fixture_ids = [fixture.fixture_id for fixture in self.fixtures]
         if len(fixture_ids) != len(set(fixture_ids)):
             raise SourceScenarioValidationError("fixture IDs must be unique")
@@ -675,6 +702,7 @@ __all__ = [
     "CounterfactualIdentity",
     "EmbodimentSpec",
     "FixtureSpec",
+    "LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION",
     "PoseSpec",
     "RNGSubseeds",
     "RoboCasaAssetManifest",

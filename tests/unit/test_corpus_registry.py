@@ -77,6 +77,7 @@ def test_review_execution_is_per_leaf_and_does_not_release_production() -> None:
         "F1c",
         "F1d",
         "F2a",
+        "F2c",
         "F3b",
     }
 
@@ -101,6 +102,29 @@ def test_review_execution_is_per_leaf_and_does_not_release_production() -> None:
                 assert support.blockers == ()
             else:
                 assert support.blockers
+
+
+def test_f2c_is_review_executable_while_f2d_remains_explicitly_blocked() -> None:
+    corpus = load_corpus_registry()
+    source = load_backend_capability_registry(corpus=corpus).by_name[
+        "source_mujoco"
+    ]
+    f2c = source.support_by_leaf["F2c"]
+    f2d = source.support_by_leaf["F2d"]
+
+    assert f2c.execution_state is ExecutionState.REVIEW
+    assert f2c.implemented_task_variants == ("table_bounce", "floor_bounce")
+    assert f2c.blockers == ()
+
+    assert f2d.execution_state is ExecutionState.BLOCKED
+    assert f2d.implemented_task_variants == (
+        "wall_rebound",
+        "angled_barrier_rebound",
+    )
+    assert set(f2d.blockers) == {
+        "robotiq_rebound_retention_geometry_not_validated",
+        "fixed_review_penetration_failures_unresolved",
+    }
 
 
 def test_source_mujoco_capabilities_match_the_owned_compiler_dispatch() -> None:

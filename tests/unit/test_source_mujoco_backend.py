@@ -81,7 +81,7 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
         "823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99"
     )
     assert RIGID_REVIEW_PROFILE.simulation_hz == 600
-    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v13")
+    assert RIGID_REVIEW_PROFILE.profile_id.endswith("-v15")
     assert RIGID_REVIEW_PROFILE.wall_solref == (0.012, 0.7)
     assert RIGID_REVIEW_PROFILE.table_rebound_solref == (0.0045, 0.42)
     assert RIGID_REVIEW_PROFILE.minimum_rebound_effective_restitution == 0.15
@@ -92,8 +92,8 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
     assert RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m == 0.045
     assert RIGID_REVIEW_PROFILE.reach_arrival_before_ballistic_s == 0.055
     assert RIGID_REVIEW_PROFILE.minimum_reach_duration_s == 0.18
-    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.15.0-review"
-    assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v6")
+    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.17.0-review"
+    assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v8")
 
     rolling = resolve_rolling_island_dependency()
     assert rolling.manifest_sha256 == PINNED_ROLLING_ISLAND_MANIFEST_SHA256
@@ -402,6 +402,72 @@ def test_p0c_table_uses_rebound_material_without_changing_p0d_support() -> None:
         assert bounce_spec.physics["rebound_acceptance"] == (
             RIGID_REVIEW_PROFILE.rebound_acceptance().to_dict()
         )
+
+
+@pytest.mark.parametrize(
+    ("rollout", "expected_variant", "expected_pad_top_m"),
+    (
+        (0, "table_bounce", RIGID_REVIEW_PROFILE.table_bounce_pad_top_z_m),
+        (1, "table_bounce", RIGID_REVIEW_PROFILE.table_bounce_pad_top_z_m),
+        (2, "floor_bounce", RIGID_REVIEW_PROFILE.floor_bounce_pad_top_z_m),
+        (3, "floor_bounce", RIGID_REVIEW_PROFILE.floor_bounce_pad_top_z_m),
+        (4, "table_bounce", RIGID_REVIEW_PROFILE.table_bounce_pad_top_z_m),
+        (5, "table_bounce", RIGID_REVIEW_PROFILE.table_bounce_pad_top_z_m),
+    ),
+)
+def test_f2c_uses_one_calibrated_bounce_pad_with_four_grounded_supports(
+    rollout: int,
+    expected_variant: str,
+    expected_pad_top_m: float,
+) -> None:
+    scenario = compile_review_case(_case("F2c", rollout=rollout))
+    pad = next(
+        surface for surface in scenario.surfaces if surface.expected_task_contact
+    )
+    supports = tuple(
+        surface
+        for surface in scenario.surfaces
+        if surface.role == "structural_support"
+    )
+
+    assert scenario.task_variant == expected_variant
+    assert scenario.robot_base_position_m == (0.0, 0.0, 0.0)
+    assert pad.name == "owned_bounce_pad"
+    assert pad.role == "table"
+    assert pad.contact_profile == "rebound_pad"
+    assert pad.solref == RIGID_REVIEW_PROFILE.bounce_pad_solref
+    assert pad.position_m[2] + pad.half_size_m[2] == pytest.approx(
+        expected_pad_top_m
+    )
+    assert len(supports) == 4
+    assert len({support.name for support in supports}) == 4
+    for support in supports:
+        assert support.expected_task_contact is False
+        assert support.supports_fixture_id == pad.name
+        assert support.grounded_plane_z_m == 0.0
+        assert support.position_m[2] - support.half_size_m[2] == pytest.approx(
+            0.0, abs=1e-12
+        )
+        assert support.position_m[2] + support.half_size_m[2] == pytest.approx(
+            pad.position_m[2] - pad.half_size_m[2], abs=1e-12
+        )
+        assert support.support_interface_maximum_mismatch_m == 0.0
+
+
+def test_f2c_source_spec_persists_the_calibrated_rebound_material() -> None:
+    spec = prepare_review_case(_case("F2c", rollout=0))
+    pad = next(
+        fixture
+        for fixture in spec.fixtures
+        if fixture.fixture_id == "owned_bounce_pad"
+    )
+
+    assert pad.parameters["solref"] == list(RIGID_REVIEW_PROFILE.bounce_pad_solref)
+    assert pad.parameters["contact_material_profile"] == "f2c_bounce_pad_v1"
+    assert spec.physics["simulation_hz"] == 1200
+    assert spec.physics["rebound_acceptance"] == (
+        RIGID_REVIEW_PROFILE.rebound_acceptance().to_dict()
+    )
 
 
 def test_all_executable_r0_recipes_have_distinct_complete_event_strips() -> None:
@@ -746,13 +812,18 @@ def test_reference_rate_is_selected_only_for_failed_fixed_case_classes() -> None
     assert compile_review_case(_case("F2a", rollout=4)).simulation_hz == 1200
     assert compile_review_case(_case("F2a", rollout=0)).simulation_hz == 600
     assert compile_review_case(_case("F2a", rollout=2)).simulation_hz == 600
+    # Every fixed F2c class uses the 1200 Hz reference profile: 600 Hz
+    # under-resolves the calibrated stiff bounce-pad contact.
+    for rollout in range(6):
+        assert (
+            compile_review_case(_case("F2c", rollout=rollout)).simulation_hz
+            == 1200
+        )
     for rollout in range(6):
         assert compile_review_case(_case("F3b", rollout=rollout)).simulation_hz == 600
 
 
-def test_unaccepted_f2c_and_all_f3_paths_fail_closed() -> None:
-    with pytest.raises(SourceMujocoUnsupported):
-        compile_review_case(_case("F2c"))
+def test_unimplemented_f3_paths_fail_closed() -> None:
     value = _case("F1a").to_dict()
     value.update(corpus_leaf_id="F3a", task_variant="oscillating_handoff")
     with pytest.raises(SourceMujocoUnsupported):
@@ -1219,6 +1290,84 @@ def test_fixed_f2a_deflection_negative_is_a_clean_declared_miss() -> None:
         for row in result.high_rate_rows
     }
     assert len(gripper_commands) == 1
+
+
+@pytest.mark.integration
+def test_fixed_f2c_matrix_passes_rebound_qc_without_state_assistance() -> None:
+    backend = SourceMujocoBackend()
+    expected_outcomes = (
+        "success",
+        "success",
+        "miss",
+        "miss",
+        "contact_failure",
+        "contact_failure",
+    )
+    forbidden_runtime_mutations = (
+        "object_state_writes_after_initialization",
+        "direct_robot_state_writes_after_initialization",
+        "mocap_writes_after_initialization",
+        "applied_force_writes_after_initialization",
+        "object_linked_equality_changes_after_initialization",
+        "model_physics_mutations_after_initialization",
+    )
+
+    for rollout, expected_outcome in enumerate(expected_outcomes):
+        case = _case("F2c", rollout=rollout)
+        result = backend.run(case, render=False)
+        rebound = result.physics_qc["restitution"]
+        replay = evaluate_source_rows(
+            evaluator_id=case.evaluator,
+            corpus_leaf_id=case.corpus_leaf_id,
+            task_variant=case.task_variant,
+            source_spec=prepare_review_case(case).to_dict(),
+            state_rows=result.high_rate_rows,
+            event_rows=result.contact_rows,
+        )
+
+        assert result.scenario.simulation_hz == 1200
+        assert result.outcome["actual_outcome"] == expected_outcome
+        assert result.outcome["intended_outcome_match"] is True
+        assert result.outcome["saved_artifact_objective_replay_matches"] is True
+        assert replay.task_success is result.outcome["task_success"]
+        assert result.physics_qc["physics_qc_pass"] is True
+        assert rebound["applicable"] is True
+        assert rebound["separated_pre_post_contact_samples"] is True
+        assert rebound["measured_contact_normal"] is True
+        assert rebound["rebound_acceptance_pass"] is True
+        assert result.background_clearance["clearance_pass"] is True
+        assert any(
+            row["contact_category"] == "task_surface"
+            for row in result.contact_rows
+        )
+        assert all(
+            result.runtime_audit[name] == 0
+            for name in forbidden_runtime_mutations
+        )
+
+        evidence = result.physics_qc["task_evidence"]
+        assert replay.evidence["retained_through_final_state"] is evidence[
+            "retained_through_final_state"
+        ]
+        if rollout == 5:
+            contact_categories = {
+                row["contact_category"] for row in result.contact_rows
+            }
+            assert "robot_arm" in contact_categories
+            assert "gripper" not in contact_categories
+            assert result.outcome["actual_outcome"] == "contact_failure"
+            assert replay.actual_outcome_class.value == "contact_failure"
+        if rollout < 2:
+            assert evidence["sustained_opposing_bilateral_contacts"] is True
+            assert evidence["stable_object_to_grasp_transform"] is True
+            assert evidence["retained_through_final_state"] is True
+            assert evidence["final_retention_bilateral_fraction"] >= 0.95
+            assert evidence["displacement_physically_supported_by_contacts"] is True
+            assert replay.evidence["retained_through_final_state"] is True
+            assert replay.evidence["final_retention_bilateral_fraction"] >= 0.95
+        else:
+            assert evidence["retained_through_final_state"] is False
+            assert replay.evidence["retained_through_final_state"] is False
 
 
 def test_fixed_f3b_rolling_pickup_is_a_strict_lifted_free_contact_success() -> None:

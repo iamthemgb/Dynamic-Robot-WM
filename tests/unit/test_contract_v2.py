@@ -33,6 +33,9 @@ from dynamic_robot_dataset.common.schema import (
     SchemaValidationError,
     infer_actual_outcome_class,
 )
+from dynamic_robot_dataset.common.source_scenario import (
+    LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION,
+)
 
 
 def test_failure_taxonomy_config_matches_runtime_contract() -> None:
@@ -273,7 +276,7 @@ def test_objective_registry_recomputes_only_from_persisted_rows() -> None:
     assert compare_recomputed_objective(record, result) == []
 
 
-def test_source_evaluator_lazy_registration_tracks_current_version(
+def test_source_evaluator_lazy_registration_tracks_current_and_legacy_versions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import dynamic_robot_dataset.common.contract_v2 as contract_v2
@@ -291,8 +294,50 @@ def test_source_evaluator_lazy_registration_tracks_current_version(
         "passive_freeflight_v1",
         source_evaluators.SOURCE_OBJECTIVE_EVALUATOR_VERSION,
     )
+    legacy_evaluator = registry.get(
+        "rigid_catch_v2",
+        source_evaluators.SOURCE_OBJECTIVE_EVALUATOR_LEGACY_VERSION,
+    )
 
     assert evaluator is source_evaluators.evaluate_source_persisted
+    assert legacy_evaluator is not None
+    legacy_spec = {
+        "schema_version": LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION,
+        "corpus_leaf_id": "F1a",
+        "task_variant": "catch_retain",
+        "duration_s": 0.3,
+        "physics": {
+            "simulation_hz": 100,
+            "key_event_name": "interception",
+            "key_event_time_s": 0.05,
+        },
+    }
+    rows = [
+        {
+            "timestamp": index / 100,
+            "object.position": [0.5, 0.0, 0.5],
+            "object.linear_velocity": [0.0, 0.0, 0.0],
+            "contact.bilateral": 5 <= index <= 14,
+            "grasp.center_position": [0.5, 0.0, 0.5],
+        }
+        for index in range(20)
+    ]
+    legacy_result = legacy_evaluator(
+        ObjectiveRecomputeInput(
+            _record(
+                objective_evaluator_id="rigid_catch_v2",
+                objective_evaluator_version=(
+                    source_evaluators.SOURCE_OBJECTIVE_EVALUATOR_LEGACY_VERSION
+                ),
+                extras={"source_scenario_spec": legacy_spec},
+            ),
+            (),
+            (),
+            rows,
+        )
+    )
+    assert legacy_result.task_success is True
+    assert legacy_result.actual_outcome_class is ActualOutcomeClass.SUCCESS
     assert registry.get("passive_freeflight_v1", "unknown-version") is None
 
 

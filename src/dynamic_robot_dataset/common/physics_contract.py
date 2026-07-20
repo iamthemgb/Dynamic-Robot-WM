@@ -362,6 +362,7 @@ def rigid_task_evidence_failures(
     task_variant: str,
     evidence: Mapping[str, Any],
     task_success: bool | None = None,
+    require_final_retention: bool = False,
 ) -> list[str]:
     """Validate family-specific evidence against the *measured* outcome.
 
@@ -389,6 +390,8 @@ def rigid_task_evidence_failures(
                     "stable_object_to_grasp_transform",
                 )
             )
+            if require_final_retention:
+                required.append("retained_through_final_state")
             if "transport" in identity or "handoff" in identity or "pickup" in identity:
                 required.append("displacement_physically_supported_by_contacts")
     if family == "rolling_interception" or any(

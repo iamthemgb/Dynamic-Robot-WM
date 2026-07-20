@@ -208,6 +208,8 @@ def _fixtures(mujoco: Any, compiled: CompiledSourceModel, scenario: SourceMujoco
                         if not surface.expected_task_contact
                         else "p0c_table_rebound_v1"
                         if surface.name == "supported_bounce_table"
+                        else "f2c_bounce_pad_v1"
+                        if surface.contact_profile == "rebound_pad"
                         else "wall_rebound_v1"
                         if surface.role == "wall"
                         else "hard_support_v1"
@@ -435,6 +437,7 @@ def prepare_review_case(
                 or "bounce" in scenario.motion_kind
                 else None
             ),
+            "grasp_retention": RIGID_REVIEW_PROFILE.grasp_retention().to_dict(),
             "relocated_visual_backgrounds": [
                 dict(value) for value in compiled.relocated_visual_backgrounds
             ],

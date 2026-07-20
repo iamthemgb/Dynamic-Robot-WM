@@ -263,8 +263,8 @@ def test_fixture_free_f1_r1_removes_entire_central_table_and_keeps_remote_contex
     )
 
 
-@pytest.mark.parametrize("leaf_id", ("F2d",))
-def test_blocked_f2_r1_recipes_retain_their_robot_support_table(
+@pytest.mark.parametrize("leaf_id", ("F2c", "F2d"))
+def test_rebound_f2_r1_recipes_are_floor_rooted_with_owned_supported_fixtures(
     leaf_id: str,
 ) -> None:
     case = next(
@@ -285,11 +285,39 @@ def test_blocked_f2_r1_recipes_retain_their_robot_support_table(
         for geom in xml_root.findall("./worldbody/geom")
     }
 
-    assert scenario.robot_base_position_m == (0.0, 0.0, 0.74)
-    assert compiled.robot_base_position_m == (0.0, 0.0, 0.74)
-    assert "robot_table_top" in names
+    assert scenario.robot_base_position_m == (0.0, 0.0, 0.0)
+    assert compiled.robot_base_position_m == (0.0, 0.0, 0.0)
+    assert "robot_table_top" not in names
+    assert not any(name.startswith("robot_table_") for name in names)
     assert compiled.removed_visual_work_surface_names == ()
-    assert compiled.removed_task_volume_background_names == ()
+    assert "robot_table_top" in compiled.removed_task_volume_background_names
+
+    task_fixture = next(
+        surface for surface in scenario.surfaces if surface.expected_task_contact
+    )
+    if leaf_id == "F2c":
+        supports = tuple(
+            surface
+            for surface in scenario.surfaces
+            if surface.role == "structural_support"
+        )
+        assert task_fixture.name == "owned_bounce_pad"
+        assert len(supports) == 4
+        for support in supports:
+            assert support.supports_fixture_id == task_fixture.name
+            assert support.position_m[2] - support.half_size_m[2] == pytest.approx(
+                0.0, abs=1e-12
+            )
+            assert support.position_m[2] + support.half_size_m[2] == pytest.approx(
+                task_fixture.position_m[2] - task_fixture.half_size_m[2],
+                abs=1e-12,
+            )
+    else:
+        assert task_fixture.name == "supported_wall_rebound_barrier"
+        assert (
+            task_fixture.position_m[2] - task_fixture.half_size_m[2]
+            == pytest.approx(0.0, abs=1e-12)
+        )
 
 
 def test_f2a_shares_f1_floor_rooting_in_r1_scenes() -> None:

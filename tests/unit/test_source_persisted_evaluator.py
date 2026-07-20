@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from dynamic_robot_dataset.common.grasp_retention import DEFAULT_GRASP_RETENTION
 from dynamic_robot_dataset.common.rebound import DEFAULT_REBOUND_ACCEPTANCE
 from dynamic_robot_dataset.common.schema import ActualOutcomeClass
 from dynamic_robot_dataset.common.source_evaluators import (
@@ -14,10 +15,12 @@ from dynamic_robot_dataset.common.source_evaluators import (
 
 def _spec() -> dict:
     return {
+        "duration_s": 0.19,
         "physics": {
             "simulation_hz": 100,
             "key_event_name": "interception",
             "key_event_time_s": 0.5,
+            "grasp_retention": DEFAULT_GRASP_RETENTION.to_dict(),
         }
     }
 
@@ -59,6 +62,46 @@ def test_persisted_catch_evaluator_accepts_only_sustained_stable_bilateral_grasp
     assert result.evidence["measured_key_event_source"] == (
         "persisted_bilateral_contact"
     )
+    assert result.evidence["retained_through_final_state"] is True
+    assert result.evidence["final_retention_bilateral_fraction"] == 1.0
+
+
+def test_persisted_catch_rejects_transient_grasp_lost_before_final_window() -> None:
+    source_spec = _spec()
+    source_spec["duration_s"] = 0.3
+    rows = [
+        {
+            "timestamp": index / 100,
+            "object.position": [0.5, 0.0, 0.5],
+            "object.linear_velocity": [0.0, 0.0, 0.0],
+            "contact.bilateral": 2 <= index <= 11,
+            "grasp.center_position": [0.5, 0.0, 0.5],
+        }
+        for index in range(31)
+    ]
+
+    result = evaluate_source_rows(
+        evaluator_id="rigid_catch_v2",
+        corpus_leaf_id="F2c",
+        task_variant="table_bounce",
+        source_spec=source_spec,
+        state_rows=rows,
+        event_rows=[
+            {
+                "timestamp": 0.02,
+                "penetration_depth_m": 0.0005,
+                "contact_category": "gripper",
+            }
+        ],
+    )
+
+    assert result.task_success is False
+    assert result.actual_outcome_class is ActualOutcomeClass.CONTACT_FAILURE
+    assert result.primary_failure_code == "contact_without_completion"
+    assert result.evidence["sustained_opposing_bilateral_contacts"] is True
+    assert result.evidence["retained_through_final_state"] is False
+    assert result.evidence["final_bilateral_contact"] is False
+    assert result.evidence["final_retention_bilateral_fraction"] == 0.0
 
 
 def test_bilateral_selector_binds_both_saved_contact_geom_ids() -> None:
@@ -81,7 +124,10 @@ def test_bilateral_selector_binds_both_saved_contact_geom_ids() -> None:
     assert selected["contact_counterpart_geom_ids"] == [17, 23]
 
 
-def test_persisted_contact_failure_uses_measured_tool_contact_time() -> None:
+@pytest.mark.parametrize("contact_category", ("gripper", "robot_arm"))
+def test_persisted_contact_failure_uses_measured_tool_contact_time(
+    contact_category: str,
+) -> None:
     result = evaluate_source_rows(
         evaluator_id="rigid_catch_v2",
         corpus_leaf_id="F1a",
@@ -100,7 +146,7 @@ def test_persisted_contact_failure_uses_measured_tool_contact_time() -> None:
             {
                 "timestamp": 0.12,
                 "penetration_depth_m": 0.0005,
-                "contact_category": "gripper",
+                "contact_category": contact_category,
             }
         ],
     )
@@ -109,6 +155,41 @@ def test_persisted_contact_failure_uses_measured_tool_contact_time() -> None:
     assert result.actual_outcome_class is ActualOutcomeClass.CONTACT_FAILURE
     assert result.key_event_name == "tool_contact_onset"
     assert result.key_event_time_s == 0.12
+
+
+@pytest.mark.parametrize(
+    ("field", "mutated_value"),
+    (
+        ("final_window_s", 0.11),
+        ("minimum_bilateral_fraction", 0.96),
+        ("maximum_relative_range_m", 0.011),
+        ("require_bilateral_at_final_sample", False),
+        ("schema_version", "dynamic-robot-grasp-retention/v2"),
+    ),
+)
+def test_v15_catch_evaluator_rejects_every_default_threshold_mutation(
+    field: str,
+    mutated_value: object,
+) -> None:
+    source_spec = _spec()
+    source_spec["physics"]["grasp_retention"][field] = mutated_value
+
+    with pytest.raises(ValueError):
+        evaluate_source_rows(
+            evaluator_id="rigid_catch_v2",
+            corpus_leaf_id="F1a",
+            task_variant="catch_retain",
+            source_spec=source_spec,
+            state_rows=[
+                {
+                    "timestamp": 0.19,
+                    "object.position": [0.5, 0.0, 0.5],
+                    "object.linear_velocity": [0.0, 0.0, 0.0],
+                    "contact.bilateral": False,
+                }
+            ],
+            event_rows=[],
+        )
 
 
 def test_persisted_source_evaluator_marks_excessive_penetration_invalid() -> None:

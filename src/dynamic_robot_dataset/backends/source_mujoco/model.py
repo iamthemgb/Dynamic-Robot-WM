@@ -225,9 +225,10 @@ def _build_external_sample(scene_builder: Any, scenario: SourceMujocoCompiledSce
         float(value)
         for value in camera_rng.normal(0.0, (0.035, 0.035, 0.025))
     )
-    # The floor-rooted, fixture-free interceptions (all of F1, and F2a since
-    # its v10 floor rooting) omit the procedural center table; F2c/F2d remain
-    # table-height tasks whose worktop physically supports the robot.
+    # Floor-rooted interception scenes omit the procedural center table.
+    # F2c/F2d still own physical bounce/barrier fixtures, but those fixtures
+    # are explicitly supported from the floor instead of floating on a
+    # generic worktop.
     free_space_f1 = _is_floor_rooted_interception(scenario.corpus_leaf_id)
     tabletop_height = (
         None

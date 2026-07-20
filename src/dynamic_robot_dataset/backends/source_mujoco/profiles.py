@@ -13,6 +13,10 @@ from dataclasses import asdict, dataclass
 import math
 from typing import Any, Mapping
 
+from ...common.grasp_retention import (
+    DEFAULT_GRASP_RETENTION,
+    GraspRetentionThresholds,
+)
 from ...common.rebound import (
     DEFAULT_REBOUND_ACCEPTANCE,
     ReboundAcceptanceThresholds,
@@ -20,7 +24,7 @@ from ...common.rebound import (
 
 
 SOURCE_MUJOCO_PROFILE_SCHEMA = "dynamic-robot-source-mujoco-profile/v1"
-SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v13-f2cd1"
+SOURCE_MUJOCO_PROFILE_VERSION = "source-mujoco-rigid-review-2026-07-v15"
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +120,13 @@ class RigidReviewProfile:
     robotiq_pickup_capture_followthrough_x_m: float = 0.035
     robotiq_pickup_capture_start_s: float = 1.02
     robotiq_pickup_capture_end_s: float = 1.30
+    # A catch is not successful merely because it pinches the ball briefly.
+    # The last 100 ms must remain bilateral and transform-stable so the fixed
+    # final review frame cannot show a nominal object falling to the floor.
+    final_retention_window_s: float = DEFAULT_GRASP_RETENTION.final_window_s
+    minimum_final_bilateral_fraction: float = (
+        DEFAULT_GRASP_RETENTION.minimum_bilateral_fraction
+    )
     # A pickup success must exhibit contact-supported displacement, so both
     # F3b variants lift well beyond the 0.06 m transport-evidence threshold
     # (the slow transport quintic places 0.702 of the lift inside the fixed
@@ -144,7 +155,7 @@ class RigidReviewProfile:
     pickup_transport_end_s: float = 2.43
     robotiq_pickup_transport_start_s: float = 1.30
     robotiq_pickup_transport_end_s: float = 2.45
-    # v13-f2cd1 bounce/rebound interception (F2c/F2d).  The bounce pad is a
+    # v15 bounce/rebound interception (F2c/F2d).  The bounce pad is a
     # priority-2 owned fixture emitted like the room floor and hand shells.
     # The margin-sweep calibration measured that mixed-pair plates either
     # exceed the 3 mm geometric-penetration gate above ~3.5 m/s or, when
@@ -169,6 +180,14 @@ class RigidReviewProfile:
     # speed (clean off-lane measurement: 0.6329 m/s out of 0.85 m/s in).
     bounce_pad_lane_retention: float = 0.7446
     bounce_impact_speed_m_s: float = 4.5
+    # The 140-unit rolling-pickup tendon command over-closes on the spinning
+    # F2c rebound and squeezes the fixed Robotiq nominal ball out at 1.58 s.
+    # The measured 125-unit command plus a 15 mm downstream aim correction
+    # retains the same fixed seed through 2.0 s with 1.835 mm peak gripper
+    # penetration.  Keep these F2c-specific so accepted F3b behavior is not
+    # changed by the rebound repair.
+    f2c_robotiq_tendon_target: float = 125.0
+    f2c_robotiq_intercept_bias_x_m: float = 0.015
     # Both variants toss the ball upward: the top-down apex pickup needs the
     # ~0.70 s Franka-feasible reach, which measurably did not fit before a
     # thrown-down ball's 0.47 s apex event.  A palm-up catch of the rising
@@ -284,7 +303,7 @@ class RigidReviewProfile:
             0.9 <= self.robotiq_pad_friction[0] <= 2.0
             and self.robotiq_pad_friction[1:] == (0.005, 0.0001)
         ):
-            raise ValueError("Robotiq thick-pad friction is outside v13 calibration")
+            raise ValueError("Robotiq thick-pad friction is outside v15 calibration")
         if not 0.010 <= self.robotiq_pad_half_depth_m <= 0.022:
             raise ValueError("Robotiq collision-pad half depth is outside calibration")
         if not 100.0 <= self.robotiq_passive_finger_acceleration_limit_rad_s2 <= 250.0:
@@ -347,6 +366,14 @@ class RigidReviewProfile:
             raise ValueError("Robotiq pickup closure must remain smooth and bounded")
         if not self.robotiq_tendon_target < self.robotiq_pickup_tendon_target <= 200.0:
             raise ValueError("Robotiq pickup tendon target must add bounded retention")
+        if self.grasp_retention() != DEFAULT_GRASP_RETENTION:
+            raise ValueError(
+                "grasp-retention thresholds changed without a profile/evaluator version"
+            )
+        if self.f2c_robotiq_tendon_target != 125.0:
+            raise ValueError("F2c Robotiq tendon target differs from v15 calibration")
+        if self.f2c_robotiq_intercept_bias_x_m != 0.015:
+            raise ValueError("F2c Robotiq intercept bias differs from v15 calibration")
         if not 0.0 < self.robotiq_pickup_capture_followthrough_x_m <= 0.06:
             raise ValueError("Robotiq capture follow-through must be small and positive")
         if not (
@@ -516,6 +543,8 @@ class RigidReviewProfile:
             self.robotiq_pickup_capture_followthrough_x_m,
             self.robotiq_pickup_capture_start_s,
             self.robotiq_pickup_capture_end_s,
+            self.final_retention_window_s,
+            self.minimum_final_bilateral_fraction,
             self.pickup_lift_height_m,
             self.pickup_transport_start_s,
             self.pickup_transport_end_s,
@@ -523,6 +552,8 @@ class RigidReviewProfile:
             self.robotiq_pickup_transport_end_s,
             self.robotiq_pickup_standoff_m,
             self.pickup_transport_lateral_m,
+            self.f2c_robotiq_tendon_target,
+            self.f2c_robotiq_intercept_bias_x_m,
         )
         if any(not math.isfinite(float(value)) for value in numeric):
             raise ValueError("calibration profile contains a non-finite value")
@@ -549,6 +580,14 @@ class RigidReviewProfile:
             minimum_separation_duration_s=(
                 self.minimum_rebound_separation_duration_s
             ),
+        )
+        result.validate()
+        return result
+
+    def grasp_retention(self) -> GraspRetentionThresholds:
+        result = GraspRetentionThresholds(
+            final_window_s=self.final_retention_window_s,
+            minimum_bilateral_fraction=self.minimum_final_bilateral_fraction,
         )
         result.validate()
         return result

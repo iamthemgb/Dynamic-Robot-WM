@@ -28,14 +28,14 @@ def test_rigid_profile_evidence_is_versioned_source_bound_and_fail_closed() -> N
 
     assert evidence["schema_version"] == "dynamic-robot-rigid-profile-calibration/v1"
     assert evidence["contract_version"] == "dynamic-robot-dataset/v2"
-    assert evidence["calibration_id"].endswith("_v11")
-    assert evidence["current_runtime_profile"].endswith("-v13")
+    assert evidence["calibration_id"].endswith("_v15")
+    assert evidence["current_runtime_profile"].endswith("-v15")
     assert evidence["evidence_status"] == "exploratory_unbound"
     assert evidence["release_state"] == "blocked"
     assert evidence["release_eligible"] is False
-    assert evidence["source_binding"]["compiled_scenario_schema"].endswith("/v6")
-    assert evidence["source_binding"]["backend_version"] == "0.15.0-review"
-    assert evidence["source_binding"]["objective_evaluator_version"] == "1.4.0"
+    assert evidence["source_binding"]["compiled_scenario_schema"].endswith("/v8")
+    assert evidence["source_binding"]["backend_version"] == "0.17.0-review"
+    assert evidence["source_binding"]["objective_evaluator_version"] == "1.5.0"
     assert evidence["source_binding"]["visibility_qc_schema"].endswith("/v3")
     assert evidence["source_binding"]["background_clearance_schema"].endswith(
         "/v4"
@@ -617,5 +617,160 @@ def test_v13_f3b_uses_a_pinned_scene_but_never_the_assisted_controller() -> None
     assert screen["nominal_successes_show_contact_retention_and_lift"] is True
     assert screen["negative_branches_remain_visible_physical_misses"] is True
     assert screen["scale_decision"] == "keep_blocked_until_hash_bound_human_review"
+    assert evidence["admission_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False
+
+
+def test_v14_f2c_passes_fixed_six_while_f2d_failure_evidence_stays_blocking() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"][
+        "f2c_f2d_rebound_interception_repair_v14"
+    ]
+    assert evidence["runtime_profile"].endswith("-v14")
+    assert evidence["backend_version"] == "0.16.0-review"
+    assert evidence["compiled_scenario_schema"].endswith("/v7")
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["rendered_artifacts_generated"] is True
+
+    controller = evidence["controller_contract"]
+    assert controller["callback_mutation_boundary"] == "data.ctrl_only"
+    assert all(
+        controller[name] == 0
+        for name in (
+            "object_state_writes_after_initialization",
+            "direct_robot_state_writes_after_initialization",
+            "mocap_writes_after_initialization",
+            "applied_force_writes_after_initialization",
+            "object_linked_equality_changes_after_initialization",
+            "model_physics_mutations_after_initialization",
+        )
+    )
+
+    sweep = evidence["fresh_non_rendered_fixed_sweep"]
+    assert sweep["cases"] == 12
+    assert sweep["scene_construction_errors"] == 1
+    assert sweep["intended_outcome_matches"] == 10
+    assert sweep["strict_physics_qc_passes"] == 9
+
+    f2c = sweep["f2c"]
+    assert f2c["execution_state"] == "review"
+    assert f2c["case_ids"] == [f"F2c-review-{index:02d}" for index in range(6)]
+    assert f2c["all_six_strict_physics_qc_pass"] is True
+    assert f2c["all_intended_outcomes_match_without_seed_replacement"] is True
+    assert f2c["all_six_background_clearance_pass"] is True
+    assert f2c["online_actual_outcomes"] == [
+        "success",
+        "success",
+        "miss",
+        "miss",
+        "contact_failure",
+        "miss",
+    ]
+
+    f2d = sweep["f2d"]
+    assert f2d["execution_state"] == "blocked"
+    assert f2d["passing_case_ids"] == [
+        "F2d-review-00",
+        "F2d-review-02",
+        "F2d-review-03",
+    ]
+    assert f2d["failing_case_ids"] == [
+        "F2d-review-01",
+        "F2d-review-04",
+        "F2d-review-05",
+    ]
+    assert f2d["failures"]["F2d-review-01"][
+        "maximum_gripper_penetration_m"
+    ] > 0.002
+    assert f2d["failures"]["F2d-review-04"][
+        "maximum_gripper_penetration_m"
+    ] > 0.002
+    assert "residual 0.0102 m" in f2d["failures"]["F2d-review-05"][
+        "construction_error"
+    ]
+    assert set(f2d["blockers"]) == {
+        "robotiq_rebound_retention_geometry_not_validated",
+        "fixed_review_penetration_failures_unresolved",
+    }
+
+    rendered = evidence["rendered_f2c_artifacts"]
+    assert rendered["dataset_root"].endswith("review_F2c_fixed6_v16_support")
+    assert rendered["episode_count"] == 6
+    assert rendered["automated_strict_qc_passed_under_evaluator_v1_4"] is True
+    for name in (
+        "run_plan_hash",
+        "dataset_report_sha256",
+        "complete_metadata_sha256",
+        "pending_human_ledger_sha256",
+        "seal_sha256",
+    ):
+        assert len(rendered[name]) == 64
+
+    screen = evidence["assistant_qualitative_screen"]
+    assert screen["status"] == "failed_not_a_human_approval"
+    assert screen["failed_case_id"] == "F2c-review-01"
+    assert screen["scale_decision"] == "block_and_repair_controller_and_evaluator"
+    assert evidence["admission_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False
+
+
+def test_v15_f2c_final_retention_repair_is_evaluator_bound_and_seed_preserving() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"][
+        "f2c_final_retention_repair_v15"
+    ]
+
+    assert evidence["runtime_profile"].endswith("-v15")
+    assert evidence["backend_version"] == "0.17.0-review"
+    assert evidence["compiled_scenario_schema"].endswith("/v8")
+    assert evidence["objective_evaluator_version"] == "1.5.0"
+    assert evidence["fixed_seeds_preserved"] is True
+
+    failure = evidence["source_failure_artifact"]
+    assert failure["case_id"] == "F2c-review-01"
+    assert failure["last_bilateral_contact_s"] > failure["first_bilateral_contact_s"]
+    assert failure["final_object_z_m"] < 0.03
+    assert failure["previous_evaluator_result"] == "success"
+    assert failure["qualitative_result"] == "failed_retention_ball_on_floor"
+
+    controller = evidence["repaired_controller"]
+    assert controller["embodiment"] == "robotiq_2f85_thick_pad"
+    assert controller["leaf"] == "F2c"
+    assert controller["tendon_target_after"] < controller["tendon_target_before"]
+    assert controller["maximum_gripper_penetration_m"] <= 0.002
+    assert controller["final_retention_bilateral_fraction"] >= 0.95
+    assert controller["callback_mutation_boundary"] == "data.ctrl_only"
+    assert controller["direct_state_or_constraint_assistance"] is False
+
+    evaluator = evidence["evaluator_contract"]
+    assert evaluator == {
+        "final_retention_window_s": 0.10,
+        "minimum_final_bilateral_fraction": 0.95,
+        "require_bilateral_at_final_sample": True,
+        "maximum_final_object_to_grasp_range_m": 0.01,
+        "transient_early_grasp_cannot_count_as_success": True,
+        "threshold_values_persisted_in_source_scenario_spec": True,
+    }
+
+    sweep = evidence["fresh_non_rendered_fixed_sweep"]
+    assert sweep["case_ids"] == [f"F2c-review-{index:02d}" for index in range(6)]
+    assert sweep["actual_outcomes"] == [
+        "success",
+        "success",
+        "miss",
+        "miss",
+        "contact_failure",
+        "contact_failure",
+    ]
+    assert sweep["all_six_strict_physics_qc_pass"] is True
+    assert sweep["all_intended_outcomes_match_without_seed_replacement"] is True
+    assert sweep["nominal_cases_retained_through_final_state"] is True
+    assert sweep["negative_cases_do_not_claim_final_retention"] is True
+    assert sweep["independent_evaluator_replay_matches"] is True
+    review_plan = evidence["regenerated_review_plan"]
+    assert review_plan["source_scenario_schema"] == "dynamic-robot-source-scenario/v1"
+    assert review_plan["evidence_status"] == "superseded_pre_v2_plan"
+    assert review_plan["replacement_pending_after_generator_commit"] is True
+    assert review_plan[
+        "identity_or_rng_changes_against_v14_plan"
+    ] == 0
     assert evidence["admission_claimed"] is False
     assert evidence["formal_human_approval_recorded"] is False

@@ -131,7 +131,7 @@ leaves:
     evaluator: rigid_projectile_interception_v2
     required_metadata: [launch_state, surfaces, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [six_review_rollouts_pending]
+    blockers: [positive_deflection_independent_evaluator_pending, six_review_rollouts_pending]
   - id: F2b
     slug: ramp_launched
     title: Ramp-launched projectile
@@ -157,7 +157,7 @@ leaves:
     evaluator: rigid_rebound_v2
     required_metadata: [launch_state, surfaces, rebound_measurement, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [scripted_bounce_response_not_replaced, restitution_profile_not_calibrated, six_review_rollouts_pending]
+    blockers: [six_review_rollouts_pending]
   - id: F2d
     slug: wall_barrier_rebound
     title: Wall/barrier rebound interception
@@ -170,7 +170,7 @@ leaves:
     evaluator: rigid_rebound_v2
     required_metadata: [launch_state, surfaces, rebound_measurement, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [energy_injection_repair_pending, camera_occlusion_repair_pending, six_review_rollouts_pending]
+    blockers: [robotiq_rebound_retention_geometry_not_validated, fixed_review_penetration_failures_unresolved, six_review_rollouts_pending]
   - id: F2e
     slug: multi_surface_rebound
     title: Multi-surface rebound

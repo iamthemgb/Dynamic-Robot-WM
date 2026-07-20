@@ -8,15 +8,18 @@ from dynamic_robot_dataset.common.corpus_registry import (
     BackendNotReleasedError,
     load_backend_capability_registry,
 )
+from dynamic_robot_dataset.common.grasp_retention import DEFAULT_GRASP_RETENTION
 from dynamic_robot_dataset.common.source_scenario import (
     ActuatorPhaseSpec,
     CounterfactualIdentity,
     EmbodimentSpec,
     FixtureSpec,
+    LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION,
     PoseSpec,
     RNGSubseeds,
     RoboCasaAssetManifest,
     RoboCasaAssetSpec,
+    SOURCE_SCENARIO_SCHEMA_VERSION,
     SourceCameraSpec,
     SourceScenarioSpec,
     SourceScenarioValidationError,
@@ -46,6 +49,8 @@ def _valid_spec() -> SourceScenarioSpec:
             "gravity_m_s2": [0.0, 0.0, -9.81],
             "simulation_hz": 1200,
             "contact_profile": "rigid_contact_candidate_v2",
+            "evaluator": "rigid_catch_v2",
+            "grasp_retention": DEFAULT_GRASP_RETENTION.to_dict(),
         },
         initial_state={
             "object_position_m": [0.5, 0.0, 1.2],
@@ -133,6 +138,37 @@ def test_source_scenario_round_trips_with_stable_hash() -> None:
     assert restored.to_dict() == spec.to_dict()
     assert restored.spec_hash == spec.spec_hash
     assert len(restored.embodiment.action_names) == 8
+    assert restored.schema_version == SOURCE_SCENARIO_SCHEMA_VERSION
+    assert restored.physics["evaluator"] == "rigid_catch_v2"
+    assert restored.physics["grasp_retention"] == DEFAULT_GRASP_RETENTION.to_dict()
+
+
+def test_current_source_mujoco_scenario_binds_evaluator_and_retention_exactly() -> None:
+    spec = _valid_spec()
+
+    wrong_evaluator = dict(spec.physics, evaluator="passive_freeflight_v1")
+    with pytest.raises(SourceScenarioValidationError, match="corpus registry"):
+        replace(spec, physics=wrong_evaluator).validate()
+
+    changed_retention = dict(DEFAULT_GRASP_RETENTION.to_dict())
+    changed_retention["minimum_bilateral_fraction"] = 0.96
+    wrong_retention = dict(spec.physics, grasp_retention=changed_retention)
+    with pytest.raises(SourceScenarioValidationError, match="differs from evaluator"):
+        replace(spec, physics=wrong_retention).validate()
+
+
+def test_legacy_v1_source_scenario_remains_parseable_without_v2_bindings() -> None:
+    payload = _valid_spec().to_dict()
+    payload["schema_version"] = LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION
+    payload["physics"].pop("evaluator")
+    payload["physics"].pop("grasp_retention")
+
+    restored = SourceScenarioSpec.from_dict(payload)
+
+    assert restored.schema_version == LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION
+    assert "evaluator" not in restored.physics
+    assert "grasp_retention" not in restored.physics
+    assert restored.to_dict()["schema_version"] == LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION
 
 
 def test_source_scenario_rejects_backend_pin_substitution() -> None:

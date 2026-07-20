@@ -411,6 +411,7 @@ def test_family_specific_rigid_evidence_is_fail_closed() -> None:
     catch_required = {
         "sustained_opposing_bilateral_contacts": True,
         "stable_object_to_grasp_transform": True,
+        "retained_through_final_state": True,
         "displacement_physically_supported_by_contacts": True,
     }
     assert rigid_task_evidence_failures(
@@ -418,14 +419,16 @@ def test_family_specific_rigid_evidence_is_fail_closed() -> None:
         subfamily="centered_vertical_drop",
         task_variant="catch_transport",
         evidence=catch_required,
+        require_final_retention=True,
     ) == []
     missing = rigid_task_evidence_failures(
         family="falling_catch",
         subfamily="centered_vertical_drop",
         task_variant="catch_transport",
         evidence={},
+        require_final_retention=True,
     )
-    assert len(missing) == 3
+    assert len(missing) == 4
     negative_evidence = {
         "measured_failure_matches_persisted_label": True,
         "saved_artifact_objective_replay_matches": True,

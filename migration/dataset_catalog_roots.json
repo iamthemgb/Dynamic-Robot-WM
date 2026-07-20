@@ -1,0 +1,190 @@
+{
+  "schema_version": "dynamic-robot-dataset-catalog-roots/v1",
+  "canonical_runs_root": "/gpfs/radev/project/sous/zl664/dataset_generation_runs",
+  "canonical_overrides": {
+    "review_F2c_fixed6_v16_support": {
+      "category": "runs/sealed_qualitative_fail",
+      "human_review": "assistant_screen_failed",
+      "release_eligible": false,
+      "notes_append": "F2c-review-01 transient Robotiq grasp drops the ball before the final frame; superseded by the v15 retention repair"
+    }
+  },
+  "external_roots": [
+    {
+      "id_prefix": "zss8-corpus",
+      "path": "/gpfs/radev/scratch/sous/zss8/dynamic_manip_corpus",
+      "discovery": "corpus_leaves",
+      "kind": "external_target_scaffold",
+      "category": "plans/history",
+      "lifecycle": "planned",
+      "notes": "Collaborator harmonized corpus; converted data is legacy assisted unless separately admitted"
+    },
+    {
+      "id_prefix": "zl664-robotiq-catch",
+      "path": "/gpfs/radev/scratch/sous/zl664/robotiq_catch",
+      "discovery": "children",
+      "kind": "legacy_generator_output",
+      "category": "legacy/assisted",
+      "lifecycle": "legacy_unsealed",
+      "release_tier": "assisted_contact",
+      "notes": "Pre-unified Robotiq generator output; not canonical training data",
+      "rules": [
+        {
+          "pattern": "*_failed_*",
+          "lifecycle": "partial_failed",
+          "notes": "Interrupted or failed legacy shards; quarantine"
+        },
+        {
+          "pattern": "examples_*",
+          "category": "previews",
+          "kind": "preview",
+          "lifecycle": "preview"
+        },
+        {
+          "pattern": "verification_*",
+          "category": "previews",
+          "kind": "preview",
+          "lifecycle": "preview"
+        }
+      ],
+      "duplicate_group_hints": {
+        "f1_ab_robotiq_thick_pad_v1": "semantic-candidate:robotiq-f1ab-3000",
+        "f1_ab_robotiq_thick_pad_v1_gpu": "semantic-candidate:robotiq-f1ab-3000"
+      }
+    },
+    {
+      "id_prefix": "legacy-smoke",
+      "artifact_id": "legacy-smoke-canonical-120",
+      "path": "/gpfs/radev/project/sous/zl664/dataset_generation/outputs/smoke_tests/canonical_smoke_120",
+      "discovery": "self",
+      "kind": "legacy_smoke_dataset",
+      "category": "legacy/smoke",
+      "lifecycle": "legacy_complete",
+      "notes": "Pre-seal canonical smoke fixture; not a production release"
+    },
+    {
+      "id_prefix": "legacy-smoke-export",
+      "artifact_id": "legacy-smoke-canonical-120-wan",
+      "path": "/gpfs/radev/project/sous/zl664/dataset_generation/outputs/smoke_tests/canonical_smoke_120_wan",
+      "discovery": "self",
+      "kind": "legacy_smoke_export",
+      "category": "legacy/smoke",
+      "lifecycle": "derived"
+    },
+    {
+      "id_prefix": "owned-examples",
+      "path": "/gpfs/radev/project/sous/zl664/dataset_generation/outputs/examples",
+      "discovery": "children",
+      "kind": "preview",
+      "category": "previews",
+      "lifecycle": "preview"
+    },
+    {
+      "id_prefix": "arm-demo-preview",
+      "artifact_id": "arm-demo-preview",
+      "path": "/gpfs/radev/project/sous/zl664/demo_mujoco_arm_gripper/preview",
+      "discovery": "self",
+      "kind": "preview",
+      "category": "previews",
+      "lifecycle": "preview"
+    },
+    {
+      "id_prefix": "arm-demo-audit",
+      "artifact_id": "arm-demo-dataset-audit",
+      "path": "/gpfs/radev/project/sous/zl664/demo_mujoco_arm_gripper/dataset_audit",
+      "discovery": "self",
+      "kind": "audit_output",
+      "category": "previews",
+      "lifecycle": "derived"
+    },
+    {
+      "id_prefix": "f3b-visual-check",
+      "artifact_id": "f3b-visual-check",
+      "path": "/gpfs/radev/scratch/sous/zl664/codex_f3b_visual_check",
+      "discovery": "self",
+      "kind": "visual_review_output",
+      "category": "previews",
+      "lifecycle": "derived"
+    },
+    {
+      "id_prefix": "genesis-fluid-preview",
+      "artifact_id": "genesis-fluid-preview-outputs",
+      "path": "/gpfs/radev/project/sous/zl664/demo_genesis_fluid/genesis_franka_fluid_pouring_previews/outputs",
+      "discovery": "self",
+      "kind": "preview",
+      "category": "previews",
+      "lifecycle": "preview"
+    },
+    {
+      "id_prefix": "deformable-cloth-preview",
+      "artifact_id": "deformable-cloth-preview-outputs",
+      "path": "/gpfs/radev/project/sous/zl664/demo_mujoco_deformable/mujoco_franka_cloth_previews/outputs",
+      "discovery": "self",
+      "kind": "preview",
+      "category": "previews",
+      "lifecycle": "preview"
+    },
+    {
+      "id_prefix": "deformable-rope-preview",
+      "artifact_id": "deformable-rope-preview-outputs",
+      "path": "/gpfs/radev/project/sous/zl664/demo_mujoco_deformable/mujoco_franka_rope_previews/outputs",
+      "discovery": "self",
+      "kind": "preview",
+      "category": "previews",
+      "lifecycle": "preview"
+    },
+    {
+      "id_prefix": "deformable-softbody-preview",
+      "artifact_id": "deformable-softbody-preview-outputs",
+      "path": "/gpfs/radev/project/sous/zl664/demo_mujoco_deformable/mujoco_franka_softbody_previews/outputs",
+      "discovery": "self",
+      "kind": "preview",
+      "category": "previews",
+      "lifecycle": "preview"
+    },
+    {
+      "id_prefix": "robocasa365",
+      "artifact_id": "robocasa365-source",
+      "path": "/gpfs/radev/scratch/sous/zl664/robocasa365",
+      "discovery": "self",
+      "kind": "source_dependency",
+      "category": "dependencies",
+      "lifecycle": "dependency",
+      "scan_mode": "metadata_only",
+      "notes": "Read-only RoboCasa source and asset dependency"
+    },
+    {
+      "id_prefix": "mzl7-robocasa",
+      "artifact_id": "mzl7-robocasa-assets",
+      "path": "/gpfs/radev/project/sous/mzl7/robocasa",
+      "discovery": "self",
+      "kind": "source_dependency",
+      "category": "dependencies",
+      "lifecycle": "dependency",
+      "scan_mode": "metadata_only",
+      "notes": "Read-only versioned RoboCasa asset catalog"
+    },
+    {
+      "id_prefix": "mzl7-rolling-source",
+      "artifact_id": "mzl7-ball-roll-interception-source",
+      "path": "/gpfs/radev/project/sous/mzl7/ball_roll_interception_scripts",
+      "discovery": "self",
+      "kind": "source_dependency",
+      "category": "dependencies",
+      "lifecycle": "dependency",
+      "scan_mode": "metadata_only",
+      "notes": "Read-only scene reference; assisted controller is excluded from canonical generation"
+    },
+    {
+      "id_prefix": "zss8-harmonized-source",
+      "artifact_id": "zss8-harmonized-source",
+      "path": "/gpfs/radev/project/sous/zss8/dataset-generation/harmonized",
+      "discovery": "self",
+      "kind": "source_dependency",
+      "category": "dependencies",
+      "lifecycle": "dependency",
+      "scan_mode": "metadata_only",
+      "notes": "Read-only collaborator conversion framework"
+    }
+  ]
+}

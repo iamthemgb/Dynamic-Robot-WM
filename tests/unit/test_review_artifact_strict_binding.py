@@ -39,6 +39,7 @@ def _scenario_for_clean_p0_case(bundle) -> SourceScenarioSpec:
         physics={
             "simulation_hz": 1200,
             "gravity_world_m_s2": [0.0, 0.0, -9.81],
+            "evaluator": case.evaluator,
         },
         initial_state={
             "object_position_m": [0.0, 0.0, 0.8],

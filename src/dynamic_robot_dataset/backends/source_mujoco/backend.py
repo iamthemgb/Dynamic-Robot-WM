@@ -234,12 +234,6 @@ def _joint_ranges(model: Any, joint_ids: Sequence[int]) -> np.ndarray:
     for index, joint_id in enumerate(joint_ids):
         if not bool(model.jnt_limited[int(joint_id)]):
             ranges[index] = (-3.0, 3.0)
-    # Keep IK solutions strictly interior: the deep-fold F2c pickup ready
-    # measurably solved with the elbow exactly on its model limit, which is
-    # unreplayable on hardware and fails the joint-motion gate on the first
-    # servo wiggle.
-    ranges[:, 0] += 0.01
-    ranges[:, 1] -= 0.01
     return ranges
 
 
@@ -271,6 +265,15 @@ def _solve_arm_ik(
     arm_joint_ids = ids.robot_joint_ids[:7]
     arm_qpos = np.asarray(ids.robot_qpos_adrs[:7], dtype=np.int32)
     ranges = _joint_ranges(model, arm_joint_ids)
+    if scenario.corpus_leaf_id in {"F2c", "F2d"}:
+        # Keep the rebound-interception solutions strictly interior.  The
+        # deep-fold F2c ready pose otherwise solves with its elbow exactly on
+        # the model limit, which is unreplayable on hardware and fails the
+        # joint-motion gate on the first servo correction.  This is scoped to
+        # the newly calibrated rebound leaves so established leaves retain
+        # their already-reviewed IK behavior.
+        ranges[:, 0] += 0.01
+        ranges[:, 1] -= 0.01
     initial = PANDA_HOME_Q.copy() if initial_arm_q is None else initial_arm_q.copy()
     data.qpos[arm_qpos] = initial
     if scenario.embodiment == FRANKA_HAND:
@@ -499,11 +502,6 @@ def _controller_for_scenario(
     hand_orientation = (
         "pick_down" if "pickup" in scenario.motion_kind else "catch_up"
     )
-    rebound_catch = (
-        ("bounce" in scenario.motion_kind or "rebound" in scenario.motion_kind)
-        and "pickup" not in scenario.motion_kind
-        and scenario.embodiment == FRANKA_HAND
-    )
     intercept, intercept_diagnostics = _solve_arm_ik(
         mujoco,
         least_squares,
@@ -671,7 +669,9 @@ def _controller_for_scenario(
     if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD:
         open_gripper = 0.0
         closed_gripper = (
-            RIGID_REVIEW_PROFILE.robotiq_pickup_tendon_target
+            RIGID_REVIEW_PROFILE.f2c_robotiq_tendon_target
+            if robotiq_pickup and scenario.corpus_leaf_id == "F2c"
+            else RIGID_REVIEW_PROFILE.robotiq_pickup_tendon_target
             if robotiq_pickup
             else RIGID_REVIEW_PROFILE.robotiq_tendon_target
         )
@@ -2000,8 +2000,27 @@ def _catch_evidence(
         current_run = current_run + 1 if row.get("contact.bilateral") is True else 0
         maximum_run = max(maximum_run, current_run)
     sustained = maximum_run / scenario.simulation_hz >= 0.05
+    retention = RIGID_REVIEW_PROFILE.grasp_retention()
+    final_window_s = retention.final_window_s
+    final_start_s = max(0.0, scenario.duration_s - final_window_s)
+    final_rows = [
+        row for row in rows if float(row["timestamp"]) >= final_start_s - 1e-12
+    ]
+    final_bilateral_rows = [
+        row for row in final_rows if row.get("contact.bilateral") is True
+    ]
+    final_bilateral_fraction = (
+        len(final_bilateral_rows) / len(final_rows) if final_rows else 0.0
+    )
+    final_bilateral_contact = bool(
+        final_rows and final_rows[-1].get("contact.bilateral") is True
+    )
+    retained_through_final_state = bool(
+        final_bilateral_contact
+        and final_bilateral_fraction >= retention.minimum_bilateral_fraction
+    )
     relative = []
-    for row in bilateral:
+    for row in final_bilateral_rows:
         center = row.get("grasp.center_position")
         if center is None:
             continue
@@ -2011,10 +2030,20 @@ def _catch_evidence(
         )
     stable = False
     maximum_relative_range = math.inf
-    if len(relative) >= int(round(0.10 * scenario.simulation_hz)):
-        recent = np.asarray(relative[-int(round(0.10 * scenario.simulation_hz)) :])
-        maximum_relative_range = float(np.max(np.ptp(recent, axis=0)))
-        stable = maximum_relative_range <= 0.01
+    minimum_final_samples = max(
+        2,
+        int(
+            round(
+                final_window_s
+                * scenario.simulation_hz
+                * retention.minimum_bilateral_fraction
+            )
+        ),
+    )
+    if retained_through_final_state and len(relative) >= minimum_final_samples:
+        final_relative = np.asarray(relative)
+        maximum_relative_range = float(np.max(np.ptp(final_relative, axis=0)))
+        stable = maximum_relative_range <= retention.maximum_relative_range_m
     transport_supported = True
     if scenario.controller_transport_position_m is not None:
         transport_start_s = (
@@ -2060,6 +2089,10 @@ def _catch_evidence(
     return {
         "sustained_opposing_bilateral_contacts": sustained,
         "stable_object_to_grasp_transform": stable,
+        "retained_through_final_state": retained_through_final_state,
+        "final_bilateral_contact": final_bilateral_contact,
+        "final_retention_window_s": final_window_s,
+        "final_retention_bilateral_fraction": final_bilateral_fraction,
         "displacement_physically_supported_by_contacts": transport_supported,
         "maximum_contiguous_bilateral_contact_s": maximum_run / scenario.simulation_hz,
         "maximum_object_to_grasp_relative_range_m": (
@@ -2634,6 +2667,7 @@ def _physics_qc(
             else (
                 "sustained_opposing_bilateral_contacts",
                 "stable_object_to_grasp_transform",
+                "retained_through_final_state",
             )
         )
         for name in required_success_evidence:
@@ -2670,7 +2704,10 @@ def _physics_qc(
             else "success"
             if outcome_success
             else "contact_failure"
-            if any(row.get("contact_category") == "gripper" for row in contacts)
+            if any(
+                row.get("contact_category") in {"gripper", "robot_arm"}
+                for row in contacts
+            )
             else "miss"
         ),
         "intended_outcome": scenario.intended_outcome,

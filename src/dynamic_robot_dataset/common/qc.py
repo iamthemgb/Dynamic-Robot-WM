@@ -3634,6 +3634,12 @@ class QCValidator:
                         task_variant=task_variant,
                         evidence=task_evidence,
                         task_success=record.task_success,
+                        require_final_retention=bool(
+                            isinstance(source_spec, Mapping)
+                            and source_spec.get("schema_version")
+                            == "dynamic-robot-source-scenario/v2"
+                            and record.objective_evaluator_version == "1.5.0"
+                        ),
                     ):
                         result.fail(f"strict task physics: {failure}")
             try:

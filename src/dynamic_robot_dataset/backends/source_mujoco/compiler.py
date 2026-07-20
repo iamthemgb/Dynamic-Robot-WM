@@ -27,8 +27,8 @@ from .rolling_island import (
 )
 
 
-SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v7"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.16.0-review"
+SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v8"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.17.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):
@@ -347,11 +347,11 @@ class SourceMujocoCompiledScenario:
             self.requires_real_robocasa
             and self.corpus_leaf_id in {"P0c", "P0d"}
         ) or (
-            # The F2c elevated bounce pad stands on its own grounded legs in
-            # every scene: the fixture is floor-rooted, so R0 needs the same
-            # physical frame R1 does.
+            # Every F2c bounce pad stands on its own grounded legs.  Even the
+            # lower floor_bounce plate leaves a 138 mm gap beneath it and
+            # therefore requires explicit physical supports.
             self.corpus_leaf_id == "F2c"
-            and self.task_variant == "table_bounce"
+            and self.task_variant in {"table_bounce", "floor_bounce"}
         )
         if requires_owned_supports and len(structural_supports) != 4:
             raise SourceMujocoUnsupported(
@@ -970,6 +970,13 @@ def _recipe(
                 RIGID_REVIEW_PROFILE.robotiq_pickup_closure_duration_s
                 - RIGID_REVIEW_PROFILE.robotiq_pickup_closure_start_before_event_s
             )
+            # The spinning rebound needs a slightly downstream jaw center to
+            # remain nested as the tendon closes.  Without this measured bias
+            # the nominal fixed seed is bilateral for 0.71 s but is squeezed
+            # out before the final frame.
+            controller_target[0] += (
+                RIGID_REVIEW_PROFILE.f2c_robotiq_intercept_bias_x_m
+            )
         if negative:
             # Keep the physical bounce and the intended difficult seed; a
             # negative changes only its declared intervention stream along
@@ -989,29 +996,31 @@ def _recipe(
             pad_half,
             rebound_pad=True,
         )
-        supports: tuple[PhysicalSurface, ...] = ()
-        if task_variant == "table_bounce":
-            leg_half = (0.015, 0.015, (pad_top - 2.0 * pad_half_z) / 2.0)
-            supports = tuple(
-                PhysicalSurface(
-                    name=f"owned_bounce_pad_leg_{index}",
-                    role="structural_support",
-                    position_m=(
-                        pad_center_x + sign_x * (pad_half[0] - 0.015),
-                        sign_y * (pad_half[1] - 0.015),
-                        leg_half[2],
-                    ),
-                    half_size_m=leg_half,
-                    solref=(0.003, 1.0),
-                    expected_task_contact=False,
-                    supports_fixture_id="owned_bounce_pad",
-                    grounded_plane_z_m=0.0,
-                    support_interface_maximum_mismatch_m=0.0,
-                )
-                for index, (sign_x, sign_y) in enumerate(
-                    ((-1, -1), (-1, 1), (1, -1), (1, 1))
-                )
+        # Both named variants place the calibrated contact plate above the
+        # room floor (170 mm for floor_bounce, 400 mm for table_bounce).
+        # Give both the same explicit four-leg support contract; a world-fixed
+        # plate suspended in mid-air is not a physically supported fixture.
+        leg_half = (0.015, 0.015, (pad_top - 2.0 * pad_half_z) / 2.0)
+        supports = tuple(
+            PhysicalSurface(
+                name=f"owned_bounce_pad_leg_{index}",
+                role="structural_support",
+                position_m=(
+                    pad_center_x + sign_x * (pad_half[0] - 0.015),
+                    sign_y * (pad_half[1] - 0.015),
+                    leg_half[2],
+                ),
+                half_size_m=leg_half,
+                solref=(0.003, 1.0),
+                expected_task_contact=False,
+                supports_fixture_id="owned_bounce_pad",
+                grounded_plane_z_m=0.0,
+                support_interface_maximum_mismatch_m=0.0,
             )
+            for index, (sign_x, sign_y) in enumerate(
+                ((-1, -1), (-1, 1), (1, -1), (1, 1))
+            )
+        )
         base.update(
             key_event_time_s=event_time,
             motion_kind=motion_kind,

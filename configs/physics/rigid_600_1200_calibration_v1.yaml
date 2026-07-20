@@ -1,7 +1,7 @@
 schema_version: dynamic-robot-rigid-profile-calibration/v1
-calibration_id: source_mujoco_rigid_600_1200_candidate_v11
+calibration_id: source_mujoco_rigid_600_1200_candidate_v15
 contract_version: dynamic-robot-dataset/v2
-current_runtime_profile: source-mujoco-rigid-review-2026-07-v13
+current_runtime_profile: source-mujoco-rigid-review-2026-07-v15
 
 # This file records exploratory measurements made while repairing the owned
 # source_mujoco controller/contact path.  It is deliberately not an admission
@@ -22,9 +22,10 @@ admission:
 
 source_binding:
   backend: source_mujoco
-  compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v6
-  backend_version: 0.15.0-review
-  objective_evaluator_version: 1.4.0
+  source_scenario_schema: dynamic-robot-source-scenario/v2
+  compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v8
+  backend_version: 0.17.0-review
+  objective_evaluator_version: 1.5.0
   visibility_qc_schema: source-mujoco-visibility-qc/v3
   background_clearance_schema: source-mujoco-background-clearance/v4
   rebound_acceptance_schema: dynamic-robot-rebound-acceptance/v1
@@ -668,6 +669,195 @@ measurements:
       obvious_fixture_floating_or_task_volume_intersection: false
       appearance_limitation: simplified_yaml_box_geometry_and_flat_colors_are_not_pixel_identical_to_the_collaborators_native_textured_render
       scale_decision: keep_blocked_until_hash_bound_human_review
+    admission_claimed: false
+    formal_human_approval_recorded: false
+
+  f2c_f2d_rebound_interception_repair_v14:
+    description: >-
+      actuator-only table/floor-bounce and wall/barrier-rebound interception
+      recipes, measured against the unchanged six fixed seeds for each leaf
+    runtime_profile: source-mujoco-rigid-review-2026-07-v14
+    backend_version: 0.16.0-review
+    compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v7
+    evidence_status: exploratory_unbound
+    fixed_seeds_preserved: true
+    rendered_artifacts_generated: true
+    regenerated_review_plan:
+      root: /gpfs/radev/project/sous/zl664/dataset_generation_runs/review_suite_20260720_v16_f2c_support
+      plan_sha256: 43786a092724d181d3c285e943f0ca6d688e64f29e850195a4806edf1b72b7d2
+      request_ledger_sha256: 3027bd2f42feed93194011d4d026804f0946c4177949424d256b039579832730
+      planned_case_count: 120
+      executable_case_count: 66
+      identity_or_rng_changes_against_v15_plan: 0
+    controller_contract:
+      callback_mutation_boundary: data.ctrl_only
+      object_state_writes_after_initialization: 0
+      direct_robot_state_writes_after_initialization: 0
+      mocap_writes_after_initialization: 0
+      applied_force_writes_after_initialization: 0
+      object_linked_equality_changes_after_initialization: 0
+      model_physics_mutations_after_initialization: 0
+    measured_constants:
+      bounce_pad_solref: [0.005, 0.5]
+      bounce_pad_contact_margin_m: 0.004
+      bounce_pad_effective_restitution: 0.2466
+      bounce_pad_lane_retention: 0.7446
+      wall_rebound_effective_restitution: 0.1869
+      wall_rebound_contact_margin_m: 0.006
+      wall_rebound_launch_speed_m_s: 1.1
+      angled_barrier_yaw_rad: 0.4363323129985824
+      barrier_tangential_retention: 0.808
+    fresh_non_rendered_fixed_sweep:
+      sweep_date: 2026-07-20
+      cases: 12
+      scene_construction_errors: 1
+      intended_outcome_matches: 10
+      strict_physics_qc_passes: 9
+      f2c:
+        execution_state: review
+        case_ids:
+          - F2c-review-00
+          - F2c-review-01
+          - F2c-review-02
+          - F2c-review-03
+          - F2c-review-04
+          - F2c-review-05
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        task_variants: [table_bounce, floor_bounce]
+        online_actual_outcomes:
+          - success
+          - success
+          - miss
+          - miss
+          - contact_failure
+          - miss
+        all_six_strict_physics_qc_pass: true
+        all_intended_outcomes_match_without_seed_replacement: true
+        all_six_background_clearance_pass: true
+        remaining_gates:
+          rendered_six_case_artifacts: automated_pass_qualitative_failed
+          timestep_halving_for_repaired_profile: pending
+          hash_bound_human_review: pending
+      f2d:
+        execution_state: blocked
+        passing_case_ids: [F2d-review-00, F2d-review-02, F2d-review-03]
+        failing_case_ids: [F2d-review-01, F2d-review-04, F2d-review-05]
+        failures:
+          F2d-review-01:
+            intended_outcome_match: false
+            actual_outcome: contact_failure
+            maximum_gripper_penetration_m: 0.006294449765721598
+            passive_finger_acceleration_rad_s2: 549.3609977089059
+            passive_finger_acceleration_limit_rad_s2: 200.0
+          F2d-review-04:
+            intended_outcome_match: true
+            actual_outcome: miss
+            maximum_gripper_penetration_m: 0.01623053032257947
+          F2d-review-05:
+            construction_error: >-
+              servo-settled intercept correction could not verify the aim
+              point; residual 0.0102 m
+        blockers:
+          - robotiq_rebound_retention_geometry_not_validated
+          - fixed_review_penetration_failures_unresolved
+    rendered_f2c_artifacts:
+      dataset_root: /gpfs/radev/project/sous/zl664/dataset_generation_runs/review_F2c_fixed6_v16_support
+      episode_count: 6
+      automated_strict_qc_passed_under_evaluator_v1_4: true
+      run_plan_hash: e7fa2cf8df63cbbfc22137c93459428dc5e1c2823a0eb4b0c3a7ce5da1b2425e
+      dataset_report_sha256: 8e5427c96535f3a834e6f48d960493de9257363070da0473362643f7fe5eeb47
+      complete_metadata_sha256: 2ecd67b5b9f2102ec9876fe18155144fad98882dc6050499ce72f9d571c27980
+      pending_human_ledger_sha256: 332190e0c6cb5a122d3ef8867f995031c7e5d89af709c00770d98d9a12cff9b8
+      seal_sha256: 3e768689e3bda152c94e0402a1e74b62d181910b53b486bfd9f0ca9e9a0edc9b
+    assistant_qualitative_screen:
+      status: failed_not_a_human_approval
+      reviewed_main_event_strips: 6
+      reviewed_secondary_event_strips: 6
+      supported_bounce_fixtures_visible: true
+      robot_and_ball_visible_at_required_checkpoints: true
+      negative_branches_remain_visible_physical_failures: true
+      failed_case_id: F2c-review-01
+      failure: >-
+        the Robotiq nominal catch lost bilateral contact at 1.582 s and the
+        final frame showed the ball on the room floor, despite the v1.4
+        evaluator classifying the earlier transient grasp as success
+      scale_decision: block_and_repair_controller_and_evaluator
+    admission_claimed: false
+    formal_human_approval_recorded: false
+
+  f2c_final_retention_repair_v15:
+    description: >-
+      reject transient grasps that drop before the final review frame and
+      repair the same fixed Robotiq nominal rebound without state assistance
+    runtime_profile: source-mujoco-rigid-review-2026-07-v15
+    backend_version: 0.17.0-review
+    compiled_scenario_schema: dynamic-robot-source-mujoco-compiled/v8
+    source_scenario_schema: dynamic-robot-source-scenario/v2
+    objective_evaluator_version: 1.5.0
+    fixed_seeds_preserved: true
+    source_failure_artifact:
+      dataset_root: /gpfs/radev/project/sous/zl664/dataset_generation_runs/review_F2c_fixed6_v16_support
+      case_id: F2c-review-01
+      first_bilateral_contact_s: 0.8733333333329977
+      last_bilateral_contact_s: 1.5816666666660641
+      final_object_z_m: 0.02848925870666774
+      previous_evaluator_result: success
+      qualitative_result: failed_retention_ball_on_floor
+    repaired_controller:
+      embodiment: robotiq_2f85_thick_pad
+      leaf: F2c
+      tendon_target_before: 140.0
+      tendon_target_after: 125.0
+      intercept_x_bias_m: 0.015
+      maximum_gripper_penetration_m: 0.001834605076116061
+      final_retention_bilateral_fraction: 1.0
+      callback_mutation_boundary: data.ctrl_only
+      direct_state_or_constraint_assistance: false
+    evaluator_contract:
+      final_retention_window_s: 0.10
+      minimum_final_bilateral_fraction: 0.95
+      require_bilateral_at_final_sample: true
+      maximum_final_object_to_grasp_range_m: 0.01
+      transient_early_grasp_cannot_count_as_success: true
+      threshold_values_persisted_in_source_scenario_spec: true
+    fresh_non_rendered_fixed_sweep:
+      case_ids:
+        - F2c-review-00
+        - F2c-review-01
+        - F2c-review-02
+        - F2c-review-03
+        - F2c-review-04
+        - F2c-review-05
+      actual_outcomes:
+        - success
+        - success
+        - miss
+        - miss
+        - contact_failure
+        - contact_failure
+      all_six_strict_physics_qc_pass: true
+      all_intended_outcomes_match_without_seed_replacement: true
+      nominal_cases_retained_through_final_state: true
+      negative_cases_do_not_claim_final_retention: true
+      independent_evaluator_spot_check_case_ids:
+        - F2c-review-00
+        - F2c-review-01
+        - F2c-review-02
+      independent_evaluator_replay_matches: true
+    regenerated_review_plan:
+      root: /gpfs/radev/project/sous/zl664/dataset_generation_runs/review_suite_20260720_v17_f2c_retention
+      source_scenario_schema: dynamic-robot-source-scenario/v1
+      evidence_status: superseded_pre_v2_plan
+      replacement_pending_after_generator_commit: true
+      plan_sha256: 43786a092724d181d3c285e943f0ca6d688e64f29e850195a4806edf1b72b7d2
+      request_ledger_sha256: 3027bd2f42feed93194011d4d026804f0946c4177949424d256b039579832730
+      planned_case_count: 120
+      executable_case_count: 66
+      identity_or_rng_changes_against_v14_plan: 0
+    remaining_gates:
+      rendered_six_case_artifacts: pending
+      timestep_halving_for_repaired_profile: pending
+      hash_bound_human_review: pending
     admission_claimed: false
     formal_human_approval_recorded: false
 
