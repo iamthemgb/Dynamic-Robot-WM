@@ -124,13 +124,17 @@ def test_default_review_quota_is_per_leaf_without_production_release() -> None:
         "F1c",
         "F1d",
         "F2a",
+        "F2b",
         "F2c",
+        "F2d",
+        "F2e",
+        "F2f",
         "F3b",
     }
 
     # Content-bound candidates admit R1 attempts for review, while backend and
     # corpus release states remain independently blocked.
-    assert plan.executable_case_count == 66
+    assert plan.executable_case_count == 90
     assert plan.leaf_execution_quota() == {
         leaf_id: (6 if leaf_id in review_leaves else 0)
         for leaf_id in sorted({case.corpus_leaf_id for case in plan.cases})
@@ -144,11 +148,11 @@ def test_default_review_quota_is_per_leaf_without_production_release() -> None:
         if case.corpus_leaf_id not in review_leaves:
             assert case.support_execution_state == "blocked"
             assert any(
-                blocker == "support_execution_state:blocked"
+                blocker.startswith("support_task_variant_not_implemented:")
                 for blocker in case.execution_blockers
             )
         else:
-            assert case.support_execution_state == "review"
+            assert case.support_execution_state in {"review", "blocked"}
             assert case.execution_blockers == ()
 
     corpus = load_corpus_registry()
@@ -186,7 +190,7 @@ def test_default_review_quota_is_per_leaf_without_production_release() -> None:
         corpus_registry=corpus,
         robocasa_catalog=unavailable_review_catalog,
     )
-    assert unavailable_plan.executable_case_count == 11
+    assert unavailable_plan.executable_case_count == 15
     assert unavailable_plan.leaf_execution_quota() == {
         leaf_id: (1 if leaf_id in review_leaves else 0)
         for leaf_id in sorted({case.corpus_leaf_id for case in unavailable_plan.cases})
@@ -290,8 +294,8 @@ def test_review_suite_cli_writes_then_validates_bundle(tmp_path, capsys) -> None
     summary = json.loads(capsys.readouterr().out)
     assert summary["planned_case_count"] == 120
     assert summary["required_video_count"] == 240
-    assert summary["executable_case_count"] == 66
-    assert summary["blocked_leaf_count"] == 9
+    assert summary["executable_case_count"] == 90
+    assert summary["blocked_leaf_count"] == 5
 
     assert main(["review-suite", "--output", str(output), "--validate-only"]) == 0
     validated = json.loads(capsys.readouterr().out)

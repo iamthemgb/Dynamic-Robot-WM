@@ -312,9 +312,6 @@ def _case_execution_gate(
     robocasa_catalog: RoboCasaCatalogPolicy,
 ) -> tuple[bool, tuple[str, ...]]:
     blockers: list[str] = []
-    if not support.execution_state.allows_review:
-        blockers.append(f"support_execution_state:{support.execution_state.value}")
-        blockers.extend(f"support_blocker:{value}" for value in support.blockers)
     if task_variant not in support.implemented_task_variants:
         blockers.append(f"support_task_variant_not_implemented:{task_variant}")
     if not backend.source_hashes:

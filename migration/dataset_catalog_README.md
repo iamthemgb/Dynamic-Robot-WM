@@ -16,6 +16,7 @@ Refresh with:
 python3 /gpfs/radev/project/sous/zl664/dataset_generation/tools/catalog_datasets.py \
   --roots-config /gpfs/radev/project/sous/zl664/dataset_generation/migration/dataset_catalog_roots.json \
   --catalog-root /gpfs/radev/project/sous/zl664/dataset_catalog \
+  --reviews-root /gpfs/radev/project/sous/zl664/dataset_reviews \
   --build-symlink-view
 ```
 

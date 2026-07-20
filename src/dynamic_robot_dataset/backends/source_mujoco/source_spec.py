@@ -37,6 +37,10 @@ from .compiler import SourceMujocoCompiledScenario
 from .model import CompiledSourceModel, compile_source_model
 from .profiles import RIGID_REVIEW_PROFILE
 from .provenance import PINNED_ROLLING_ISLAND_SOURCE_FILES, PINNED_SOURCE_FILES
+from .rigid_breadth import (
+    RIGID_BREADTH_PROFILE_VERSION,
+    catalog_sha256 as rigid_breadth_catalog_sha256,
+)
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
@@ -210,6 +214,9 @@ def _fixtures(mujoco: Any, compiled: CompiledSourceModel, scenario: SourceMujoco
                         if surface.name == "supported_bounce_table"
                         else "f2c_bounce_pad_v1"
                         if surface.contact_profile == "rebound_pad"
+                        and scenario.corpus_leaf_id == "F2c"
+                        else "rigid_breadth_rebound_pad_v1"
+                        if surface.contact_profile == "rebound_pad"
                         else "wall_rebound_v1"
                         if surface.role == "wall"
                         else "hard_support_v1"
@@ -344,6 +351,7 @@ def prepare_review_case(
         "robocasa_catalog": sha256_file(_ROBOCASA_CATALOG),
         "compiled_scene_xml": compiled.xml_sha256,
         "compiled_asset_manifest": combined_manifest_hash(compiled.source_asset_sha256),
+        "rigid_breadth_surface_catalog": rigid_breadth_catalog_sha256(),
     }
     embodiment = _embodiment(scenario.embodiment)
     actuator_phases, robot_initial_joint_qpos = _actuator_phases(
@@ -431,6 +439,26 @@ def prepare_review_case(
                 else None
             ),
             "passive_variation_profile": scenario.passive_variation_profile,
+            "rigid_breadth_profile": (
+                RIGID_BREADTH_PROFILE_VERSION
+                if scenario.corpus_leaf_id in {"F2b", "F2e", "F2f"}
+                else None
+            ),
+            "surface_transition_contract": (
+                scenario.surface_transition_contract.to_dict()
+                if scenario.surface_transition_contract is not None
+                else None
+            ),
+            "ordered_contact_contract": (
+                scenario.ordered_contact_contract.to_dict()
+                if scenario.ordered_contact_contract is not None
+                else None
+            ),
+            "sampled_surface_contract": (
+                scenario.sampled_surface_contract.to_dict()
+                if scenario.sampled_surface_contract is not None
+                else None
+            ),
             "rebound_acceptance": (
                 RIGID_REVIEW_PROFILE.rebound_acceptance().to_dict()
                 if "rebound" in scenario.motion_kind

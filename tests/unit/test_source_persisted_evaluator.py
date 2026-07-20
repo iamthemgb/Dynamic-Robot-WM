@@ -82,8 +82,8 @@ def test_persisted_catch_rejects_transient_grasp_lost_before_final_window() -> N
 
     result = evaluate_source_rows(
         evaluator_id="rigid_catch_v2",
-        corpus_leaf_id="F2c",
-        task_variant="table_bounce",
+        corpus_leaf_id="F1a",
+        task_variant="catch_retain",
         source_spec=source_spec,
         state_rows=rows,
         event_rows=[

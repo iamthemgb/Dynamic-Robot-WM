@@ -3638,7 +3638,7 @@ class QCValidator:
                             isinstance(source_spec, Mapping)
                             and source_spec.get("schema_version")
                             == "dynamic-robot-source-scenario/v2"
-                            and record.objective_evaluator_version == "1.5.0"
+                            and record.objective_evaluator_version in {"1.5.0", "1.6.0"}
                         ),
                     ):
                         result.fail(f"strict task physics: {failure}")

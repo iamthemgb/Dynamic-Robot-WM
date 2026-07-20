@@ -447,6 +447,62 @@ class ReviewArtifactManifest:
         self.validate()
         return sha256_json(asdict(self))
 
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ReviewArtifactManifest":
+        """Load a persisted artifact while rejecting derived-field spoofing."""
+
+        result = cls(
+            leaf_id=str(value.get("leaf_id", "")),
+            episode_uuid=str(value.get("episode_uuid", "")),
+            rollout_index=int(value.get("rollout_index", -1)),
+            fixed_master_seed=int(value.get("fixed_master_seed", -1)),
+            review_plan_sha256=str(value.get("review_plan_sha256", "")),
+            review_case_sha256=str(value.get("review_case_sha256", "")),
+            review_request_ledger_sha256=str(
+                value.get("review_request_ledger_sha256", "")
+            ),
+            review_request_sha256=str(value.get("review_request_sha256", "")),
+            scenario_spec_sha256=str(value.get("scenario_spec_sha256", "")),
+            qc_report_sha256=str(value.get("qc_report_sha256", "")),
+            qc_report_schema=str(value.get("qc_report_schema", "")),
+            qc_episode_result_sha256=str(
+                value.get("qc_episode_result_sha256", "")
+            ),
+            qc_strict_all=value.get("qc_strict_all") is True,
+            automated_qc_passed=value.get("automated_qc_passed") is True,
+            source_manifest_sha256=str(value.get("source_manifest_sha256", "")),
+            frame_timestamps_sha256=str(
+                value.get("frame_timestamps_sha256", "")
+            ),
+            key_event_time_s=float(value.get("key_event_time_s", math.nan)),
+            video_paths={
+                str(key): str(item)
+                for key, item in dict(value.get("video_paths") or {}).items()
+            },
+            video_sha256={
+                str(key): str(item)
+                for key, item in dict(value.get("video_sha256") or {}).items()
+            },
+            event_strip_paths={
+                str(key): str(item)
+                for key, item in dict(value.get("event_strip_paths") or {}).items()
+            },
+            event_strip_sha256={
+                str(key): str(item)
+                for key, item in dict(value.get("event_strip_sha256") or {}).items()
+            },
+            event_strip_indices={
+                str(key): int(item)
+                for key, item in dict(value.get("event_strip_indices") or {}).items()
+            },
+            schema_version=str(value.get("schema_version", "")),
+        )
+        result.validate()
+        declared = value.get("binding_sha256")
+        if declared is not None and declared != result.binding_sha256:
+            raise ValueError("review artifact binding hash mismatch")
+        return result
+
 
 def bind_review_artifacts(
     dataset_root: str | Path,
@@ -1588,6 +1644,73 @@ class HumanReviewLedger:
             elif not item.review.accepted:
                 failures.append(f"rollout {item.rollout_index} failed human review")
         return failures
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "HumanReviewLedger":
+        """Load a persisted pending or completed ledger and verify its digest."""
+
+        raw_items = value.get("items")
+        if not isinstance(raw_items, Sequence) or isinstance(
+            raw_items, (str, bytes, bytearray)
+        ):
+            raise ValueError("review ledger items must be a sequence")
+        items: list[ReviewItem] = []
+        for raw_item in raw_items:
+            if not isinstance(raw_item, Mapping):
+                raise ValueError("review ledger item must be a mapping")
+            raw_artifact = raw_item.get("artifacts")
+            if not isinstance(raw_artifact, Mapping):
+                raise ValueError("review ledger item lacks its artifact manifest")
+            artifact = ReviewArtifactManifest.from_dict(raw_artifact)
+            raw_review = raw_item.get("review")
+            review = None
+            if raw_review is not None:
+                if not isinstance(raw_review, Mapping):
+                    raise ValueError("human review must be a mapping")
+                checks = raw_review.get("checks")
+                if not isinstance(checks, Mapping):
+                    raise ValueError("human review lacks canonical checks")
+                review = HumanReview(
+                    artifact_binding_sha256=str(
+                        raw_review.get("artifact_binding_sha256", "")
+                    ),
+                    reviewer=str(raw_review.get("reviewer", "")),
+                    reviewed_at=str(raw_review.get("reviewed_at", "")),
+                    checks={str(key): item for key, item in checks.items()},
+                    notes=str(raw_review.get("notes", "")),
+                )
+            automated = raw_item.get("automated_qc_passed")
+            if not isinstance(automated, bool):
+                raise ValueError("review item automated QC value must be boolean")
+            items.append(
+                ReviewItem(
+                    rollout_index=int(raw_item.get("rollout_index", -1)),
+                    scene_profile=str(raw_item.get("scene_profile", "")),
+                    artifacts=artifact,
+                    automated_qc_passed=automated,
+                    review=review,
+                )
+            )
+        extras = value.get("extras") or {}
+        if not isinstance(extras, Mapping):
+            raise ValueError("review ledger extras must be a mapping")
+        result = cls(
+            items=tuple(items),
+            review_plan_sha256=str(value.get("review_plan_sha256", "")),
+            review_request_ledger_sha256=str(
+                value.get("review_request_ledger_sha256", "")
+            ),
+            expected_rollouts_per_leaf=int(
+                value.get("expected_rollouts_per_leaf", -1)
+            ),
+            schema_version=str(value.get("schema_version", "")),
+            extras=dict(extras),
+        )
+        result.validate()
+        declared = value.get("ledger_sha256")
+        if declared is not None and declared != result.ledger_sha256:
+            raise ValueError("human review ledger hash mismatch")
+        return result
 
 
 def write_human_review_ledger(

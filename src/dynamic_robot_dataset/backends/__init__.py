@@ -4,7 +4,8 @@ The legacy native backend remains importable for diagnostics and regression
 tests, but cannot be selected for review, pilot, or production generation.
 """
 
-from typing import Any
+from pathlib import Path
+from typing import Any, Mapping
 
 from .base import (
     BackendRunResult,
@@ -33,6 +34,7 @@ def get_backend(
     corpus_leaf_id: str | None = None,
     embodiment: str | None = None,
     task_variant: str | None = None,
+    activation_report: Mapping[str, object] | str | Path | None = None,
     **kwargs: object,
 ) -> Any:
     """Construct a backend only when its registry capability admits the use.
@@ -69,9 +71,11 @@ def get_backend(
         BackendNotReleasedError,
         UnsupportedScenarioError,
         load_backend_capability_registry,
+        load_corpus_registry,
     )
 
-    registry = load_backend_capability_registry()
+    corpus = load_corpus_registry()
+    registry = load_backend_capability_registry(corpus=corpus)
     capability = registry.by_name[canonical]
     support = None
     if purpose != "diagnostic":
@@ -84,20 +88,12 @@ def get_backend(
             canonical,
             corpus_leaf_id,
             embodiment,
-            require_released=purpose in {"pilot", "production"},
+            task_variant=task_variant,
+            purpose=purpose,
+            corpus=corpus,
+            activation_report=activation_report,
         )
         support = capability.support_by_leaf[corpus_leaf_id]
-        if purpose in {"preview", "review"}:
-            blockers: list[str] = []
-            if not support.execution_state.allows_review:
-                blockers.extend(support.blockers)
-            if task_variant not in support.implemented_task_variants:
-                blockers.append(f"task_variant_not_implemented:{task_variant}")
-            if blockers:
-                raise BackendNotReleasedError(
-                    f"{canonical}/{corpus_leaf_id} is blocked for review: "
-                    + ", ".join(blockers)
-                )
 
     if canonical == "source_mujoco":
         from .source_mujoco import SourceMujocoBackend

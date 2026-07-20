@@ -120,8 +120,11 @@ def _is_floor_rooted_interception(corpus_leaf_id: str) -> bool:
 
     return corpus_leaf_id.startswith("F1") or corpus_leaf_id in {
         "F2a",
+        "F2b",
         "F2c",
         "F2d",
+        "F2e",
+        "F2f",
     }
 
 
@@ -716,7 +719,10 @@ def _add_secondary_camera(
         "camera",
         name="secondary_camera",
     )
-    if scenario.motion_kind == "wall_rebound_interception":
+    if scenario.motion_kind in {
+        "wall_rebound_interception",
+        "arbitrary_surface_rebound_interception",
+    }:
         anchor = scenario.physical_target_position_m
         if anchor is None:
             raise RuntimeError("interception camera lacks its physical target")
@@ -735,6 +741,11 @@ def _add_secondary_camera(
         "rolling_pickup_interception",
         "bounce_apex_pickup_interception",
         "table_bounce_apex_pickup_interception",
+        "ramp_launch_pickup_interception",
+        "ramp_launch_interception",
+        "ordered_multi_rebound_pickup_interception",
+        "random_plane_bounce_pickup_interception",
+        "arbitrary_surface_rebound_interception",
     }:
         anchor = scenario.physical_target_position_m
         if anchor is None:
@@ -870,6 +881,11 @@ def _repair_task_camera(
         "wall_rebound_interception",
         "bounce_apex_pickup_interception",
         "table_bounce_apex_pickup_interception",
+        "ramp_launch_pickup_interception",
+        "ramp_launch_interception",
+        "ordered_multi_rebound_pickup_interception",
+        "random_plane_bounce_pickup_interception",
+        "arbitrary_surface_rebound_interception",
         "passive_projectile",
         "passive_wall_rebound",
     }:
@@ -883,6 +899,11 @@ def _repair_task_camera(
         "wall_rebound_interception",
         "bounce_apex_pickup_interception",
         "table_bounce_apex_pickup_interception",
+        "ramp_launch_pickup_interception",
+        "ramp_launch_interception",
+        "ordered_multi_rebound_pickup_interception",
+        "random_plane_bounce_pickup_interception",
+        "arbitrary_surface_rebound_interception",
     }:
         anchor = scenario.physical_target_position_m or scenario.controller_target_position_m
         if anchor is None:
@@ -1069,6 +1090,15 @@ def _patch_calibrated_model(
                 "margin",
                 f"{RIGID_REVIEW_PROFILE.bounce_pad_contact_margin_m:.9g}",
             )
+            continue
+        if surface.role == "ramp":
+            # F2b initializes at geometric rolling contact.  A predictive
+            # margin would interpret that valid state as 2 mm of soft contact
+            # compression and catapult the ball off the ramp for ~47 ms,
+            # splitting one support interval into two artificial groups.
+            # The ramp-normal speed is small and the reference 1200 Hz step
+            # resolves it without a speculative margin.
+            geom.set("margin", "0")
             continue
         # At 600 Hz a fast sphere can travel several millimetres per step.
         # A 2 mm predictive contact margin keeps geometric penetration within

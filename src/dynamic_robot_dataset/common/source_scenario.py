@@ -26,6 +26,7 @@ from .corpus_registry import (
 )
 from .hashing import canonical_json_bytes, sha256_json
 from .grasp_retention import DEFAULT_GRASP_RETENTION, GraspRetentionThresholds
+from .source_evaluators import validate_source_evaluator_contract
 
 
 LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION = "dynamic-robot-source-scenario/v1"
@@ -477,6 +478,8 @@ class SourceScenarioSpec:
         corpus_registry: CorpusRegistry | None = None,
         backend_registry: BackendCapabilityRegistry | None = None,
         require_released: bool = False,
+        purpose: str | None = None,
+        activation_report: Mapping[str, Any] | str | None = None,
     ) -> None:
         if self.schema_version not in {
             LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION,
@@ -501,6 +504,7 @@ class SourceScenarioSpec:
             embodiment=self.embodiment.end_effector,
             task_variant=self.task_variant,
             require_released=require_released,
+            purpose=purpose,
         )
         if self.backend != leaf.backend:
             raise SourceScenarioValidationError(
@@ -510,6 +514,10 @@ class SourceScenarioSpec:
             self.backend,
             self.corpus_leaf_id,
             self.embodiment.end_effector,
+            task_variant=self.task_variant,
+            purpose=purpose,
+            corpus=corpus,
+            activation_report=activation_report,
             require_released=require_released,
         )
         self.embodiment.validate()
@@ -537,8 +545,16 @@ class SourceScenarioSpec:
                     raise SourceScenarioValidationError(str(error)) from error
                 if retention != DEFAULT_GRASP_RETENTION:
                     raise SourceScenarioValidationError(
-                        "source_mujoco grasp retention differs from evaluator v1.5.0"
+                        "source_mujoco grasp retention differs from evaluator v1.6.0"
                     )
+            try:
+                validate_source_evaluator_contract(
+                    evaluator_id=leaf.evaluator,
+                    task_variant=self.task_variant,
+                    source_spec={"duration_s": self.duration_s, "physics": self.physics},
+                )
+            except ValueError as error:
+                raise SourceScenarioValidationError(str(error)) from error
         fixture_ids = [fixture.fixture_id for fixture in self.fixtures]
         if len(fixture_ids) != len(set(fixture_ids)):
             raise SourceScenarioValidationError("fixture IDs must be unique")

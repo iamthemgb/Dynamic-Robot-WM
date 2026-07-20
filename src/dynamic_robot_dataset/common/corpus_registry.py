@@ -66,6 +66,7 @@ KNOWN_EMBODIMENTS = frozenset(
     {"no_robot", "franka_hand", "robotiq_2f85_thick_pad"}
 )
 PERMANENTLY_BLOCKED_BACKEND = "native_mujoco"
+PILOT_ACTIVATION_REPORT_SCHEMA = "dynamic-robot-leaf-activation-report/v1"
 
 _HASH_PATTERN = re.compile(r"^(?:[0-9a-f]{64}|sha256:[0-9a-f]{64}|git:[0-9a-f]{40})$")
 
@@ -92,6 +93,10 @@ class ReleaseState(str, Enum):
     @property
     def allows_production(self) -> bool:
         return self is ReleaseState.RELEASED
+
+    @property
+    def allows_pilot(self) -> bool:
+        return self in {ReleaseState.PILOT, ReleaseState.RELEASED}
 
 
 class ExecutionState(str, Enum):
@@ -296,6 +301,7 @@ class CorpusRegistry:
         embodiment: str | None = None,
         task_variant: str | None = None,
         require_released: bool = False,
+        purpose: str | None = None,
     ) -> CorpusLeaf:
         try:
             leaf = self.by_id[str(corpus_id)]
@@ -311,7 +317,19 @@ class CorpusRegistry:
                 f"{leaf.corpus_id} does not support task variant {task_variant!r}; "
                 f"allowed={list(leaf.task_variants)}"
             )
-        if require_released and not leaf.release_state.allows_production:
+        normalized_purpose = _generation_purpose(purpose)
+        if require_released:
+            if normalized_purpose not in {None, "production"}:
+                raise ValueError(
+                    "require_released cannot be combined with a non-production purpose"
+                )
+            normalized_purpose = "production"
+        if normalized_purpose == "pilot" and not leaf.release_state.allows_pilot:
+            raise BackendNotReleasedError(
+                f"corpus leaf {leaf.corpus_id} is {leaf.release_state.value} and "
+                f"cannot run a pilot: {', '.join(leaf.blockers)}"
+            )
+        if normalized_purpose == "production" and not leaf.release_state.allows_production:
             raise BackendNotReleasedError(
                 f"corpus leaf {leaf.corpus_id} is {leaf.release_state.value}: "
                 f"{', '.join(leaf.blockers)}"
@@ -555,6 +573,10 @@ class BackendCapabilityRegistry:
         corpus_id: str,
         embodiment: str,
         *,
+        task_variant: str | None = None,
+        purpose: str | None = None,
+        corpus: CorpusRegistry | None = None,
+        activation_report: Mapping[str, Any] | str | Path | None = None,
         require_released: bool = False,
     ) -> BackendCapability:
         try:
@@ -572,11 +594,48 @@ class BackendCapabilityRegistry:
                 f"backend {backend.name}/{corpus_id} does not support embodiment "
                 f"{embodiment!r}; allowed={list(support.embodiments)}"
             )
-        if require_released and not backend.release_state.allows_production:
+        normalized_purpose = _generation_purpose(purpose)
+        legacy_backend_only_release_check = bool(
+            require_released and normalized_purpose is None
+        )
+        if require_released:
+            if normalized_purpose not in {None, "production"}:
+                raise ValueError(
+                    "require_released cannot be combined with a non-production purpose"
+                )
+            normalized_purpose = "production"
+        if normalized_purpose is not None and not legacy_backend_only_release_check:
+            if task_variant is None:
+                raise UnsupportedScenarioError(
+                    f"{normalized_purpose} resolution requires task_variant"
+                )
+            if task_variant not in support.implemented_task_variants:
+                raise BackendNotReleasedError(
+                    f"backend {backend.name}/{corpus_id} is blocked for "
+                    f"{normalized_purpose}: task_variant_not_implemented:{task_variant}"
+                )
+            corpus_registry = corpus or load_corpus_registry()
+            corpus_registry.resolve(
+                corpus_id,
+                embodiment=embodiment,
+                task_variant=task_variant,
+                purpose=normalized_purpose,
+            )
+        if normalized_purpose in {"pilot", "production"} and (
+            backend.release_state is not ReleaseState.RELEASED
+        ):
+            if legacy_backend_only_release_check:
+                raise BackendNotReleasedError(
+                    f"backend {backend.name} is {backend.release_state.value}: "
+                    f"{', '.join(backend.blockers)}"
+                )
             raise BackendNotReleasedError(
-                f"backend {backend.name} is {backend.release_state.value}: "
+                f"backend {backend.name} must be released for {normalized_purpose}; "
+                f"current state is {backend.release_state.value}: "
                 f"{', '.join(backend.blockers)}"
             )
+        if normalized_purpose == "pilot":
+            validate_pilot_activation_report(activation_report, corpus_id=corpus_id)
         return backend
 
 
@@ -584,6 +643,49 @@ def _mapping(value: Any, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise RegistryValidationError(f"{label} must be a mapping")
     return value
+
+
+def _generation_purpose(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized == "preview":
+        normalized = "review"
+    if normalized not in {"review", "pilot", "production"}:
+        raise ValueError(f"unknown generation purpose {value!r}")
+    return normalized
+
+
+def validate_pilot_activation_report(
+    value: Mapping[str, Any] | str | Path | None,
+    *,
+    corpus_id: str,
+) -> str:
+    """Validate immutable fixed-six human approval before pilot construction.
+
+    A self-authored mapping is not evidence. Pilot callers must provide the
+    ``activation_report.json`` path inside a complete external publication so
+    its ledger, manifest, dataset binding, and sealed source bytes can all be
+    revalidated together.
+    """
+
+    if value is None:
+        raise BackendNotReleasedError(
+            f"corpus leaf {corpus_id} lacks a hash-bound pilot activation report"
+        )
+    if not isinstance(value, (str, Path)):
+        raise BackendNotReleasedError(
+            "pilot activation requires the path to a complete external review publication"
+        )
+    try:
+        from .review_finalize import validate_external_review_publication
+
+        publication = validate_external_review_publication(value, corpus_id=corpus_id)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise BackendNotReleasedError(
+            f"pilot activation publication is invalid for {corpus_id}: {error}"
+        ) from error
+    return publication.report_sha256
 
 
 def _release_state(value: Any) -> ReleaseState:
@@ -698,10 +800,12 @@ __all__ = [
     "ExecutionState",
     "KNOWN_EMBODIMENTS",
     "PERMANENTLY_BLOCKED_BACKEND",
+    "PILOT_ACTIVATION_REPORT_SCHEMA",
     "RateSpec",
     "RegistryValidationError",
     "ReleaseState",
     "UnsupportedScenarioError",
     "load_backend_capability_registry",
     "load_corpus_registry",
+    "validate_pilot_activation_report",
 ]

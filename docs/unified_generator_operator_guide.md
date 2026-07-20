@@ -222,6 +222,44 @@ memory without changing episode UUIDs, RNG streams, or plan membership. A
 complete six-case leaf publishes a hash-bound pending human-review ledger; it
 does not invent decisions or change release state.
 
+Complete the review with an external decision document. The document uses
+`dynamic-robot-human-review-decisions/v1`, has one reviewer identity and one
+timezone-aware timestamp, and contains exactly one item for every pending
+rollout. Every item supplies `leaf_id`, `rollout_index`, the artifact's
+`binding_sha256`, all ten boolean checks, and a notes string. Then publish it:
+
+```bash
+uv run --frozen dynamic-robot-dataset review-finalize \
+  --dataset /gpfs/radev/project/sous/zl664/dataset_generation_runs/review_F2c_fixed6_v18_6bd2d99 \
+  --decisions review_inputs/f2c_decisions.json \
+  --output-root /gpfs/radev/project/sous/zl664/dataset_reviews
+```
+
+`review-finalize` rehashes the seal, finalized metadata, strict QC report,
+source scenarios, source manifests, both videos, both event strips, and the
+media-pack bindings before accepting a decision. It publishes an immutable
+ledger, dataset binding, and per-leaf activation report outside the sealed
+dataset. A failed check is preserved as a failed review; it is never converted
+to an approval. A second publication for the same seal is treated as a
+conflict by the catalog.
+
+For F2b/F2d/F2e/F2f repair work, reproduce the non-rendered fixed-seed verdict
+before requesting any media generation:
+
+```bash
+MUJOCO_GL=egl uv run --frozen python tools/run_rigid_breadth_fixed_six.py \
+  --leaves F2b F2d F2e F2f \
+  --output /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_fixed_six_v1.json
+```
+
+The report hashes its source files, review plan, cases, measurements, mutation
+audit, and independent evaluator replay. It is diagnostic evidence only and
+never training data. A leaf that is below 6/6, lacks canonical replay, or has
+pending 600/1200 Hz admission remains blocked; `review-suite` media and pilot
+commands must not be used to bypass that result. In particular, F2f surface
+admission is catalog- and seed-replayed and each admission boolean requires a
+SHA-256 evidence artifact.
+
 ## Activation and scale gates
 
 Activation is independent per leaf. The required order is:

@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dynamic-robot-human-review-decisions/v1",
+  "title": "Dynamic robot fixed-rollout human review decisions",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "reviewer", "reviewed_at", "items"],
+  "properties": {
+    "schema_version": {
+      "const": "dynamic-robot-human-review-decisions/v1"
+    },
+    "reviewer": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reviewed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "leaf_id",
+          "rollout_index",
+          "artifact_binding_sha256",
+          "checks",
+          "notes"
+        ],
+        "properties": {
+          "leaf_id": {
+            "type": "string",
+            "pattern": "^[A-Z][0-9][a-z]?$"
+          },
+          "rollout_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5
+          },
+          "artifact_binding_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "checks": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "continuity",
+              "penetration",
+              "grasp_support",
+              "rebound_deflection_plausibility",
+              "sticking",
+              "tunneling",
+              "clipping",
+              "fixture_support",
+              "camera_occlusion",
+              "robocasa_intersections"
+            ],
+            "properties": {
+              "continuity": {"type": "boolean"},
+              "penetration": {"type": "boolean"},
+              "grasp_support": {"type": "boolean"},
+              "rebound_deflection_plausibility": {"type": "boolean"},
+              "sticking": {"type": "boolean"},
+              "tunneling": {"type": "boolean"},
+              "clipping": {"type": "boolean"},
+              "fixture_support": {"type": "boolean"},
+              "camera_occlusion": {"type": "boolean"},
+              "robocasa_intersections": {"type": "boolean"}
+            }
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

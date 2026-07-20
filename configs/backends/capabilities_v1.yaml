@@ -91,9 +91,9 @@ backends:
         family: projectile_rebound
         subfamily: ramp_launch
         embodiments: [franka_hand, robotiq_2f85_thick_pad]
-        implemented_task_variants: []
+        implemented_task_variants: [ramp_launch_catch, ramp_launch_deflection]
         execution_state: blocked
-        blockers: [ramp_launch_variants_not_implemented]
+        blockers: [fixed_review_robotiq_early_robot_arm_collision_3_0958mm, six_review_rollouts_not_all_qc_passed, 600_1200_calibration_pending]
       - leaf: F2c
         family: projectile_rebound
         subfamily: table_floor_bounce
@@ -112,16 +112,16 @@ backends:
         family: projectile_rebound
         subfamily: multi_surface_rebound
         embodiments: [franka_hand, robotiq_2f85_thick_pad]
-        implemented_task_variants: []
+        implemented_task_variants: [floor_to_wall, flight_to_table_bounce]
         execution_state: blocked
-        blockers: [multi_surface_rebound_variants_not_implemented]
+        blockers: [nominal_catch_retention_failed, fixed_review_joint_acceleration_failures, fixed_review_penetration_failures, 600_1200_calibration_pending]
       - leaf: F2f
         family: projectile_rebound
         subfamily: arbitrary_surface_bounce
         embodiments: [franka_hand, robotiq_2f85_thick_pad]
-        implemented_task_variants: []
+        implemented_task_variants: [random_plane_bounce, random_barrier_bounce]
         execution_state: blocked
-        blockers: [arbitrary_surface_variants_not_implemented]
+        blockers: [arbitrary_surface_catalog_not_admitted, 600_1200_calibration_pending, robotiq_nominal_retention_failed]
       - leaf: F3a
         family: dynamic_handoff
         subfamily: oscillating_platform_handoff

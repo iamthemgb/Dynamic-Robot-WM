@@ -520,7 +520,11 @@ def _semantic_fields(
     elif "task_surface" in categories:
         contact_role = ContactRole.SUPPORT
         surfaces = sorted(
-            str(value.get("object_b") or "task_surface")
+            str(
+                value.get("task_surface_id")
+                or value.get("object_b")
+                or "task_surface"
+            )
             for value in contacts
             if value.get("contact_category") == "task_surface"
         )
@@ -712,6 +716,7 @@ def _normalize_rows(
                     "normal_world",
                     "penetration_depth_m",
                     "contact_category",
+                    "task_surface_id",
                     "counterpart_geom_id",
                     "normal_force_n",
                     "normal_impulse_n_s",
@@ -905,17 +910,26 @@ def materialize_source_mujoco_result(
     if not any(result.frames_by_camera.values()):
         quality_flags.add("unrendered_diagnostic_only")
     online_success = result.outcome.get("task_success")
-    if not isinstance(online_success, bool) or online_success != measurement.task_success:
-        quality_flags.add("online_outcome_disagrees_with_independent_replay")
-    evaluator_invalid = measurement.actual_outcome_class is ActualOutcomeClass.INVALID
-    physics_qc_pass = bool(
-        result.physics_qc.get("physics_qc_pass") is True and not evaluator_invalid
-    )
-    actual_outcome = (
+    online_outcome = str(result.outcome.get("actual_outcome") or "")
+    measured_outcome = (
         "passive_observation"
         if measurement.task_success and case.embodiment == "no_robot"
         else measurement.actual_outcome_class.value
     )
+    online_replay_matches = bool(
+        isinstance(online_success, bool)
+        and online_success == measurement.task_success
+        and online_outcome == measured_outcome
+    )
+    if not online_replay_matches:
+        quality_flags.add("online_outcome_disagrees_with_independent_replay")
+    evaluator_invalid = measurement.actual_outcome_class is ActualOutcomeClass.INVALID
+    physics_qc_pass = bool(
+        result.physics_qc.get("physics_qc_pass") is True
+        and not evaluator_invalid
+        and online_replay_matches
+    )
+    actual_outcome = measured_outcome
     evidence_hash = sha256_json(measurement.evidence)
     source_manifest_sha256 = sha256_json(result.source_hashes)
     backend_provenance_sha256 = sha256_json(result.backend_provenance)

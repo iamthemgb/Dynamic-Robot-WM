@@ -144,7 +144,7 @@ leaves:
     evaluator: rigid_ramp_launch_v1
     required_metadata: [launch_state, surfaces, contact_sequence, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [net_new_scene_pending, supported_fixture_check_pending, six_review_rollouts_pending]
+    blockers: [fixed_review_robotiq_early_robot_arm_collision_3_0958mm, six_review_rollouts_not_all_qc_passed, 600_1200_calibration_pending, human_review_pending]
   - id: F2c
     slug: table_floor_bounce
     title: Table/floor bounce interception
@@ -183,7 +183,7 @@ leaves:
     evaluator: rigid_multi_rebound_v1
     required_metadata: [launch_state, surfaces, contact_sequence, rebound_measurement, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [net_new_multi_contact_evaluator_pending, six_review_rollouts_pending]
+    blockers: [nominal_catch_retention_failed, fixed_review_joint_acceleration_failures, fixed_review_penetration_failures, 600_1200_calibration_pending, human_review_pending]
   - id: F2f
     slug: arbitrary_surface_bounce
     title: Arbitrary surface bounce
@@ -196,7 +196,7 @@ leaves:
     evaluator: rigid_arbitrary_rebound_v1
     required_metadata: [launch_state, surfaces, contact_normals, rebound_measurement, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [net_new_surface_sampler_pending, evaluator_pending, six_review_rollouts_pending]
+    blockers: [arbitrary_surface_catalog_not_admitted, 600_1200_calibration_pending, robotiq_nominal_retention_failed, human_review_pending]
 
   - id: F3a
     slug: oscillating_platform_handoff

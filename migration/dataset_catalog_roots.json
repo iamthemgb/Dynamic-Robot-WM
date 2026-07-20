@@ -1,6 +1,7 @@
 {
   "schema_version": "dynamic-robot-dataset-catalog-roots/v1",
   "canonical_runs_root": "/gpfs/radev/project/sous/zl664/dataset_generation_runs",
+  "human_reviews_root": "/gpfs/radev/project/sous/zl664/dataset_reviews",
   "canonical_overrides": {
     "review_F2c_fixed6_v16_support": {
       "category": "runs/sealed_qualitative_fail",

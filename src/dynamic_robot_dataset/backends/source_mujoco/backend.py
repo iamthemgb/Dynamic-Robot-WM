@@ -22,6 +22,7 @@ from ...common.hashing import combined_manifest_hash, sha256_file, sha256_json
 from ...common.source_evaluators import (
     passive_event_semantics_for_motion_kind,
     select_source_key_event,
+    source_contract_evidence,
 )
 from ...common.physics_contract import (
     STRICT_RIGID_QC_SCHEMA,
@@ -49,6 +50,7 @@ from .controller import (
 )
 from .model import CompiledSourceModel, compile_source_model
 from .profiles import RIGID_REVIEW_PROFILE
+from .rigid_breadth import catalog_sha256 as rigid_breadth_catalog_sha256
 from .provenance import (
     PINNED_ROLLING_ISLAND_MANIFEST_SHA256,
     PINNED_ROLLING_ISLAND_SOURCE_FILES,
@@ -265,7 +267,7 @@ def _solve_arm_ik(
     arm_joint_ids = ids.robot_joint_ids[:7]
     arm_qpos = np.asarray(ids.robot_qpos_adrs[:7], dtype=np.int32)
     ranges = _joint_ranges(model, arm_joint_ids)
-    if scenario.corpus_leaf_id in {"F2c", "F2d"}:
+    if scenario.corpus_leaf_id in {"F2b", "F2c", "F2d", "F2e", "F2f"}:
         # Keep the rebound-interception solutions strictly interior.  The
         # deep-fold F2c ready pose otherwise solves with its elbow exactly on
         # the model limit, which is unreplayable on hardware and fails the
@@ -513,7 +515,9 @@ def _controller_for_scenario(
     aim_target = tuple(
         float(value) for value in scenario.controller_target_position_m
     )
-    if "bounce" in scenario.motion_kind or "rebound" in scenario.motion_kind:
+    if (
+        "bounce" in scenario.motion_kind or "rebound" in scenario.motion_kind
+    ) and scenario.corpus_leaf_id != "F2e":
         # The settled Robotiq jaw measured 9 mm off its commanded aim and
         # the drifting carom slid down the jaw flank instead of nesting, so
         # the correction applies to both embodiments.
@@ -535,18 +539,29 @@ def _controller_for_scenario(
         )
         diagnostics.extend(correction_diagnostics)
         aim_target = tuple(float(value) for value in corrected_aim)
+    # F2e intentionally keeps multiple physical fixtures in the interception
+    # volume.  A free-object parking/settling probe against those fixtures can
+    # itself wedge the arm against the preceding wall and invent a correction
+    # that is not part of the rollout.  F2e therefore uses only the rejected-
+    # on-error kinematic IK result above; the real rollout's measured arrival
+    # distance remains a strict QC field and cannot be hidden by this choice.
     # The robot initializes at a ready waypoint hovering above the intercept
     # and must descend onto it through ctrl-only minimum-jerk commands.  A
     # rollout that begins at the intercept produces a stationary interception
     # that automated free-contact QC cannot distinguish from a real reach.
     if "pickup" in scenario.motion_kind:
+        compact_rebound_reach = scenario.corpus_leaf_id in {"F2b", "F2e"}
         ready_retract_x = (
-            RIGID_REVIEW_PROFILE.robotiq_pickup_ready_retract_x_m
+            0.015
+            if compact_rebound_reach
+            else RIGID_REVIEW_PROFILE.robotiq_pickup_ready_retract_x_m
             if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
             else RIGID_REVIEW_PROFILE.pickup_ready_retract_x_m
         )
         ready_raise_z = (
-            RIGID_REVIEW_PROFILE.robotiq_pickup_ready_raise_z_m
+            0.03
+            if compact_rebound_reach
+            else RIGID_REVIEW_PROFILE.robotiq_pickup_ready_raise_z_m
             if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
             else RIGID_REVIEW_PROFILE.pickup_ready_raise_z_m
         )
@@ -647,6 +662,10 @@ def _controller_for_scenario(
     )
     closure_start = max(0.0, event_time - closure_lead_s)
     reach_arrival_lead_s = (
+        0.13
+        if scenario.corpus_leaf_id == "F2b"
+        and scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
+        else
         RIGID_REVIEW_PROFILE.robotiq_pickup_reach_arrival_before_event_s
         if "pickup" in scenario.motion_kind
         and scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
@@ -670,7 +689,7 @@ def _controller_for_scenario(
         open_gripper = 0.0
         closed_gripper = (
             RIGID_REVIEW_PROFILE.f2c_robotiq_tendon_target
-            if robotiq_pickup and scenario.corpus_leaf_id == "F2c"
+            if robotiq_pickup and scenario.corpus_leaf_id in {"F2b", "F2c"}
             else RIGID_REVIEW_PROFILE.robotiq_pickup_tendon_target
             if robotiq_pickup
             else RIGID_REVIEW_PROFILE.robotiq_tendon_target
@@ -867,6 +886,7 @@ def _contacts_at_state(
             ("link", "rq_")
         ):
             category = "robot_arm"
+        task_surface_id = other_name if category == "task_surface" else None
         rows.append(
             {
                 "timestamp": float(data.time),
@@ -877,6 +897,7 @@ def _contacts_at_state(
                 "counterpart": other_name,
                 "counterpart_geom_id": other,
                 "contact_category": category,
+                "task_surface_id": task_surface_id,
                 "counterpart_body": other_body_name,
                 "penetration_depth_m": max(0.0, -float(contact.dist)),
                 "distance_m": float(contact.dist),
@@ -1951,13 +1972,31 @@ def _free_flight_energy_drift(
     rows: Sequence[Mapping[str, Any]],
     scenario: SourceMujocoCompiledScenario,
 ) -> tuple[bool, float]:
-    # Contact can legitimately change mechanical energy.  Measure only the
-    # initial contiguous free-flight interval, never a post-impact segment.
+    # Contact can legitimately change mechanical energy.  Most scenarios use
+    # the initial free-flight interval.  F2b intentionally begins on its ramp,
+    # so measure the first complete post-ramp ballistic interval ending at the
+    # planned interception instead; the surface-transition evaluator binds
+    # that interval to the stable ramp ID and rejects a missing termination.
     free: list[Mapping[str, Any]] = []
-    for row in rows:
-        if row.get("object.motion_mode") != "free_flight":
-            break
-        free.append(row)
+    if scenario.corpus_leaf_id == "F2b":
+        segments: list[list[Mapping[str, Any]]] = []
+        current: list[Mapping[str, Any]] = []
+        for row in rows:
+            if float(row["timestamp"]) > scenario.key_event_time_s + 1e-12:
+                break
+            if row.get("object.motion_mode") == "free_flight":
+                current.append(row)
+            elif current:
+                segments.append(current)
+                current = []
+        if current:
+            segments.append(current)
+        free = max(segments, key=len, default=[])
+    else:
+        for row in rows:
+            if row.get("object.motion_mode") != "free_flight":
+                break
+            free.append(row)
     if len(free) < 3:
         return False, 0.0
     inertia = 0.4 * scenario.object_mass_kg * scenario.object_radius_m**2
@@ -2214,16 +2253,32 @@ def _rolling_evidence(
             "expected_rolling_tangent_acceleration_m_s2": None,
             "maximum_mechanical_energy_gain_fraction": None,
         }
+    roll, pitch, yaw = (
+        float(value) for value in scenario.surfaces[0].euler_rad
+    )
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    surface_normal = np.asarray(
+        (
+            cy * sp * cr + sy * sr,
+            sy * sp * cr - cy * sr,
+            cp * cr,
+        ),
+        dtype=np.float64,
+    )
+    surface_normal /= np.linalg.norm(surface_normal)
     slips = []
     for row in contacted:
-        vx, vy, _ = (float(value) for value in row["object.linear_velocity"])
-        wx, wy, _ = (float(value) for value in row["object.angular_velocity"])
-        slips.append(
-            math.hypot(
-                vx - wy * scenario.object_radius_m,
-                vy + wx * scenario.object_radius_m,
-            )
+        linear = np.asarray(row["object.linear_velocity"], dtype=np.float64)
+        angular = np.asarray(row["object.angular_velocity"], dtype=np.float64)
+        contact_velocity = linear - scenario.object_radius_m * np.cross(
+            angular, surface_normal
         )
+        tangential_slip = contact_velocity - float(
+            np.dot(contact_velocity, surface_normal)
+        ) * surface_normal
+        slips.append(float(np.linalg.norm(tangential_slip)))
     maximum_slip = max(slips)
 
     # Evaluate signed motion along the physical surface tangent.  A sphere
@@ -2231,7 +2286,6 @@ def _rolling_evidence(
     # non-physical energy gain; comparing only endpoint speed rejects that
     # valid trajectory.  MuJoCo's Y Euler rotation maps local +X to this world
     # tangent for the owned straight/slope fixtures.
-    pitch = float(scenario.surfaces[0].euler_rad[1])
     tangent = np.asarray((math.cos(pitch), 0.0, -math.sin(pitch)), dtype=np.float64)
     timestamps = np.asarray(
         [float(row["timestamp"]) for row in contacted], dtype=np.float64
@@ -2336,12 +2390,36 @@ def _physics_qc(
         contacts,
         object_radius_m=scenario.object_radius_m,
     )
+    if scenario.corpus_leaf_id == "F2b":
+        # The ramp interval is sustained rolling support, not an impact with
+        # separated incoming/outgoing normal samples.  Treat restitution as
+        # inapplicable instead of dividing two near-zero normal velocities;
+        # that generic calculation produced ``inf`` for a valid rolling
+        # launch.  Transition ordering and free-flight energy are evaluated
+        # independently below.
+        restitution = {
+            **restitution,
+            "applicable": False,
+            "effective_restitution": 0.0,
+            "effective_restitution_within_limits": True,
+            "no_unexplained_contact_energy_gain": False,
+            "rebound_acceptance_pass": True,
+        }
     catch = _catch_evidence(rows, scenario) if scenario.embodiment != "no_robot" else {}
+    rolling_applicable = bool(
+        "roll" in scenario.motion_kind or scenario.corpus_leaf_id == "F2b"
+    )
     rolling = (
         _rolling_evidence(rows, scenario)
-        if "roll" in scenario.motion_kind
+        if rolling_applicable
         else {}
     )
+    if scenario.corpus_leaf_id == "F2b":
+        restitution["no_unexplained_contact_energy_gain"] = bool(
+            rolling.get("maximum_mechanical_energy_gain_fraction") is not None
+            and float(rolling["maximum_mechanical_energy_gain_fraction"])
+            <= RIGID_REVIEW_PROFILE.maximum_free_flight_energy_drift_fraction
+        )
     deflection_applicable = (
         scenario.embodiment != "no_robot" and "deflection" in scenario.task_variant
     )
@@ -2349,6 +2427,77 @@ def _physics_qc(
         _deflection_evidence(rows, scenario) if deflection_applicable else {}
     )
     task_evidence: dict[str, Any] = {}
+    if scenario.evaluator in {
+        "rigid_ramp_launch_v1",
+        "rigid_multi_rebound_v1",
+        "rigid_arbitrary_rebound_v1",
+    }:
+        contract_spec = {
+            "task_variant": scenario.task_variant,
+            "duration_s": scenario.duration_s,
+            "source_hashes": {
+                "rigid_breadth_surface_catalog": rigid_breadth_catalog_sha256(),
+            },
+            "physics": {
+                "simulation_hz": scenario.simulation_hz,
+                "key_event_time_s": scenario.key_event_time_s,
+                "ballistic_event_time_s": scenario.ballistic_event_time_s,
+                "object_radius_m": scenario.object_radius_m,
+                "rebound_acceptance": (
+                    RIGID_REVIEW_PROFILE.rebound_acceptance().to_dict()
+                ),
+                "grasp_retention": (
+                    RIGID_REVIEW_PROFILE.grasp_retention().to_dict()
+                ),
+                "surface_transition_contract": (
+                    scenario.surface_transition_contract.to_dict()
+                    if scenario.surface_transition_contract is not None
+                    else None
+                ),
+                "ordered_contact_contract": (
+                    scenario.ordered_contact_contract.to_dict()
+                    if scenario.ordered_contact_contract is not None
+                    else None
+                ),
+                "sampled_surface_contract": (
+                    scenario.sampled_surface_contract.to_dict()
+                    if scenario.sampled_surface_contract is not None
+                    else None
+                ),
+            },
+        }
+        admission_blockers: list[str] = []
+        if (
+            scenario.evaluator == "rigid_arbitrary_rebound_v1"
+            and scenario.sampled_surface_contract is not None
+        ):
+            admission_blockers = sorted(
+                name
+                for name, admitted in scenario.sampled_surface_contract.admission.items()
+                if admitted is not True
+            )
+        if admission_blockers:
+            # Review construction is allowed to expose an unadmitted sampled
+            # surface for deterministic diagnostics, but it cannot produce a
+            # passing episode.  The canonical persisted evaluator rejects the
+            # same contract outright, so this online path must also fail
+            # closed instead of pretending the rebound contract passed.
+            task_evidence.update(
+                {
+                    "surface_admission_complete": False,
+                    "sampled_surface_admission_blockers": admission_blockers,
+                    "sampled_surface_rebound_pass": False,
+                }
+            )
+        else:
+            task_evidence.update(
+                source_contract_evidence(
+                    evaluator_id=scenario.evaluator,
+                    source_spec=contract_spec,
+                    state_rows=rows,
+                    event_rows=contacts,
+                )
+            )
     rebound_applicable = (
         "rebound" in scenario.motion_kind or "bounce" in scenario.motion_kind
     )
@@ -2380,7 +2529,7 @@ def _physics_qc(
                 ],
             }
         )
-    elif "roll" in scenario.motion_kind:
+    elif rolling_applicable:
         task_evidence.update(rolling)
     elif scenario.embodiment == "no_robot":
         task_evidence["family_specific_physics_evaluator_passed"] = bool(
@@ -2603,6 +2752,24 @@ def _physics_qc(
             and catch.get("stable_object_to_grasp_transform")
             and catch.get("displacement_physically_supported_by_contacts", True)
         )
+    contract_pass_name = {
+        "rigid_ramp_launch_v1": "surface_transition_pass",
+        "rigid_multi_rebound_v1": "ordered_contact_sequence_pass",
+        "rigid_arbitrary_rebound_v1": "sampled_surface_rebound_pass",
+    }.get(scenario.evaluator)
+    contract_prerequisite_pass = bool(
+        contract_pass_name is None
+        or task_evidence.get(contract_pass_name) is True
+    )
+    outcome_success = bool(outcome_success and contract_prerequisite_pass)
+    hard_objective_invalid = bool(
+        not finite
+        or not penetration.passed
+        or (contract_pass_name is not None and not contract_prerequisite_pass)
+        or (rebound_applicable and not restitution_pass)
+    )
+    if hard_objective_invalid:
+        outcome_success = False
     replayed_catch = (
         _catch_evidence(tuple(rows), scenario)
         if scenario.embodiment != "no_robot"
@@ -2625,10 +2792,17 @@ def _physics_qc(
             and replayed_catch.get("stable_object_to_grasp_transform")
             and replayed_catch.get("displacement_physically_supported_by_contacts", True)
         )
-    intended_outcome_match = (
+    replayed_success = bool(replayed_success and contract_prerequisite_pass)
+    intended_outcome_match = bool(
+        not hard_objective_invalid
+        and (
         scenario.intended_outcome == "passive_observation"
         if scenario.embodiment == "no_robot"
         else outcome_success == (scenario.intended_outcome == "success")
+        )
+    )
+    replay_matches_online = bool(
+        not hard_objective_invalid and replayed_success == outcome_success
     )
     task_evidence.update(
         {
@@ -2637,9 +2811,8 @@ def _physics_qc(
             # is therefore accepted as a negative; it is never forced to look
             # like a successful grasp and is never regenerated to change its
             # label.
-            "measured_outcome_replay_matches": replayed_success == outcome_success,
-            "saved_artifact_objective_replay_matches": replayed_success
-            == outcome_success,
+            "measured_outcome_replay_matches": replay_matches_online,
+            "saved_artifact_objective_replay_matches": replay_matches_online,
             "measured_failure_matches_persisted_label": bool(
                 not outcome_success and not replayed_success
             ),
@@ -2653,6 +2826,19 @@ def _physics_qc(
         evidence=task_evidence,
         task_success=outcome_success,
     )
+    if contract_pass_name is not None and not contract_prerequisite_pass:
+        task_failures.append(
+            f"source evaluator prerequisite is absent or false: {contract_pass_name}"
+        )
+    if scenario.corpus_leaf_id == "F2b":
+        for name in (
+            "rolling_or_sliding_slip_within_limit",
+            "friction_deceleration_consistent",
+        ):
+            if task_evidence.get(name) is not True:
+                task_failures.append(
+                    f"ramp launch rolling evidence is absent or false: {name}"
+                )
     # Projectile/rebound leaves are still interception tasks even when their
     # taxonomy variant names only the preceding bounce.  Successful examples
     # must retain free-contact grasp evidence; failures use the replay-bound
@@ -2701,6 +2887,8 @@ def _physics_qc(
         "actual_outcome": (
             "passive_observation"
             if scenario.embodiment == "no_robot"
+            else "invalid"
+            if hard_objective_invalid
             else "success"
             if outcome_success
             else "contact_failure"
@@ -2712,9 +2900,8 @@ def _physics_qc(
         ),
         "intended_outcome": scenario.intended_outcome,
         "intended_outcome_match": intended_outcome_match,
-        "measured_outcome_replay_matches": replayed_success == outcome_success,
-        "saved_artifact_objective_replay_matches": replayed_success
-        == outcome_success,
+        "measured_outcome_replay_matches": replay_matches_online,
+        "saved_artifact_objective_replay_matches": replay_matches_online,
         "evaluator": scenario.evaluator,
         "key_event_time_s": scenario.key_event_time_s,
         "task_evidence": task_evidence,
@@ -4043,6 +4230,7 @@ class SourceMujocoBackend:
             "compiled_asset_manifest": combined_manifest_hash(
                 compiled.source_asset_sha256
             ),
+            "rigid_breadth_surface_catalog": rigid_breadth_catalog_sha256(),
             "robocasa_license": self.robocasa_dependency.license_sha256,
         }
         quality_flags = list(qc_flags)

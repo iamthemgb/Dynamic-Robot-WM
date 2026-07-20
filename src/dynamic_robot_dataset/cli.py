@@ -2259,10 +2259,12 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     from .orchestration_cli import add_orchestration_subcommands
+    from .review_finalize_cli import add_review_finalize_subcommand
     from .review_suite_cli import add_review_suite_subcommand
 
     add_orchestration_subcommands(subparsers)
     add_review_suite_subcommand(subparsers)
+    add_review_finalize_subcommand(subparsers)
 
     inventory = subparsers.add_parser("inventory", help="read-only source inventory")
     inventory.add_argument("--roots", nargs="+", default=DEFAULT_SOURCE_ROOTS)

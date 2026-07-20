@@ -25,6 +25,13 @@ from .rolling_island import (
     RollingIslandScenePlan,
     resolve_rolling_island_plan,
 )
+from .rigid_breadth import (
+    OrderedContactContract,
+    SampledSurfaceContract,
+    SurfaceTransitionContract,
+    sample_surface_candidate,
+    sampled_surface_contract,
+)
 
 
 SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v8"
@@ -78,8 +85,11 @@ IMPLEMENTED_REVIEW_VARIANTS: Mapping[str, tuple[str, ...]] = {
     "F1c": ("drift_catch", "drift_near_miss"),
     "F1d": ("mild_projectile_catch", "mild_projectile_near_miss"),
     "F2a": ("direct_catch", "direct_deflection"),
+    "F2b": ("ramp_launch_catch", "ramp_launch_deflection"),
     "F2c": ("table_bounce", "floor_bounce"),
     "F2d": ("wall_rebound", "angled_barrier_rebound"),
+    "F2e": ("floor_to_wall", "flight_to_table_bounce"),
+    "F2f": ("random_plane_bounce", "random_barrier_bounce"),
     "F3b": ("rolling_pickup", "rolling_pickup_transport"),
 }
 
@@ -204,6 +214,9 @@ class SourceMujocoCompiledScenario:
     rng_subseeds: Mapping[str, int]
     evaluator: str
     rolling_island_scene: RollingIslandScenePlan | None
+    surface_transition_contract: SurfaceTransitionContract | None = None
+    ordered_contact_contract: OrderedContactContract | None = None
+    sampled_surface_contract: SampledSurfaceContract | None = None
     backend_version: str = SOURCE_MUJOCO_BACKEND_VERSION
     schema_version: str = SOURCE_MUJOCO_COMPILED_SCHEMA
     production_eligible: bool = False
@@ -324,6 +337,88 @@ class SourceMujocoCompiledScenario:
         surface_by_name = {surface.name: surface for surface in self.surfaces}
         if len(surface_by_name) != len(self.surfaces):
             raise SourceMujocoUnsupported("physical fixture names must be unique")
+        if self.corpus_leaf_id == "F2b":
+            if (
+                self.surface_transition_contract is None
+                or self.ordered_contact_contract is not None
+                or self.sampled_surface_contract is not None
+            ):
+                raise SourceMujocoUnsupported(
+                    "F2b requires only its surface-to-free-flight contract"
+                )
+            try:
+                self.surface_transition_contract.validate()
+            except ValueError as error:
+                raise SourceMujocoUnsupported(str(error)) from error
+            ramp = surface_by_name.get(
+                self.surface_transition_contract.support_surface_id
+            )
+            if ramp is None or ramp.role != "ramp" or not ramp.expected_task_contact:
+                raise SourceMujocoUnsupported(
+                    "F2b transition contract does not name its physical ramp"
+                )
+        elif self.corpus_leaf_id == "F2e":
+            if (
+                self.ordered_contact_contract is None
+                or self.surface_transition_contract is not None
+                or self.sampled_surface_contract is not None
+            ):
+                raise SourceMujocoUnsupported(
+                    "F2e requires only its ordered multi-contact contract"
+                )
+            try:
+                self.ordered_contact_contract.validate()
+            except ValueError as error:
+                raise SourceMujocoUnsupported(str(error)) from error
+            if any(
+                surface_by_name.get(surface_id) is None
+                or not surface_by_name[surface_id].expected_task_contact
+                for surface_id in self.ordered_contact_contract.ordered_surface_ids
+            ):
+                raise SourceMujocoUnsupported(
+                    "F2e ordered contact contract names an unavailable task surface"
+                )
+        elif self.corpus_leaf_id == "F2f":
+            if (
+                self.sampled_surface_contract is None
+                or self.surface_transition_contract is not None
+                or self.ordered_contact_contract is not None
+            ):
+                raise SourceMujocoUnsupported(
+                    "F2f requires only its deterministic sampled-surface contract"
+                )
+            try:
+                self.sampled_surface_contract.validate()
+            except ValueError as error:
+                raise SourceMujocoUnsupported(str(error)) from error
+            stable_id = (
+                "owned_arbitrary_surface__"
+                f"{self.sampled_surface_contract.candidate_id}"
+            )
+            sampled = surface_by_name.get(stable_id)
+            if sampled is None or not sampled.expected_task_contact:
+                raise SourceMujocoUnsupported(
+                    "F2f sampled contract does not bind its physical task surface"
+                )
+            if (
+                sampled.position_m != self.sampled_surface_contract.position_m
+                or sampled.half_size_m != self.sampled_surface_contract.half_size_m
+                or sampled.euler_rad != self.sampled_surface_contract.euler_rad
+            ):
+                raise SourceMujocoUnsupported(
+                    "F2f sampled contract differs from compiled geometry"
+                )
+        elif any(
+            contract is not None
+            for contract in (
+                self.surface_transition_contract,
+                self.ordered_contact_contract,
+                self.sampled_surface_contract,
+            )
+        ):
+            raise SourceMujocoUnsupported(
+                "rigid-breadth contracts are restricted to F2b/F2e/F2f"
+            )
         if self.corpus_leaf_id == "F3b":
             task_surfaces = tuple(
                 surface
@@ -343,27 +438,63 @@ class SourceMujocoCompiledScenario:
             for surface in self.surfaces
             if surface.role == "structural_support"
         )
-        requires_owned_supports = bool(
+        required_support_targets: set[str] = set()
+        if bool(
             self.requires_real_robocasa
             and self.corpus_leaf_id in {"P0c", "P0d"}
-        ) or (
+        ):
+            required_support_targets.update(
+                surface.name
+                for surface in self.surfaces
+                if surface.expected_task_contact
+                and surface.role in {"floor", "table", "slope"}
+            )
+        if (
             # Every F2c bounce pad stands on its own grounded legs.  Even the
             # lower floor_bounce plate leaves a 138 mm gap beneath it and
             # therefore requires explicit physical supports.
             self.corpus_leaf_id == "F2c"
             and self.task_variant in {"table_bounce", "floor_bounce"}
-        )
-        if requires_owned_supports and len(structural_supports) != 4:
-            raise SourceMujocoUnsupported(
-                "elevated fixtures require four owned grounded supports"
+        ):
+            required_support_targets.add("owned_bounce_pad")
+        if self.corpus_leaf_id in {"F2b", "F2e", "F2f"}:
+            required_support_targets.update(
+                surface.name
+                for surface in self.surfaces
+                if surface.expected_task_contact
+                and surface.role in {"floor", "table", "slope", "ramp"}
+                and _surface_lower_face_z_at_world_x(
+                    surface, surface.position_m[0]
+                )
+                > 0.002
             )
-        if not requires_owned_supports and structural_supports:
+        supports_by_target = {
+            target: tuple(
+                support
+                for support in structural_supports
+                if support.supports_fixture_id == target
+            )
+            for target in required_support_targets
+        }
+        if any(len(supports) != 4 for supports in supports_by_target.values()):
+            raise SourceMujocoUnsupported(
+                "every elevated fixture requires four owned grounded supports"
+            )
+        if any(
+            support.supports_fixture_id not in required_support_targets
+            for support in structural_supports
+        ):
             raise SourceMujocoUnsupported(
                 "owned elevated structural supports are restricted to elevated fixtures"
             )
         for support in structural_supports:
             target = surface_by_name.get(str(support.supports_fixture_id))
-            if target is None or target.role not in {"floor", "table", "slope"}:
+            if target is None or target.role not in {
+                "floor",
+                "table",
+                "slope",
+                "ramp",
+            }:
                 raise SourceMujocoUnsupported(
                     "structural support targets an unavailable horizontal fixture"
                 )
@@ -515,9 +646,9 @@ def _surface(
 ) -> PhysicalSurface:
     contact_profile = "mixed"
     if rebound_pad:
-        if table_rebound or role != "table":
+        if table_rebound or role not in {"floor", "table"}:
             raise SourceMujocoUnsupported(
-                "the calibrated rebound pad is a dedicated table-role fixture"
+                "the calibrated rebound pad requires a floor/table task fixture"
             )
         solref = RIGID_REVIEW_PROFILE.bounce_pad_solref
         contact_profile = "rebound_pad"
@@ -633,6 +764,78 @@ def _owned_grounded_structural_supports(
     return tuple(result)
 
 
+def _grounded_supports_for_surface(
+    surface: PhysicalSurface,
+    *,
+    prefix: str,
+    local_x_positions_m: tuple[float, float] | None = None,
+    world_y_positions_m: tuple[float, float] | None = None,
+) -> tuple[PhysicalSurface, ...]:
+    """Construct four narrow, grounded legs for one owned rigid fixture.
+
+    Pitched fixtures use a 4 mm half-width along X so each flat leg meets the
+    sloped underside within the hard 2 mm support-interface tolerance.  The
+    geometry is derived before simulation and remains a fixed world fixture;
+    no equality constraint or runtime support intervention is involved.
+    """
+
+    if surface.role not in {"floor", "table", "slope", "ramp"}:
+        raise SourceMujocoUnsupported(
+            "grounded legs can support only horizontal or pitched fixtures"
+        )
+    pitch = float(surface.euler_rad[1])
+    cosine = math.cos(pitch)
+    sine = math.sin(pitch)
+    if local_x_positions_m is None:
+        inset = min(0.04, 0.25 * surface.half_size_m[0])
+        local_x_positions_m = (
+            -surface.half_size_m[0] + inset,
+            surface.half_size_m[0] - inset,
+        )
+    if world_y_positions_m is None:
+        inset_y = min(0.03, 0.25 * surface.half_size_m[1])
+        world_y_positions_m = (
+            surface.position_m[1] - surface.half_size_m[1] + inset_y,
+            surface.position_m[1] + surface.half_size_m[1] - inset_y,
+        )
+    support_half_x = (
+        min(0.004, 0.0015 / max(abs(math.tan(pitch)), 1e-12))
+        if abs(pitch) > 1e-12
+        else min(0.015, 0.2 * surface.half_size_m[0])
+    )
+    support_half_y = min(0.015, 0.2 * surface.half_size_m[1])
+    result: list[PhysicalSurface] = []
+    for x_index, local_x in enumerate(local_x_positions_m):
+        world_x = (
+            surface.position_m[0]
+            + cosine * float(local_x)
+            - sine * surface.half_size_m[2]
+        )
+        top_z, mismatch = _support_interface_geometry(
+            surface,
+            world_x_m=world_x,
+            support_half_x_m=support_half_x,
+        )
+        if top_z <= 0.0 or mismatch > 0.002 + 1e-12:
+            raise SourceMujocoUnsupported(
+                f"{surface.name} cannot be grounded inside the 2 mm interface gate"
+            )
+        for y_index, world_y in enumerate(world_y_positions_m):
+            result.append(
+                _surface(
+                    f"{prefix}_leg_x{x_index}_y{y_index}",
+                    "structural_support",
+                    (world_x, world_y, top_z / 2.0),
+                    (support_half_x, support_half_y, top_z / 2.0),
+                    expected_task_contact=False,
+                    supports_fixture_id=surface.name,
+                    grounded_plane_z_m=0.0,
+                    support_interface_maximum_mismatch_m=mismatch,
+                )
+            )
+    return tuple(result)
+
+
 def _recipe(
     leaf_id: str,
     task_variant: str,
@@ -640,6 +843,7 @@ def _recipe(
     branch_role: str,
     *,
     seed: int,
+    physics_seed: int,
     tabletop_height_m: float,
     rolling_island_scene: RollingIslandScenePlan | None = None,
 ) -> dict[str, Any]:
@@ -670,6 +874,9 @@ def _recipe(
         "controller_target_position_m": None,
         "controller_transport_position_m": None,
         "surfaces": (),
+        "surface_transition_contract": None,
+        "ordered_contact_contract": None,
+        "sampled_surface_contract": None,
     }
 
     if leaf_id == "P0a":
@@ -820,6 +1027,124 @@ def _recipe(
             controller_target_position_m=tuple(float(value) for value in controller_target),
             controller_transport_position_m=transport,
             surfaces=(),
+        )
+    elif leaf_id == "F2b":
+        # A grounded incline redirects an admitted rolling initial state into
+        # a projectile.  The ball traverses the physical ramp for ~0.49 s,
+        # leaves its upper edge, and reaches the catch near the free-flight
+        # apex.  Initial velocity/spin are part of the immutable initial state;
+        # after initialization only contact and gravity move the object.
+        ramp_pitch = math.radians(60.0)
+        ramp_half = (0.35, 0.32, 0.02)
+        start_local_x = 0.15
+        edge_local_x = -ramp_half[0]
+        travel = start_local_x - edge_local_x
+        desired_exit_vertical_speed = 0.90
+        rolling_deceleration = (
+            5.0 / 7.0 * abs(gravity[2]) * math.sin(ramp_pitch)
+        )
+        exit_speed = desired_exit_vertical_speed / math.sin(ramp_pitch)
+        initial_speed = math.sqrt(
+            exit_speed**2 + 2.0 * rolling_deceleration * travel
+        )
+        support_time = (initial_speed - exit_speed) / rolling_deceleration
+        launch_tangent = np.asarray(
+            (-math.cos(ramp_pitch), 0.0, math.sin(ramp_pitch)),
+            dtype=np.float64,
+        )
+        exit_velocity = launch_tangent * exit_speed
+        free_flight_time = float(exit_velocity[2]) / abs(gravity[2])
+        target_x = 0.47
+        edge_top_z = 0.60
+        normal = np.asarray(
+            (math.sin(ramp_pitch), 0.0, math.cos(ramp_pitch)),
+            dtype=np.float64,
+        )
+        ramp_center_x = target_x - (
+            math.cos(ramp_pitch) * edge_local_x
+            + math.sin(ramp_pitch) * ramp_half[2]
+            + normal[0] * radius
+            + exit_velocity[0] * free_flight_time
+        )
+        ramp_center_z = edge_top_z + (
+            math.sin(ramp_pitch) * edge_local_x
+            - math.cos(ramp_pitch) * ramp_half[2]
+        )
+        ramp_position = (ramp_center_x, 0.0, ramp_center_z)
+        ramp = _surface(
+            "owned_ramp_launch_surface",
+            "ramp",
+            ramp_position,
+            ramp_half,
+            euler=(0.0, ramp_pitch, 0.0),
+        )
+
+        def top_point(local_x: float) -> np.ndarray:
+            return np.asarray(
+                (
+                    ramp_position[0]
+                    + math.cos(ramp_pitch) * local_x
+                    + math.sin(ramp_pitch) * ramp_half[2],
+                    0.0,
+                    ramp_position[2]
+                    - math.sin(ramp_pitch) * local_x
+                    + math.cos(ramp_pitch) * ramp_half[2],
+                ),
+                dtype=np.float64,
+            )
+
+        start = top_point(start_local_x) + normal * radius
+        edge = top_point(edge_local_x) + normal * radius
+        target = edge + exit_velocity * free_flight_time + np.asarray(
+            (0.0, 0.0, 0.5 * gravity[2] * free_flight_time**2),
+            dtype=np.float64,
+        )
+        target[0] = target_x
+        event_time = support_time + free_flight_time
+        controller_target = target.copy()
+        # Unlike a surface pickup, the ramp-launched ball is airborne at the
+        # apex.  The Robotiq knuckles therefore need no table-clearance
+        # standoff; adding the F3b 22 mm offset put the complete ball below the
+        # physical pad corridor and converted the nominal seed into an arm hit.
+        if negative:
+            if "initial_state" in branch_role:
+                start[1] += 0.135
+            elif "controller" in branch_role:
+                controller_target[1] += 0.10
+            else:
+                controller_target[0] -= 0.10
+        supports = _grounded_supports_for_surface(
+            ramp,
+            prefix="owned_ramp_launch_surface",
+            local_x_positions_m=(-0.27, 0.12),
+            world_y_positions_m=(-0.27, 0.27),
+        )
+        transition = SurfaceTransitionContract(
+            support_surface_id=ramp.name,
+            support_normal_world_xyz=tuple(float(value) for value in normal),
+            minimum_support_contact_s=0.08,
+            minimum_free_flight_s=0.08,
+        )
+        base.update(
+            duration_s=2.2,
+            key_event_time_s=event_time,
+            motion_kind="ramp_launch_pickup_interception",
+            object_initial_position_m=tuple(float(value) for value in start),
+            object_initial_linear_velocity_m_s=tuple(
+                float(value) for value in launch_tangent * initial_speed
+            ),
+            object_initial_angular_velocity_rad_s=(
+                0.0,
+                float(-initial_speed / radius),
+                0.0,
+            ),
+            ballistic_event_time_s=event_time,
+            physical_target_position_m=tuple(float(value) for value in target),
+            controller_target_position_m=tuple(
+                float(value) for value in controller_target
+            ),
+            surfaces=(ramp, *supports),
+            surface_transition_contract=transition,
         )
     elif leaf_id == "F3b":
         base["duration_s"] = 2.5
@@ -1149,6 +1474,379 @@ def _recipe(
                 ),
             ),
         )
+    elif leaf_id == "F2e":
+        # Both variants persist the exact ordered fixture identities and
+        # measured face normals.  The construction is analytical only at
+        # initialization: MuJoCo contact determines every realized rebound
+        # and a mismatched sequence remains a failed fixed-seed attempt.
+        gravity_mag = abs(gravity[2])
+        wall_restitution = RIGID_REVIEW_PROFILE.wall_rebound_effective_restitution
+        wall_retention = RIGID_REVIEW_PROFILE.barrier_tangential_retention
+        pad_restitution = RIGID_REVIEW_PROFILE.bounce_pad_effective_restitution
+        pad_lane_retention = RIGID_REVIEW_PROFILE.bounce_pad_lane_retention
+        wall_half = (0.32, 0.02, 0.78)
+        pad_half = (0.22, 0.22, 0.016)
+        pad_top = (
+            0.40
+            if task_variant == "floor_to_wall"
+            else RIGID_REVIEW_PROFILE.table_bounce_pad_top_z_m
+        )
+        contact_z = pad_top + radius
+        in_xy = np.asarray((0.0, 1.10), dtype=np.float64)
+
+        if task_variant == "floor_to_wall":
+            # A faster but still timestep-resolved floor lane creates enough
+            # post-wall normal separation for the real finger geometry.  At
+            # the earlier 1.1 m/s lane the calibrated low-restitution wall
+            # left the grasp center only 17 mm from the face, so the arm
+            # physically rested against the barrier during servo settling.
+            in_xy = np.asarray((0.0, 3.0), dtype=np.float64)
+            pad_time = 0.45
+            wall_delay = 0.05
+            post_time = 0.15
+            impact_speed = RIGID_REVIEW_PROFILE.bounce_impact_speed_m_s
+            yaw = math.radians(-40.0)
+            normal = np.asarray(
+                (math.sin(yaw), -math.cos(yaw)), dtype=np.float64
+            )
+            floor_out_xy = in_xy * pad_lane_retention
+            normal_speed = float(floor_out_xy @ normal)
+            tangent_xy = floor_out_xy - normal_speed * normal
+            wall_out_xy = (
+                -wall_restitution * normal_speed * normal
+                + wall_retention * tangent_xy
+            )
+            pad_vz_out = impact_speed * pad_restitution
+            wall_hit_z = (
+                contact_z
+                + pad_vz_out * wall_delay
+                - 0.5 * gravity_mag * wall_delay**2
+            )
+            wall_vz_out = wall_retention * (
+                pad_vz_out - gravity_mag * wall_delay
+            )
+            target_z = (
+                wall_hit_z
+                + wall_vz_out * post_time
+                - 0.5 * gravity_mag * post_time**2
+            )
+            target = np.asarray((0.47, 0.0, target_z), dtype=np.float64)
+            wall_contact_xy = target[:2] - wall_out_xy * post_time
+            pad_contact_xy = wall_contact_xy - floor_out_xy * wall_delay
+            start_xy = pad_contact_xy - in_xy * pad_time
+            initial_vz = -impact_speed + gravity_mag * pad_time
+            start_z = (
+                contact_z
+                - initial_vz * pad_time
+                + 0.5 * gravity_mag * pad_time**2
+            )
+            wall_center_xy = wall_contact_xy - (
+                wall_half[1] + radius
+            ) * normal
+            ordered_ids = ("owned_multi_floor", "owned_multi_wall")
+            ordered_normals = (
+                (0.0, 0.0, 1.0),
+                (float(normal[0]), float(normal[1]), 0.0),
+            )
+            event_time = pad_time + wall_delay + post_time
+            pad = _surface(
+                ordered_ids[0],
+                "floor",
+                (
+                    float(pad_contact_xy[0]),
+                    float(pad_contact_xy[1]),
+                    pad_top - pad_half[2],
+                ),
+                pad_half,
+                rebound_pad=True,
+            )
+            wall = _surface(
+                ordered_ids[1],
+                "wall",
+                (
+                    float(wall_center_xy[0]),
+                    float(wall_center_xy[1]),
+                    wall_half[2],
+                ),
+                wall_half,
+                euler=(0.0, 0.0, yaw),
+                rebound_wall=True,
+            )
+            surfaces = (
+                pad,
+                wall,
+                *_grounded_supports_for_surface(
+                    pad, prefix="owned_multi_floor"
+                ),
+            )
+        else:
+            wall_time = 0.30
+            pad_time = 0.75
+            between_time = pad_time - wall_time
+            impact_speed = RIGID_REVIEW_PROFILE.bounce_impact_speed_m_s
+            yaw = math.radians(-25.0)
+            normal = np.asarray(
+                (math.sin(yaw), -math.cos(yaw)), dtype=np.float64
+            )
+            normal_speed = float(in_xy @ normal)
+            tangent_xy = in_xy - normal_speed * normal
+            wall_out_xy = (
+                -wall_restitution * normal_speed * normal
+                + wall_retention * tangent_xy
+            )
+            rise_speed = impact_speed * pad_restitution
+            rise_time = rise_speed / gravity_mag
+            rise = rise_speed**2 / (2.0 * gravity_mag)
+            table_out_xy = wall_out_xy * pad_lane_retention
+            target = np.asarray(
+                (0.47, 0.0, contact_z + rise), dtype=np.float64
+            )
+            pad_contact_xy = target[:2] - table_out_xy * rise_time
+            wall_contact_xy = pad_contact_xy - wall_out_xy * between_time
+            start_xy = wall_contact_xy - in_xy * wall_time
+            pre_wall_vz = (
+                -impact_speed + gravity_mag * between_time
+            ) / wall_retention
+            initial_vz = pre_wall_vz + gravity_mag * wall_time
+            displacement_to_wall = (
+                initial_vz * wall_time
+                - 0.5 * gravity_mag * wall_time**2
+            )
+            displacement_to_pad = (
+                wall_retention * pre_wall_vz * between_time
+                - 0.5 * gravity_mag * between_time**2
+            )
+            start_z = contact_z - displacement_to_wall - displacement_to_pad
+            wall_center_xy = wall_contact_xy - (
+                wall_half[1] + radius
+            ) * normal
+            ordered_ids = ("owned_multi_wall", "owned_multi_table")
+            ordered_normals = (
+                (float(normal[0]), float(normal[1]), 0.0),
+                (0.0, 0.0, 1.0),
+            )
+            event_time = pad_time + rise_time
+            wall = _surface(
+                ordered_ids[0],
+                "wall",
+                (
+                    float(wall_center_xy[0]),
+                    float(wall_center_xy[1]),
+                    wall_half[2],
+                ),
+                wall_half,
+                euler=(0.0, 0.0, yaw),
+                rebound_wall=True,
+            )
+            pad = _surface(
+                ordered_ids[1],
+                "table",
+                (
+                    float(pad_contact_xy[0]),
+                    float(pad_contact_xy[1]),
+                    pad_top - pad_half[2],
+                ),
+                pad_half,
+                rebound_pad=True,
+            )
+            surfaces = (
+                wall,
+                pad,
+                *_grounded_supports_for_surface(
+                    pad, prefix="owned_multi_table"
+                ),
+            )
+
+        controller_target = target.copy()
+        if embodiment == ROBOTIQ_2F85_THICK_PAD:
+            controller_target[2] += RIGID_REVIEW_PROFILE.robotiq_pickup_standoff_m
+        if negative:
+            if "initial_state" in branch_role:
+                # Shift across the fixture width without changing the ordered
+                # surface construction or selecting a replacement seed.
+                start_xy[0] += 0.135
+            elif "controller" in branch_role:
+                controller_target[1] += 0.10
+            else:
+                controller_target[0] -= 0.10
+        ordered = OrderedContactContract(
+            ordered_surface_ids=ordered_ids,
+            ordered_surface_normals_world_xyz=ordered_normals,
+            minimum_separated_pre_post_samples=2,
+            minimum_inter_contact_free_flight_s=0.04,
+        )
+        base.update(
+            duration_s=2.2,
+            key_event_time_s=event_time,
+            motion_kind="ordered_multi_rebound_pickup_interception",
+            object_initial_position_m=(
+                float(start_xy[0]),
+                float(start_xy[1]),
+                float(start_z),
+            ),
+            object_initial_linear_velocity_m_s=(
+                float(in_xy[0]),
+                float(in_xy[1]),
+                float(initial_vz),
+            ),
+            ballistic_event_time_s=event_time,
+            physical_target_position_m=tuple(float(value) for value in target),
+            controller_target_position_m=tuple(
+                float(value) for value in controller_target
+            ),
+            surfaces=surfaces,
+            ordered_contact_contract=ordered,
+        )
+    elif leaf_id == "F2f":
+        # Construction may select a deterministic review candidate before the
+        # candidate is admitted.  The persisted admission flags remain false,
+        # so source-spec validation and pilot/production execution fail closed
+        # until the recorded 600/1200 Hz and clearance checks are complete.
+        candidate = sample_surface_candidate(
+            task_variant, source_seed=physics_seed
+        )
+        stable_id = f"owned_arbitrary_surface__{candidate.candidate_id}"
+        gravity_mag = abs(gravity[2])
+        if task_variant == "random_plane_bounce":
+            impact = RIGID_REVIEW_PROFILE.bounce_impact_speed_m_s
+            launch_vz = RIGID_REVIEW_PROFILE.bounce_launch_vz_m_s
+            lane_vx = RIGID_REVIEW_PROFILE.bounce_lane_speed_m_s
+            fall_time = (impact + launch_vz) / gravity_mag
+            drop = (impact**2 - launch_vz**2) / (2.0 * gravity_mag)
+            vout = impact * RIGID_REVIEW_PROFILE.bounce_pad_effective_restitution
+            rise_time = vout / gravity_mag
+            rise = vout**2 / (2.0 * gravity_mag)
+            lane_out = lane_vx * RIGID_REVIEW_PROFILE.bounce_pad_lane_retention
+            pad_top = candidate.position_m[2] + candidate.half_size_m[2]
+            contact_z = pad_top + radius
+            surface_offset_x = min(0.05, 0.4 * candidate.half_size_m[0])
+            bounce_x = candidate.position_m[0] - surface_offset_x
+            target = np.asarray(
+                (
+                    bounce_x - lane_out * rise_time,
+                    candidate.position_m[1],
+                    contact_z + rise,
+                ),
+                dtype=np.float64,
+            )
+            event_time = fall_time + rise_time
+            position = candidate.position_m
+            start_xy = np.asarray(
+                (
+                    bounce_x + lane_vx * fall_time,
+                    candidate.position_m[1],
+                ),
+                dtype=np.float64,
+            )
+            controller_target = target.copy()
+            if embodiment == ROBOTIQ_2F85_THICK_PAD:
+                controller_target[2] += RIGID_REVIEW_PROFILE.robotiq_pickup_standoff_m
+                controller_target[0] -= lane_out * (
+                    RIGID_REVIEW_PROFILE.robotiq_pickup_closure_duration_s
+                    - RIGID_REVIEW_PROFILE.robotiq_pickup_closure_start_before_event_s
+                )
+            if negative:
+                if "initial_state" in branch_role:
+                    start_xy[1] += 0.135
+                elif "controller" in branch_role:
+                    controller_target[1] += 0.10
+                else:
+                    controller_target[0] -= 0.10
+            surface = _surface(
+                stable_id,
+                "table",
+                position,
+                candidate.half_size_m,
+                euler=candidate.euler_rad,
+                rebound_pad=True,
+            )
+            supports = _grounded_supports_for_surface(
+                surface, prefix=stable_id
+            )
+            initial_position = (
+                float(start_xy[0]),
+                float(start_xy[1]),
+                float(contact_z + drop),
+            )
+            initial_velocity = (-lane_vx, 0.0, launch_vz)
+            motion_kind = "random_plane_bounce_pickup_interception"
+        else:
+            launch = RIGID_REVIEW_PROFILE.wall_rebound_launch_speed_m_s
+            wall_time = RIGID_REVIEW_PROFILE.wall_rebound_wall_time_s
+            post_time = RIGID_REVIEW_PROFILE.wall_rebound_post_time_s
+            z_hit = RIGID_REVIEW_PROFILE.wall_rebound_hit_z_m
+            restitution = RIGID_REVIEW_PROFILE.wall_rebound_effective_restitution
+            retention = RIGID_REVIEW_PROFILE.barrier_tangential_retention
+            yaw = candidate.euler_rad[2]
+            in_xy = np.asarray((0.0, launch), dtype=np.float64)
+            normal = np.asarray(
+                (math.sin(yaw), -math.cos(yaw)), dtype=np.float64
+            )
+            normal_speed = float(in_xy @ normal)
+            tangent_xy = in_xy - normal_speed * normal
+            out_xy = -restitution * normal_speed * normal + retention * tangent_xy
+            position = candidate.position_m
+            contact_xy = np.asarray(position[:2], dtype=np.float64) + (
+                candidate.half_size_m[1] + radius
+            ) * normal
+            target_xy = contact_xy + out_xy * post_time
+            target = np.asarray(
+                (target_xy[0], target_xy[1], close_z), dtype=np.float64
+            )
+            start_xy = contact_xy - in_xy * wall_time
+            vz_wall = (
+                close_z - z_hit + 0.5 * gravity_mag * post_time**2
+            ) / (retention * post_time)
+            initial_vz = vz_wall + gravity_mag * wall_time
+            start_z = z_hit - initial_vz * wall_time + 0.5 * gravity_mag * wall_time**2
+            event_time = wall_time + post_time
+            controller_target = target.copy()
+            if embodiment == FRANKA_HAND:
+                wrap_lead_s = (
+                    RIGID_REVIEW_PROFILE.closure_duration_s
+                    - RIGID_REVIEW_PROFILE.bounce_closure_start_before_event_s
+                )
+                controller_target[:2] += out_xy * wrap_lead_s
+            if negative:
+                if "initial_state" in branch_role:
+                    start_xy[0] += 0.135
+                elif "controller" in branch_role:
+                    controller_target[0] += 0.10
+                else:
+                    controller_target[1] -= 0.10
+            surface = _surface(
+                stable_id,
+                "wall",
+                position,
+                candidate.half_size_m,
+                euler=candidate.euler_rad,
+                rebound_wall=True,
+            )
+            supports = ()
+            initial_position = (
+                float(start_xy[0]),
+                float(start_xy[1]),
+                float(start_z),
+            )
+            initial_velocity = (0.0, float(launch), float(initial_vz))
+            motion_kind = "arbitrary_surface_rebound_interception"
+        sampled = sampled_surface_contract(
+            candidate,
+            source_seed=physics_seed,
+        )
+        base.update(
+            key_event_time_s=event_time,
+            motion_kind=motion_kind,
+            object_initial_position_m=initial_position,
+            object_initial_linear_velocity_m_s=initial_velocity,
+            ballistic_event_time_s=event_time,
+            physical_target_position_m=tuple(float(value) for value in target),
+            controller_target_position_m=tuple(
+                float(value) for value in controller_target
+            ),
+            surfaces=(surface, *supports),
+            sampled_surface_contract=sampled,
+        )
     else:
         raise SourceMujocoUnsupported(
             f"no physical source_mujoco recipe for {leaf_id}/{task_variant}"
@@ -1322,7 +2020,8 @@ def compile_review_case(
     # would re-create the identical out-of-frame failure class.
     task_height = (
         0.0
-        if leaf_id.startswith("F1") or leaf_id in {"F2a", "F2c", "F2d"}
+        if leaf_id.startswith("F1")
+        or leaf_id in {"F2a", "F2b", "F2c", "F2d", "F2e", "F2f"}
         else external_tabletop_height
     )
     robot_base_position = (
@@ -1341,6 +2040,7 @@ def compile_review_case(
         embodiment,
         branch_role,
         seed=rng_subseeds["initial_state"],
+        physics_seed=rng_subseeds["physics"],
         tabletop_height_m=task_height,
         rolling_island_scene=rolling_island_scene,
     )
@@ -1388,7 +2088,7 @@ def compile_review_case(
         # stiff calibrated bounce-pad contact (measured pad restitution
         # 0.216 vs 0.301 at the reference rate), which measurably converts
         # the designed apex interception into a miss.
-        or leaf_id == "F2c"
+        or leaf_id in {"F2b", "F2c", "F2e", "F2f"}
     )
     result = SourceMujocoCompiledScenario(
         case_id=str(value.get("case_id") or ""),

@@ -298,9 +298,22 @@ def test_source_evaluator_lazy_registration_tracks_current_and_legacy_versions(
         "rigid_catch_v2",
         source_evaluators.SOURCE_OBJECTIVE_EVALUATOR_LEGACY_VERSION,
     )
+    previous_evaluator = registry.get(
+        "rigid_catch_v2",
+        source_evaluators.SOURCE_OBJECTIVE_EVALUATOR_PREVIOUS_VERSION,
+    )
 
     assert evaluator is source_evaluators.evaluate_source_persisted
+    assert previous_evaluator is not None
     assert legacy_evaluator is not None
+    assert registry.get(
+        "rigid_ramp_launch_v1",
+        source_evaluators.SOURCE_OBJECTIVE_EVALUATOR_VERSION,
+    ) is source_evaluators.evaluate_source_persisted
+    assert registry.get(
+        "rigid_ramp_launch_v1",
+        source_evaluators.SOURCE_OBJECTIVE_EVALUATOR_PREVIOUS_VERSION,
+    ) is None
     legacy_spec = {
         "schema_version": LEGACY_SOURCE_SCENARIO_SCHEMA_VERSION,
         "corpus_leaf_id": "F1a",
