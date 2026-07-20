@@ -844,19 +844,73 @@ measurements:
         - F2c-review-01
         - F2c-review-02
       independent_evaluator_replay_matches: true
-    regenerated_review_plan:
+    superseded_review_plan:
       root: /gpfs/radev/project/sous/zl664/dataset_generation_runs/review_suite_20260720_v17_f2c_retention
       source_scenario_schema: dynamic-robot-source-scenario/v1
       evidence_status: superseded_pre_v2_plan
-      replacement_pending_after_generator_commit: true
       plan_sha256: 43786a092724d181d3c285e943f0ca6d688e64f29e850195a4806edf1b72b7d2
       request_ledger_sha256: 3027bd2f42feed93194011d4d026804f0946c4177949424d256b039579832730
       planned_case_count: 120
       executable_case_count: 66
+    regenerated_review_plan:
+      root: /gpfs/radev/project/sous/zl664/dataset_generation_runs/review_suite_20260720_v18_6bd2d99
+      source_scenario_schema: dynamic-robot-source-scenario/v2
+      evidence_status: generated_from_committed_generator
+      generator_git_commit: 6bd2d993fde6721faf6cfaa330ea4e50d289678f
+      plan_sha256: f156f07f0f00ae3825b5429787df4a409a5ae03f473fd670913bb29a9c4defac
+      request_ledger_sha256: e1b9f994bac5eb5ed377221d5aaf9c25036266db76c201faaa2163cef46455cf
+      planned_case_count: 120
+      executable_case_count: 66
       identity_or_rng_changes_against_v14_plan: 0
+    timestep_halving_measurements:
+      rates_hz: [600, 1200]
+      cases: 6
+      same_seed_cases_passing_full_gate: 5
+      all_saved_artifact_objective_replays_agree: true
+      rejected_candidate_case_id: F2c-review-01
+      candidate_600_hz:
+        actual_outcome: contact_failure
+        task_success: false
+        strict_physics_qc_pass: false
+        retained_through_final_state: false
+      reference_1200_hz:
+        actual_outcome: success
+        task_success: true
+        strict_physics_qc_pass: true
+        retained_through_final_state: true
+      maximum_rebound_event_time_shift_s: 0.0008333333351611127
+      maximum_rebound_event_position_shift_m: 0.0012485589703553816
+      maximum_allowed_event_time_shift_s: 0.03333333333333333
+      maximum_allowed_key_event_position_shift_m: 0.01
+      decision: reject_600_hz_candidate_keep_1200_hz_reference_for_all_f2c_fixed_classes
+    rendered_fixed_case_artifacts:
+      dataset_root: /gpfs/radev/project/sous/zl664/dataset_generation_runs/review_F2c_fixed6_v18_6bd2d99
+      generator_git_commit: 6bd2d993fde6721faf6cfaa330ea4e50d289678f
+      episode_count: 6
+      strict_qc_passed: true
+      failed_case_ids: []
+      run_plan_hash: f9cc93df4c72c4879108b6f93b52367b11c9144a4e58306f6099a4ae39afa0bf
+      dataset_report_sha256: 90701f13b5f24a075a836138a068294b587b287724c9ec688f27a1565b19d61f
+      complete_metadata_sha256: 01bf8815a69c8c3685761baa12b51df79f06198b0e93ea850952143069bdcf7e
+      pending_human_ledger_sha256: f1d6559e1b380302b5e89162677f577fcc73ca5d0057fd4e326e750c48cfece9
+      seal_sha256: a681bd1d188f4f10dc65ea6c69bbf56d00a40d8ba0ed6b1d7f5c990479a4b8cd
+      actual_outcomes: [success, success, miss, miss, contact_failure, contact_failure]
+      nominal_final_retention_fractions: [1.0, 1.0]
+      release_eligible_episode_count: 0
+    assistant_qualitative_screen:
+      status: completed_not_a_human_approval
+      reviewed_main_event_strips: 6
+      reviewed_secondary_event_strips: 6
+      nominal_successes_retained_through_final_frame: true
+      negative_branches_remain_visible_physical_failures: true
+      supported_bounce_fixture_visible: true
+      obvious_penetration_tunneling_or_clipping: false
+      floating_fixture_or_background_task_volume_intersection: false
+      camera_occlusion_blocking_required_event: false
+      scale_decision: keep_blocked_until_hash_bound_human_review
     remaining_gates:
-      rendered_six_case_artifacts: pending
-      timestep_halving_for_repaired_profile: pending
+      rendered_six_case_artifacts: strict_qc_and_assistant_screen_passed
+      timestep_halving_for_repaired_profile: reference_1200_required_600_candidate_rejected
       hash_bound_human_review: pending
     admission_claimed: false
     formal_human_approval_recorded: false

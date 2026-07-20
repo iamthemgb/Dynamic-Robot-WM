@@ -1370,6 +1370,55 @@ def test_fixed_f2c_matrix_passes_rebound_qc_without_state_assistance() -> None:
             assert replay.evidence["retained_through_final_state"] is False
 
 
+@pytest.mark.integration
+def test_f2c_robotiq_nominal_rejects_600_hz_candidate_and_keeps_reference_rate() -> None:
+    case = _case("F2c", rollout=1)
+    backend = SourceMujocoBackend()
+    scenario = backend.compile_case(case)
+    assert scenario.simulation_hz == 1200
+    observations = []
+    results = []
+    for simulation_hz in (600, 1200):
+        result = backend.run(
+            replace(scenario, simulation_hz=simulation_hz), render=False
+        )
+        source_spec = prepare_review_case(case).to_dict()
+        source_spec["physics"]["simulation_hz"] = simulation_hz
+        replay = evaluate_source_rows(
+            evaluator_id=case.evaluator,
+            corpus_leaf_id="F2c",
+            task_variant=case.task_variant,
+            source_spec=source_spec,
+            state_rows=result.high_rate_rows,
+            event_rows=result.contact_rows,
+        )
+        rebound = result.physics_qc["restitution"]
+        observations.append(
+            {
+                "outcome": result.outcome["actual_outcome"],
+                "task_success": result.outcome["task_success"],
+                "physics_qc_pass": result.physics_qc["physics_qc_pass"],
+                "saved_artifact_objective_replay_matches": (
+                    replay.task_success == result.outcome["task_success"]
+                ),
+                "key_event_time_s": rebound["event_time_s"],
+                "key_event_position_m": rebound["event_position_m"],
+            }
+        )
+        results.append(result)
+
+    assert results[0].outcome["actual_outcome"] == "contact_failure"
+    assert results[0].physics_qc["physics_qc_pass"] is False
+    assert results[1].outcome["actual_outcome"] == "success"
+    assert results[1].physics_qc["physics_qc_pass"] is True
+    assert set(timestep_comparison_failures(*observations)) == {
+        "outcome_changed_at_1200_hz",
+        "task_success_changed_at_1200_hz",
+        "physics_qc_changed_at_1200_hz",
+        "physics_qc_failed_at_comparison_rate",
+    }
+
+
 def test_fixed_f3b_rolling_pickup_is_a_strict_lifted_free_contact_success() -> None:
     result = SourceMujocoBackend().run(_case("F3b", rollout=0), render=False)
     assert result.outcome["task_success"] is True

@@ -765,12 +765,50 @@ def test_v15_f2c_final_retention_repair_is_evaluator_bound_and_seed_preserving()
     assert sweep["nominal_cases_retained_through_final_state"] is True
     assert sweep["negative_cases_do_not_claim_final_retention"] is True
     assert sweep["independent_evaluator_replay_matches"] is True
+    superseded = evidence["superseded_review_plan"]
+    assert superseded["source_scenario_schema"] == "dynamic-robot-source-scenario/v1"
+    assert superseded["evidence_status"] == "superseded_pre_v2_plan"
     review_plan = evidence["regenerated_review_plan"]
-    assert review_plan["source_scenario_schema"] == "dynamic-robot-source-scenario/v1"
-    assert review_plan["evidence_status"] == "superseded_pre_v2_plan"
-    assert review_plan["replacement_pending_after_generator_commit"] is True
+    assert review_plan["source_scenario_schema"] == "dynamic-robot-source-scenario/v2"
+    assert review_plan["evidence_status"] == "generated_from_committed_generator"
+    assert len(review_plan["generator_git_commit"]) == 40
     assert review_plan[
         "identity_or_rng_changes_against_v14_plan"
     ] == 0
+    halving = evidence["timestep_halving_measurements"]
+    assert halving["rates_hz"] == [600, 1200]
+    assert halving["same_seed_cases_passing_full_gate"] == 5
+    assert halving["rejected_candidate_case_id"] == "F2c-review-01"
+    assert halving["candidate_600_hz"]["actual_outcome"] == "contact_failure"
+    assert halving["candidate_600_hz"]["strict_physics_qc_pass"] is False
+    assert halving["reference_1200_hz"]["actual_outcome"] == "success"
+    assert halving["reference_1200_hz"]["strict_physics_qc_pass"] is True
+    assert halving["maximum_rebound_event_time_shift_s"] <= halving[
+        "maximum_allowed_event_time_shift_s"
+    ]
+    assert halving["maximum_rebound_event_position_shift_m"] <= halving[
+        "maximum_allowed_key_event_position_shift_m"
+    ]
+    rendered = evidence["rendered_fixed_case_artifacts"]
+    assert rendered["episode_count"] == 6
+    assert rendered["strict_qc_passed"] is True
+    assert rendered["failed_case_ids"] == []
+    assert rendered["actual_outcomes"] == sweep["actual_outcomes"]
+    assert rendered["nominal_final_retention_fractions"] == [1.0, 1.0]
+    assert rendered["release_eligible_episode_count"] == 0
+    screen = evidence["assistant_qualitative_screen"]
+    assert screen["status"] == "completed_not_a_human_approval"
+    assert screen["reviewed_main_event_strips"] == 6
+    assert screen["reviewed_secondary_event_strips"] == 6
+    assert screen["nominal_successes_retained_through_final_frame"] is True
+    assert screen["scale_decision"] == "keep_blocked_until_hash_bound_human_review"
+    remaining = evidence["remaining_gates"]
+    assert remaining["rendered_six_case_artifacts"] == (
+        "strict_qc_and_assistant_screen_passed"
+    )
+    assert remaining["timestep_halving_for_repaired_profile"] == (
+        "reference_1200_required_600_candidate_rejected"
+    )
+    assert remaining["hash_bound_human_review"] == "pending"
     assert evidence["admission_claimed"] is False
     assert evidence["formal_human_approval_recorded"] is False
