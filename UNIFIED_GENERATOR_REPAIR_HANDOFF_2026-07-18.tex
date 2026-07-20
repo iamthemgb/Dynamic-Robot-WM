@@ -1,0 +1,463 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[margin=0.8in]{geometry}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{longtable}
+\usepackage{xcolor}
+
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\setlist{nosep,leftmargin=*}
+\newcommand{\good}{\textcolor{green!45!black}{PASS}}
+\newcommand{\bad}{\textcolor{red!70!black}{FAIL}}
+\newcommand{\pending}{\textcolor{orange!80!black}{PENDING}}
+
+\title{Unified Dynamic-Manipulation Generator Repair\\Technical Handoff}
+\author{Codex repair session for \texttt{zl664/dataset\_generation}}
+\date{18 July 2026}
+
+\begin{document}
+\maketitle
+
+\section{Purpose of this handoff}
+
+This document records the exact state of the unified robotics-dataset repair so
+that work can continue safely in another chat.  It distinguishes committed
+code, uncommitted work, sealed evidence, partial outputs, automated passes, and
+qualitative failures.  The most important current conclusion is:
+
+\begin{quote}
+The P0b/P0c camera and reviewability repair is successful, but the current F1
+controller is not acceptable as a dynamic reaching catch.  It initializes the
+robot at the interception pose and changes only the gripper command.  The F1
+preview must therefore remain blocked even though automated free-contact QC
+passes.
+\end{quote}
+
+No hundreds-of-hours generation should be launched from the current state.
+
+\section{Repository, branch, and exact Git state}
+
+\begin{itemize}
+  \item Repository: \path{/gpfs/radev/project/sous/zl664/dataset_generation}
+  \item Branch: \texttt{codex/unified-generator-repair}
+  \item Current committed HEAD: \texttt{ac56d64} (\texttt{Repair passive review camera evidence})
+  \item Baseline/checkpoint commits, newest first:
+    \begin{itemize}
+      \item \texttt{ac56d64} --- P0b/P0c review-camera repair and visibility-QC v3.
+      \item \texttt{d1a56f3} --- fixed-seed physics and review blockers.
+      \item \texttt{0a6495b} --- randomized-scene physics and review evidence.
+      \item \texttt{e613fc8} --- persisted wall-rebound review evidence.
+      \item \texttt{5ed2581} --- unified review-only generation pipeline.
+      \item \texttt{fc65503} --- embodiment-correction baseline.
+    \end{itemize}
+\end{itemize}
+
+At handoff time the worktree is intentionally dirty.  The following files are
+an \emph{uncommitted and not yet fully tested} memory-repair prototype:
+
+\begin{itemize}
+  \item modified: \path{src/dynamic_robot_dataset/common/source_preview.py}
+  \item modified: \path{tests/unit/test_source_preview.py}
+  \item new: \path{src/dynamic_robot_dataset/common/source_preview_prepare_worker.py}
+\end{itemize}
+
+The last focused pytest command for these files was interrupted by the user
+after 3.9 seconds.  It produced no trustworthy pass/fail result, and no pytest
+or generator process was left running.  The next chat must inspect and test
+these changes before committing them.
+
+\section{What the collaborator's ``harmonized'' directory contains}
+
+The collaborator clarified that the operative framework is:
+
+\path{/gpfs/radev/project/sous/zss8/dataset-generation/harmonized/}
+
+Important files are:
+
+\begin{itemize}
+  \item \texttt{harmonize.py}: entry point for plan, scaffold, convert, generate,
+        validate, and status.
+  \item \texttt{taxonomy.py}: collaborator-side family/subfamily registry.
+  \item \texttt{converters/}: conversion adapters into the canonical format.
+\end{itemize}
+
+The collaborator reported that only the v3-ish converter is currently wired
+and conversion must run in the framework virtual environment.  Their
+\texttt{generate} command does not supply a different physical F1 controller;
+it delegates to this repository's \texttt{source\_mujoco} backend.  Therefore
+the static-arm F1 problem must be repaired here, not in
+\texttt{harmonize.py}.
+
+The directory
+\path{/gpfs/radev/scratch/sous/zss8/dynamic_manip_corpus/}
+primarily exposed JSON/configuration artifacts during inspection; it was not
+the source of the generator implementation.  All external generator and
+RoboCasa trees were treated as read-only dependencies.
+
+\section{Unified architecture already implemented}
+
+The branch now contains a single orchestration/schema/QC path rather than a
+separate conversion-only runtime.  Implemented elements include:
+
+\begin{itemize}
+  \item a 20-leaf corpus registry and backend-capability registry;
+  \item a serializable, hash-bound \texttt{SourceScenarioSpec};
+  \item immutable \texttt{plan-run}, deterministic \texttt{run-shard}, sealed
+        \texttt{finalize-run}, bounded \texttt{generate}, and fixed
+        \texttt{review-suite} paths;
+  \item canonical Arrow schemas, two synchronized 832-by-480 MP4 streams at
+        30 Hz, frame timestamps, simulation timestamps, and synchronization
+        errors;
+  \item actual eight-dimensional actuator actions for Panda/Robotiq rather
+        than desired 15-joint diagnostics;
+  \item mutation-boundary enforcement: runtime callbacks may change
+        \texttt{data.ctrl}, not robot/object state, latches, welds, mocap,
+        applied forces, or mutable model physics;
+  \item strict contact, penetration, energy, rebound, grasp, visibility,
+        RoboCasa-clearance, source-hash, and saved-artifact replay checks;
+  \item immutable event strips and a hash-bound pending human-review ledger.
+\end{itemize}
+
+``Unified'' here means one registry, schema, writer, evaluator/QC interface,
+and orchestration layer across validated backends.  It does not claim that
+MuJoCo, Genesis fluid, and deformable solvers share identical internal
+physics.
+
+\section{Current leaf activation status}
+
+The fixed review plan contains exactly 20 leaves times 6 cases = 120 logical
+episodes and 240 requested canonical MP4s.  The immutable plan has 48
+executable cases and assigns zero quota to 12 unfinished leaves.
+
+\begin{longtable}{lll}
+\toprule
+Leaves & Current execution state & Notes \\
+\midrule
+\endhead
+P0a--P0d & review-executable & passive rigid physics, no robot by design \\
+F1a--F1d & review-executable but qualitatively blocked & free-contact catch path exists; reaching motion is defective \\
+F2a--F2f & blocked & direct/rebound/ramp/multisurface adapters unfinished \\
+F3a, F3b, F3d & blocked & platform/rolling/moving-base adapters unfinished \\
+F3c & blocked & Genesis current-and-pickup scene not implemented \\
+D1, D2 & blocked & frictional cloth/rope grasp not implemented \\
+\bottomrule
+\end{longtable}
+
+The permanently synthetic \texttt{native\_mujoco} backend remains blocked.
+Legacy state-rewritten or latch-assisted catches remain in a separate
+\texttt{legacy\_assisted} quarantine tier and must not count toward training
+or generated hours.
+
+\section{Committed v8 camera and reviewability repair}
+
+Commit \texttt{ac56d64} introduced:
+
+\begin{itemize}
+  \item runtime profile \texttt{source-mujoco-rigid-review-2026-07-v8};
+  \item backend version \texttt{0.8.0-review};
+  \item visibility-QC schema \texttt{source-mujoco-visibility-qc/v3};
+  \item unchanged compiled-scenario schema \texttt{/v3};
+  \item preserved external source and RoboCasa hashes.
+\end{itemize}
+
+The exact P0b main-camera repair is:
+
+\begin{verbatim}
+position = (1.20, -1.15, support_height + 1.15)
+target   = (0.05, -0.10, support_height + 0.85)
+fovy     = 58 degrees
+\end{verbatim}
+
+The exact wall-only P0c secondary-camera repair is:
+
+\begin{verbatim}
+position = (-0.05, -1.70, support_height + 0.76)
+target   = (-0.05,  0.00, support_height + 0.76)
+fovy     = 58 degrees
+\end{verbatim}
+
+P0c table-rebound secondary-camera serialization was deliberately left
+unchanged.
+
+Visibility-QC v3 now requires all initial/apex/key-event/final checkpoints to
+be visible in P0b's main stream.  For P0c wall rebounds it requires those four
+checkpoints in the secondary stream and independently recomputes
+\(\lvert \hat v_{camera}\cdot\hat n_{wall}\rvert\leq 0.05\).  Malformed task,
+camera, fixture, half-size, or quaternion evidence fails closed.
+
+\section{Test results at committed v8}
+
+After commit \texttt{ac56d64}, the complete test matrix passed:
+
+\begin{itemize}
+  \item 406 non-integration tests passed; 51 integration tests deselected.
+  \item All 51 integration tests passed in graphics-safe isolated batches:
+        22 + 4 + 7 + 5 + 6 + 4 + 3.
+  \item \texttt{compileall} passed.
+  \item \texttt{git diff --check} passed.
+\end{itemize}
+
+Graphics tests were intentionally batched because a monolithic EGL lifecycle
+has previously aborted after many rendered tests.  The isolated results are
+the trustworthy baseline.
+
+\section{Immutable review-plan identity}
+
+The fresh v8 plan is:
+
+\path{/gpfs/radev/project/sous/zl664/dataset_generation_runs/review_suite_20260718_v8_ac56d64}
+
+Its identities are unchanged from v7, proving that the same difficult fixed
+cases and seeds were preserved:
+
+\begin{itemize}
+  \item plan SHA-256:
+        \texttt{c11a8065cd87099ed4379198d936e5bc9e9c82236294d5d8a4fd1399080422a9}
+  \item request-ledger SHA-256:
+        \texttt{c5b87826a108cb1a869c8373a2ef21192081f4a8bead4dfbb65a1c91ea09b1fe}
+  \item suite ID: \texttt{review-suite-197cfe41997cb8e5abc04b24}
+\end{itemize}
+
+\section{Generated datasets and whether they are usable}
+
+\subsection{Sealed v7 reference evidence}
+
+\path{/gpfs/radev/project/sous/zl664/dataset_generation_runs/review_active8_fixed6_v7_d1a56f3}
+
+This contains 48 episodes, 96 MP4s, 96 event-strip PNGs, exact finalization,
+and zero automated hard failures under the then-current contract.  It is now
+historical failed review evidence because P0b-review-02 was clipped in main
+and P0c wall recoil was visually ambiguous.  Visibility-QC v3 intentionally
+does not accept its v2 evidence.
+
+\subsection{Sealed v8 P0b/P0c repair bundle --- usable review evidence}
+
+\path{/gpfs/radev/project/sous/zl664/dataset_generation_runs/review_p0bc_fixed6_v8_ac56d64}
+
+Status: \good.  It contains 12 episodes and 24 MP4s.  All 12 cases passed
+strict saved-artifact replay.  Independent qualitative inspection also passed
+all cases.  In particular:
+
+\begin{itemize}
+  \item P0b-review-02 now shows the complete rise, apex, and descent in both
+        streams with comfortable margins.
+  \item P0c-review-01/03/05 secondary streams clearly show approach, wall
+        contact, and wall-normal separation.
+  \item no visible tunneling, sticking, unexplained jumps, floating fixtures,
+        task-volume background intersections, or material occlusion were found.
+\end{itemize}
+
+These are passive-physics leaves.  Their declarations use
+\texttt{embodiment=no\_robot}; the absence of a Franka arm is intentional.
+
+\subsection{Sealed one-case F1a Franka preview --- automated pass, qualitative fail}
+
+\path{/gpfs/radev/project/sous/zl664/dataset_generation_runs/preview_f1a_franka_v8_ac56d64}
+
+Direct media paths:
+
+\begin{itemize}
+  \item main MP4:
+    \path{/gpfs/radev/project/sous/zl664/dataset_generation_runs/preview_f1a_franka_v8_ac56d64/videos/observation.images.main/chunk-000/file-000000.mp4}
+  \item secondary MP4:
+    \path{/gpfs/radev/project/sous/zl664/dataset_generation_runs/preview_f1a_franka_v8_ac56d64/videos/observation.images.secondary/chunk-000/file-000000.mp4}
+  \item main event strip:
+    \path{/gpfs/radev/project/sous/zl664/dataset_generation_runs/preview_f1a_franka_v8_ac56d64/reviews/event_strips/F1a/F1a-review-00/main.png}
+\end{itemize}
+
+Automated physics, free-contact, retention, media, and strict QC passed.  The
+user correctly identified a decisive qualitative failure: the arm waits at
+the catch point instead of reaching for the ball.  This output must not be
+used as accepted F1 review evidence.
+
+\subsection{Interrupted/unsealed outputs --- do not use}
+
+The following runs were killed by the Slurm memory cgroup and remain partial,
+unsealed interruption evidence:
+
+\begin{itemize}
+  \item full active-eight attempt, 3 committed episodes / 6 MP4s:
+    \path{/gpfs/radev/project/sous/zl664/dataset_generation_runs/review_active8_fixed6_v8_ac56d64}
+  \item F1a six-case attempt, 3 committed episodes / approximately 6 complete
+        MP4s plus a possible partially written next file:
+    \path{/gpfs/radev/project/sous/zl664/dataset_generation_runs/review_F1a_fixed6_v8_ac56d64}
+\end{itemize}
+
+Neither contains a final seal or physics-failure receipt.  They are
+interruptions, not outcome mismatches, but should not be published or treated
+as review-complete.
+
+\section{A40 GPU and the actual performance blocker}
+
+The current environment exposes an NVIDIA A40 with 46,068 MiB.  During an
+active render worker, approximately 528 MiB was allocated.  The GPU was not
+the cause of the slow/failed full run.
+
+The actual blocker is eager native-memory retention in the parent process:
+
+\begin{itemize}
+  \item \texttt{execute\_source\_review\_preview} prepared every declaration
+        in the parent before launching isolated render shards.
+  \item Each F1 declaration compiles provisional and final MuJoCo/RoboCasa
+        models.  Native allocations remain resident after Python objects are
+        deleted.
+  \item Same-process preparation of 12 F1a/F1b cases grew RSS from 381 MB to
+        2.04 GB while Python heap stayed near 22 MB.
+  \item Six F1a cases still grew the parent heavily even with
+        \texttt{malloc\_trim}.
+  \item The full parent was killed at about 2.58 GB anonymous RSS while a
+        render child was active.
+  \item The F1a-only parent was later killed at about 1.61 GB anonymous RSS
+        while its child was active.
+  \item In contrast, preparing six F1a declarations one-per-subprocess kept
+        parent RSS flat at 40.5 MB; returned JSON was only 12--17 KB per case.
+\end{itemize}
+
+The compile chain is:
+
+\begin{itemize}
+  \item \texttt{source\_execution.py}, declaration preparation;
+  \item \texttt{source\_spec.py}, source-model compilation;
+  \item \texttt{model.py}, provisional R1 model;
+  \item \texttt{model.py}, final model.
+\end{itemize}
+
+The uncommitted prototype fixes this by preparing exactly one declaration per
+fresh owned subprocess, returning only canonical JSON, validating case/UUID/
+index/hash/commit identity in the parent, and letting process exit reclaim all
+native memory.  Existing one-shard-per-process execution remains unchanged.
+
+\section{Static Franka catch: diagnosis and required repair}
+
+The user's observation was verified quantitatively from the sealed F1a
+preview Parquet:
+
+\begin{itemize}
+  \item all seven arm actuator-command peak-to-peak ranges are exactly zero;
+  \item only the Panda finger command changes, from 255 to approximately 131.5;
+  \item maximum observed arm-joint displacement is only 0.0074 rad and is
+        passive contact/servo deflection, not commanded reaching;
+  \item \texttt{source\_mujoco/backend.py} sets both
+        \texttt{initial\_arm\_command} and
+        \texttt{intercept\_arm\_command} to the same IK solution and initializes
+        robot qpos at that intercept.
+\end{itemize}
+
+This behavior was introduced in commit \texttt{5ed2581}; it was not inherited
+from the earlier generator.
+
+The original Franka controller at
+\path{legacy_sources/zss8/dataset-generation/demo_mujoco_arm_gripper/franka_catch/controller.py}
+does show reaching.  Its transferable planning intent is:
+
+\begin{itemize}
+  \item solve an intercept pose;
+  \item solve a ready waypoint 45 mm above it, seeded from the intercept IK;
+  \item minimum-jerk ready-to-intercept motion;
+  \item reach end at ballistic event minus 0.055 s;
+  \item duration at least 0.18 s and long enough for joint limits;
+  \item for the current 0.44 s event, approximately 0.205--0.385 s;
+  \item an optional visible post-catch lift/retract of roughly
+        \((-0.15,0,+0.26)\) m over at least 0.55 s.
+\end{itemize}
+
+The original execution itself must \emph{not} be copied: it directly rewrites
+robot qpos/qvel each step and rewrites/holds the ball after capture.  The
+collaborator's converter correctly labels those episodes
+\texttt{assisted\_contact}.  The safe adaptation must:
+
+\begin{enumerate}
+  \item solve ready and intercept IK only during initialization;
+  \item initialize once at the ready waypoint;
+  \item move ready-to-intercept using minimum-jerk commands applied only via
+        \texttt{data.ctrl};
+  \item use a bounded closure rather than the original instantaneous close;
+  \item never rewrite or latch the ball;
+  \item preserve measured success/failure and the same fixed review seeds;
+  \item serialize the actual arm and closure phases honestly in
+        \texttt{SourceScenarioSpec}.
+\end{enumerate}
+
+This is a profile-changing repair and should become v9 (and likely backend
+\texttt{0.9.0-review}), not a silent edit to v8.
+
+\section{Exact recommended next steps for the new chat}
+
+\begin{enumerate}
+  \item Read this file, run \texttt{git status}, and preserve the three
+        uncommitted memory-fix files.  Do not overwrite or delete the partial
+        run directories.
+  \item Finish and test the isolated declaration-preparation worker:
+    \begin{itemize}
+      \item run \texttt{tests/unit/test\_source\_preview.py};
+      \item test nonzero child exit, malformed/non-mapping JSON, and identity
+            mismatch;
+      \item run a real six-case F1a preparation RSS probe;
+      \item run the full non-integration suite and relevant integration tests;
+      \item commit the memory repair separately.
+    \end{itemize}
+  \item Implement the v9 ctrl-only reaching controller:
+    \begin{itemize}
+      \item ready IK target = intercept + \((0,0,0.045)\) m;
+      \item initialize at ready, not intercept;
+      \item compute feasible minimum-jerk timing and reject infeasible IK or
+            joint-limit violations;
+      \item coordinate bounded closure with arrival and retain real contact;
+      \item update \texttt{source\_spec.py} so actuator phases show the reach;
+      \item add QC requiring nonzero arm command travel and arrival evidence;
+      \item add 600/1200 Hz same-seed agreement and mutation-boundary tests.
+    \end{itemize}
+  \item Generate only \texttt{F1a-review-00} first.  Qualitatively verify that
+        the arm visibly reaches, the ball remains free-contact, bilateral
+        support occurs, and the final grasp is retained.
+  \item Rerun the same six F1a seeds, then F1b--F1d, without replacing difficult
+        seeds.  Preserve actual failures and negative branches.
+  \item After the memory fix is committed, create a fresh full output whose
+        directory includes the new commit/profile.  Do not resume an ac56d64
+        plan after changing generator Git identity.
+  \item Run standalone \texttt{validate --strict-all}, external strict QC into
+        a separate report directory, and qualitative two-view/event-strip
+        review.
+  \item Leave the human-review ledger pending; do not fabricate approvals.
+  \item Only after all six reviews for a leaf pass should it enter a
+        100-episode pilot and two-shard interruption/resume rehearsal, followed
+        by the 10-hour and 100-hour gates.
+\end{enumerate}
+
+\section{Scale-readiness warning}
+
+The system is not ready for hundreds of hours.  Remaining hard gates include:
+
+\begin{itemize}
+  \item dynamic reaching repair for F1;
+  \item formal human review;
+  \item 12 blocked leaves with zero quota;
+  \item 100-episode pilot with zero hard failures;
+  \item two-shard interruption/resume rehearsal;
+  \item 10-unique-hour and 100-unique-hour gates.
+\end{itemize}
+
+The fixed six-case review matrix intentionally correlates scene order and
+outcome branch.  A prior statistics report measured background/outcome
+Cramer's \(V\approx0.53\).  This is acceptable for deterministic acceptance
+testing but must not be copied as the scale-generation randomization policy.
+
+\section{Bottom line}
+
+The passive P0b/P0c repair is good and reproducibly validated.  The unified
+writer, schema, orchestration, physics/QC, RoboCasa binding, and fixed-review
+infrastructure are substantially implemented.  Two issues now dominate:
+
+\begin{enumerate}
+  \item declaration preparation must be isolated to prevent native-memory OOM;
+  \item F1 must perform a genuine actuator-only reaching catch rather than a
+        stationary pre-positioned interception.
+\end{enumerate}
+
+Resolve those two items before generating more F1 review media or considering
+large-scale data production.
+
+\end{document}
