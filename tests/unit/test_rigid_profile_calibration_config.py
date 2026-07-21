@@ -20,6 +20,20 @@ def _mapping(path: Path) -> dict:
     return value
 
 
+def _hash_bound_json(binding: dict) -> tuple[Path, dict]:
+    path = Path(binding["path"])
+    if not path.is_absolute():
+        path = ROOT / path
+    assert path.is_file()
+    report = json.loads(path.read_text(encoding="utf-8"))
+    payload = dict(report)
+    stored_payload_hash = payload.pop("report_sha256")
+    assert sha256_file(path) == binding["report_file_sha256"]
+    assert stored_payload_hash == binding["report_payload_sha256"]
+    assert sha256_json(payload) == binding["report_payload_sha256"]
+    return path, report
+
+
 def test_rigid_profile_evidence_is_versioned_source_bound_and_fail_closed() -> None:
     evidence = _mapping(EVIDENCE_PATH)
     capabilities = _mapping(CAPABILITIES_PATH)
@@ -1017,6 +1031,7 @@ def test_honest_rigid_breadth_v2_preserves_independent_leaf_verdicts() -> None:
     assert evidence["predictive_contact_margins_admitted"] is False
 
     fixed = evidence["honest_fixed_six"]
+    _hash_bound_json(fixed)
     assert fixed["automated_qc_pass_count_by_leaf"] == {
         "F2b": 5,
         "F2d": 5,
@@ -1027,13 +1042,16 @@ def test_honest_rigid_breadth_v2_preserves_independent_leaf_verdicts() -> None:
     assert fixed["failed_case_ids"] == ["F2b-review-01", "F2d-review-01"]
     assert fixed["mutation_boundary_violations"] == 0
 
-    halving = evidence["honest_timestep_halving"]["decisions"]
+    halving_binding = evidence["honest_timestep_halving"]
+    _hash_bound_json(halving_binding)
+    halving = halving_binding["decisions"]
     assert halving["F2b"]["selected_simulation_hz"] is None
     assert halving["F2d"]["selected_simulation_hz"] is None
     assert halving["F2e"]["selected_simulation_hz"] == 1200
     assert halving["F2f"]["selected_simulation_hz"] == 1200
 
     surfaces = evidence["f2f_surface_admission"]
+    _hash_bound_json(surfaces)
     assert surfaces["probe_count"] == 100
     assert surfaces["geometry_admitted_candidates"] == [
         "plane_mid_285",
@@ -1073,6 +1091,7 @@ def test_rigid_breadth_render_repair_v3_is_hash_bound_and_fail_closed() -> None:
 
     fixed = evidence["fixed_six"]
     fixed_path = Path(fixed["path"])
+    assert fixed_path.is_file()
     fixed_report = json.loads(fixed_path.read_text(encoding="utf-8"))
     fixed_payload = dict(fixed_report)
     stored_fixed_payload_hash = fixed_payload.pop("report_sha256")
@@ -1103,6 +1122,7 @@ def test_rigid_breadth_render_repair_v3_is_hash_bound_and_fail_closed() -> None:
 
     halving = evidence["timestep_halving"]
     halving_path = Path(halving["path"])
+    assert halving_path.is_file()
     halving_report = json.loads(halving_path.read_text(encoding="utf-8"))
     halving_payload = dict(halving_report)
     stored_halving_payload_hash = halving_payload.pop("report_sha256")
@@ -1143,6 +1163,7 @@ def test_rigid_breadth_render_repair_v3_is_hash_bound_and_fail_closed() -> None:
 
     surfaces = evidence["f2f_surface_admission"]
     surface_path = ROOT / surfaces["path"]
+    assert surface_path.is_file()
     surface_report = json.loads(surface_path.read_text(encoding="utf-8"))
     surface_payload = dict(surface_report)
     stored_surface_payload_hash = surface_payload.pop("report_sha256")
@@ -1190,6 +1211,191 @@ def test_rigid_breadth_render_repair_v3_is_hash_bound_and_fail_closed() -> None:
             "positive_barrier_dual_embodiment_retained_catch_pending",
             "human_review_pending",
         ],
+    }
+    assert evidence["fixed_review_artifacts_training_eligible"] is False
+    assert evidence["admission_claimed"] is False
+    assert evidence["release_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False
+
+
+def test_rigid_breadth_f2b_render_acceptance_v4_is_hash_bound_and_fail_closed() -> None:
+    root = _mapping(EVIDENCE_PATH)
+    evidence = root["measurements"]["rigid_breadth_f2b_render_acceptance_v4"]
+
+    assert evidence["evidence_status"] == (
+        "hash_bound_diagnostic_human_review_pending"
+    )
+    assert evidence["backend_version"] == "0.20.0-review"
+    assert evidence["fixed_master_seed"] == 20260717
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["seed_replacements"] == 0
+    assert evidence["qc_thresholds_relaxed"] is False
+    assert evidence["direct_state_or_constraint_assistance"] is False
+    assert evidence["predictive_contact_margins_admitted"] is False
+
+    _, fixed_report = _hash_bound_json(evidence["fixed_six"])
+    fixed = evidence["fixed_six"]
+    assert fixed["automated_qc_pass_count_by_leaf"] == {
+        "F2b": 6,
+        "F2d": 5,
+        "F2e": 6,
+        "F2f": 6,
+    }
+    assert fixed["canonical_replay_match_count_by_leaf"] == {
+        "F2b": 6,
+        "F2d": 6,
+        "F2e": 6,
+        "F2f": 6,
+    }
+    assert fixed["failed_case_ids"] == ["F2d-review-01"]
+    assert fixed["mutation_boundary_violations"] == 0
+    assert {
+        leaf_id: leaf["automated_qc_pass_count"]
+        for leaf_id, leaf in fixed_report["per_leaf"].items()
+    } == fixed["automated_qc_pass_count_by_leaf"]
+    assert all(
+        leaf["all_canonical_replays_completed_and_matched"]
+        for leaf in fixed_report["per_leaf"].values()
+    )
+    assert [
+        case["case_id"]
+        for case in fixed_report["cases"]
+        if not case["automated_qc_passed"]
+    ] == ["F2d-review-01"]
+    assert all(
+        case["canonical_replay"]["status"] == "completed"
+        and case["canonical_replay"]["matches_online"]
+        for case in fixed_report["cases"]
+    )
+    assert sum(
+        case["mutation_boundary_violations"] for case in fixed_report["cases"]
+    ) == 0
+
+    _, halving_report = _hash_bound_json(evidence["timestep_halving"])
+    decisions = evidence["timestep_halving"]["decisions"]
+    assert decisions == {
+        "F2b": {
+            "reference_profile_admitted": True,
+            "cheaper_profile_admitted": True,
+            "selected_simulation_hz": 600,
+        },
+        "F2d": {
+            "reference_profile_admitted": False,
+            "cheaper_profile_admitted": False,
+            "selected_simulation_hz": None,
+        },
+        "F2e": {
+            "reference_profile_admitted": True,
+            "cheaper_profile_admitted": False,
+            "selected_simulation_hz": 1200,
+        },
+        "F2f": {
+            "reference_profile_admitted": True,
+            "cheaper_profile_admitted": False,
+            "selected_simulation_hz": 1200,
+        },
+    }
+    assert halving_report["per_leaf"] == {
+        leaf_id: {"case_count": 6, **decision}
+        for leaf_id, decision in decisions.items()
+    }
+
+    _, surface_report = _hash_bound_json(evidence["f2f_surface_admission"])
+    surfaces = evidence["f2f_surface_admission"]
+    candidate_ids = [
+        candidate["candidate_id"] for candidate in surface_report["candidates"]
+    ]
+    assert candidate_ids == [
+        "plane_mid_285",
+        "plane_table_400",
+        "barrier_yaw_neg_15",
+        "barrier_yaw_neg_25",
+    ]
+    assert sum(
+        len(candidate["probes"]) for candidate in surface_report["candidates"]
+    ) == surfaces["probe_count"] == 100
+    assert surface_report["selected_candidate_ids"] == candidate_ids
+    assert surfaces["geometry_admitted_candidates"] == candidate_ids
+    assert surfaces["positive_controller_admitted_candidates"] == [
+        "plane_mid_285",
+        "plane_table_400",
+    ]
+    assert surfaces["positive_controller_blocked_candidates"] == [
+        "barrier_yaw_neg_15",
+        "barrier_yaw_neg_25",
+    ]
+    assert surfaces["pilot_ready_candidates"] == [
+        "plane_mid_285",
+        "plane_table_400",
+    ]
+
+    rendered = evidence["f2b_rendered_precommit_validation"]
+    assert rendered["source_guard"] == "F2b/ramp_launch_pickup_interception"
+    assert rendered["case_ids"] == [f"F2b-review-{index:02d}" for index in range(6)]
+    assert rendered["physics_qc_pass_count"] == 6
+    assert rendered["all_initial_apex_key_final_visible"] is True
+    assert rendered["target_visible_frame_fraction"] == [
+        1.0,
+        1.0,
+        0.924242424,
+        0.924242424,
+        1.0,
+        1.0,
+    ]
+    minimum_area = rendered["minimum_required_key_target_area_px"]
+    assert minimum_area == 64
+    assert len(rendered["actual_key_target_area_px"]) == 6
+    assert min(rendered["actual_key_target_area_px"]) >= minimum_area
+    assert len(rendered["actual_key_bbox_margin_px"]) == 6
+    assert min(rendered["actual_key_bbox_margin_px"]) > 0.0
+    assert rendered["camera_or_background_physics_changes"] is False
+    assert rendered["clean_r0_removed_fixture_intersection_visuals"] == [
+        "lab_bench_leg_a",
+        "lab_workbench",
+    ]
+    assert rendered["all_six_background_fixture_aabb_clear"] is True
+
+    search = evidence["f2f_positive_barrier_bounded_search"]
+    penetration_limit = root["acceptance_thresholds"][
+        "maximum_object_gripper_penetration_m"
+    ]
+    assert search["runtime_changes_landed"] is False
+    assert search["direct_state_or_constraint_assistance"] is False
+    assert search["predictive_contact_margins_admitted"] is False
+    best_retained = search["best_retained_candidate"]
+    assert best_retained["retained_through_final_state"] is True
+    assert best_retained["maximum_object_gripper_penetration_m"] > penetration_limit
+    assert best_retained["strict_physics_qc_pass"] is False
+    best_compliant = search["best_penetration_compliant_contact"]
+    assert best_compliant["maximum_object_gripper_penetration_m"] <= penetration_limit
+    assert best_compliant["stable_object_to_grasp_transform"] is False
+    assert best_compliant["retained_through_final_state"] is False
+    assert best_compliant["strict_physics_qc_pass"] is False
+    assert search["decision"] == "no_hardware_faithful_overlap_keep_blocked"
+
+    assert evidence["leaf_decisions"] == {
+        "F2b": {
+            "execution_state": "review",
+            "remaining_blockers": ["human_review_pending"],
+        },
+        "F2d": {
+            "execution_state": "blocked",
+            "remaining_blockers": [
+                "robotiq_nominal_reference_rate_no_hardware_faithful_overlap_"
+                "penetration_retention_acceleration"
+            ],
+        },
+        "F2e": {
+            "execution_state": "review",
+            "remaining_blockers": ["human_review_pending"],
+        },
+        "F2f": {
+            "execution_state": "review",
+            "remaining_blockers": [
+                "positive_barrier_dual_embodiment_retained_catch_pending",
+                "human_review_pending",
+            ],
+        },
     }
     assert evidence["fixed_review_artifacts_training_eligible"] is False
     assert evidence["admission_claimed"] is False

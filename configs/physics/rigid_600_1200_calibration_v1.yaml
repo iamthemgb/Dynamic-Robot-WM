@@ -1202,7 +1202,7 @@ measurements:
         F2e: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
         F2f: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
     f2f_surface_admission:
-      path: configs/physics/f2f_surface_admission_v1.json
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/f2f_surface_admission_d1c875c_v2.json
       report_file_sha256: 0100abe20088f0b56989c7ef61e27e10e9f3009ffce954f90c3980b876f5be86
       report_payload_sha256: 819fd55496650c7c23aea7ff4c8ab83d5b49c0bbc7f8d545cc534e5b8075338e
       probe_count: 100
@@ -1281,7 +1281,7 @@ measurements:
         F2e: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
         F2f: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
     f2f_surface_admission:
-      path: configs/physics/f2f_surface_admission_v1.json
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/f2f_surface_admission_8d2aff0_v3.json
       report_file_sha256: ce334fbf4c7689e6a140f3bedc6a1e02c7b99ffaef421042dc39baa0b58c7f04
       report_payload_sha256: 478efada63998cd6fba37a9d0ce92699c68f03f87c0a3c5e188f8a3ab2482f11
       probe_count: 100
@@ -1295,6 +1295,102 @@ measurements:
         - barrier_yaw_neg_15
         - barrier_yaw_neg_25
       pilot_ready_candidates: [plane_mid_285, plane_table_400]
+    leaf_decisions:
+      F2b: {execution_state: review, remaining_blockers: [human_review_pending]}
+      F2d:
+        execution_state: blocked
+        remaining_blockers: [robotiq_nominal_reference_rate_no_hardware_faithful_overlap_penetration_retention_acceleration]
+      F2e: {execution_state: review, remaining_blockers: [human_review_pending]}
+      F2f:
+        execution_state: review
+        remaining_blockers: [positive_barrier_dual_embodiment_retained_catch_pending, human_review_pending]
+    fixed_review_artifacts_training_eligible: false
+    admission_claimed: false
+    release_claimed: false
+    formal_human_approval_recorded: false
+
+  rigid_breadth_f2b_render_acceptance_v4:
+    description: >-
+      current-source evidence after the F2b-only full-trajectory camera and
+      clean-R0 visual-fixture clearance repairs; F2d and the F2f positive
+      Robotiq barrier catch retain independent blockers
+    evidence_status: hash_bound_diagnostic_human_review_pending
+    backend_version: 0.20.0-review
+    fixed_master_seed: 20260717
+    fixed_seeds_preserved: true
+    seed_replacements: 0
+    qc_thresholds_relaxed: false
+    direct_state_or_constraint_assistance: false
+    predictive_contact_margins_admitted: false
+    fixed_six:
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2b_F2d_F2e_F2f_fixed_six_f2b_render_repair_v4.json
+      report_file_sha256: a1766459e2cf1229f2c73a6bdb764dc1fdaaf8a8df38e6b328087b2cf0677fb8
+      report_payload_sha256: 683461ae37aa6a0d251e27cf045b68d1303166871280bdde04904350b867951b
+      automated_qc_pass_count_by_leaf: {F2b: 6, F2d: 5, F2e: 6, F2f: 6}
+      canonical_replay_match_count_by_leaf: {F2b: 6, F2d: 6, F2e: 6, F2f: 6}
+      mutation_boundary_violations: 0
+      failed_case_ids: [F2d-review-01]
+    timestep_halving:
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2b_F2d_F2e_F2f_timestep_halving_f2b_render_repair_v4.json
+      report_file_sha256: 6f7ce23f9f6ae336a3143234bf8620b2e05fe40d662ac3ed6b03a9346a9e17da
+      report_payload_sha256: 85e30eb508a0c7f5fa561382fda76c27bc65cd43f51c3e00a7a1338a94143c70
+      decisions:
+        F2b: {reference_profile_admitted: true, cheaper_profile_admitted: true, selected_simulation_hz: 600}
+        F2d: {reference_profile_admitted: false, cheaper_profile_admitted: false, selected_simulation_hz: null}
+        F2e: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
+        F2f: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
+    f2f_surface_admission:
+      path: configs/physics/f2f_surface_admission_v1.json
+      report_file_sha256: cdf04474d0e0772fc12138e315e87f10fb20f59230bc95ecb1f82e50adab2f54
+      report_payload_sha256: c3d16486ff6ecfe6d89254919ce3566820f321d53b718f12e8cf60f816822e39
+      probe_count: 100
+      geometry_admitted_candidates: [plane_mid_285, plane_table_400, barrier_yaw_neg_15, barrier_yaw_neg_25]
+      positive_controller_admitted_candidates: [plane_mid_285, plane_table_400]
+      positive_controller_blocked_candidates: [barrier_yaw_neg_15, barrier_yaw_neg_25]
+      pilot_ready_candidates: [plane_mid_285, plane_table_400]
+    f2b_rendered_precommit_validation:
+      source_guard: F2b/ramp_launch_pickup_interception
+      case_ids: [F2b-review-00, F2b-review-01, F2b-review-02, F2b-review-03, F2b-review-04, F2b-review-05]
+      physics_qc_pass_count: 6
+      all_initial_apex_key_final_visible: true
+      target_visible_frame_fraction: [1.0, 1.0, 0.924242424, 0.924242424, 1.0, 1.0]
+      actual_key_target_area_px: [154, 96, 145, 145, 75, 78]
+      minimum_required_key_target_area_px: 64
+      actual_key_bbox_margin_px: [151.61, 151.86, 141.78, 141.74, 186.41, 186.0]
+      camera_or_background_physics_changes: false
+      clean_r0_removed_fixture_intersection_visuals: [lab_bench_leg_a, lab_workbench]
+      all_six_background_fixture_aabb_clear: true
+    f2f_positive_barrier_bounded_search:
+      runtime_changes_landed: false
+      direct_state_or_constraint_assistance: false
+      predictive_contact_margins_admitted: false
+      parameter_bounds:
+        collision_pad_half_depth_m: [0.010, 0.022]
+        pad_contact_margin_m: [0.0, 0.0]
+        tendon_target: [96.0, 125.0]
+        actuator_force_limit_n: [0.085, 0.16]
+        controller_bias_xy_m: [-0.020, 0.020]
+        controller_bias_z_m: [-0.055, 0.055]
+        closure_lead_s: [0.10, 0.16]
+        pad_solref_tau_s: [0.002, 0.012]
+      current_robotiq_penetration_m:
+        barrier_yaw_neg_15: 0.006554416
+        barrier_yaw_neg_25: 0.006394073
+      best_retained_candidate:
+        candidate_id: barrier_yaw_neg_15
+        maximum_object_gripper_penetration_m: 0.0026331
+        maximum_passive_finger_acceleration_rad_s2: 124.157
+        retained_through_final_state: true
+        strict_physics_qc_pass: false
+      best_penetration_compliant_contact:
+        candidate_id: barrier_yaw_neg_15
+        maximum_object_gripper_penetration_m: 0.0019559
+        maximum_passive_finger_acceleration_rad_s2: 89.123
+        maximum_contiguous_bilateral_contact_s: 0.6733
+        stable_object_to_grasp_transform: false
+        retained_through_final_state: false
+        strict_physics_qc_pass: false
+      decision: no_hardware_faithful_overlap_keep_blocked
     leaf_decisions:
       F2b: {execution_state: review, remaining_blockers: [human_review_pending]}
       F2d:

@@ -138,6 +138,15 @@ def _is_f2e_floor_to_wall(scenario: SourceMujocoCompiledScenario) -> bool:
     )
 
 
+def _is_f2b_ramp_launch(scenario: SourceMujocoCompiledScenario) -> bool:
+    """Return whether the scenario uses the owned F2b ramp-launch corridor."""
+
+    return (
+        scenario.corpus_leaf_id == "F2b"
+        and scenario.motion_kind == "ramp_launch_pickup_interception"
+    )
+
+
 @contextmanager
 def _temporary_environment(values: Mapping[str, str]) -> Iterator[None]:
     previous = {name: os.environ.get(name) for name in values}
@@ -769,7 +778,21 @@ def _add_secondary_camera(
         "camera",
         name="secondary_camera",
     )
-    if _is_f2e_floor_to_wall(scenario):
+    if _is_f2b_ramp_launch(scenario):
+        # The ball starts at the low end of the 60-degree ramp.  Both former
+        # event-centred views put that valid initial state behind the ramp or
+        # below the image, while the lateral misses later reached the room
+        # floor.  This measured low-end-side view retains the initial state
+        # and the airborne interaction; the main view carries the complete
+        # miss envelope and the later floor-contact event.  Fixed world-space
+        # framing is outcome-, embodiment-, appearance-, and RNG-invariant.
+        _set_camera_look_at(
+            camera,
+            position_m=(1.52, -0.65, 1.35),
+            target_m=(0.50, 0.0, 0.30),
+            fovy_deg=62.0,
+        )
+    elif _is_f2e_floor_to_wall(scenario):
         anchor = scenario.physical_target_position_m
         if anchor is None:
             raise RuntimeError("F2e floor-to-wall camera lacks its physical target")
@@ -995,6 +1018,27 @@ def _repair_task_camera(
     main = root.find(".//camera[@name='main_camera']")
     if main is None:
         raise RuntimeError("external scene lacks main_camera")
+    if _is_f2b_ramp_launch(scenario):
+        anchor = scenario.physical_target_position_m
+        if anchor is None:
+            raise RuntimeError("F2b ramp-launch camera lacks its physical target")
+        # Keep the original close-camera scale needed to resolve the late
+        # floor-contact negatives, but aim at the measured full trajectory
+        # instead of only the catch apex.  The complementary secondary sees
+        # the ramp start.  Across the immutable fixed six this yields at least
+        # 92.4% aggregate trajectory visibility and 75 pixels at the smallest
+        # actual floor-contact key event (64 required).
+        _set_camera_look_at(
+            main,
+            position_m=(
+                anchor[0] - 1.15,
+                anchor[1] - 1.18,
+                anchor[2] + 0.65,
+            ),
+            target_m=(0.15, 0.0, 0.30),
+            fovy_deg=64.0,
+        )
+        return
     if _is_f2e_floor_to_wall(scenario):
         # The floor-to-wall launch starts high at y=-1.54 m and a legitimate
         # timing miss finishes near x=-0.90 m, y=+1.00 m.  The generic close
@@ -1766,7 +1810,7 @@ def _remove_procedural_fixture_intersections(
         not scenario.surfaces
         or (
             not scenario.requires_real_robocasa
-            and scenario.corpus_leaf_id not in {"F2f", "F3b"}
+            and scenario.corpus_leaf_id not in {"F2b", "F2f", "F3b"}
         )
     ):
         return ()

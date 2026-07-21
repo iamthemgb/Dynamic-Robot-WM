@@ -12,11 +12,12 @@ A declared capability is not a release claim. At this checkpoint 15 rigid
 leaf modules have physical fixed-review implementations. Fourteen are
 review-executable: P0a-d, F1a-d, F2a, F2b, F2c, F2e, F2f, and F3b. F2b has
 passed its automated fixed-six and dual-rate checks and is admitted at 600 Hz
-for fixed review execution; hash-bound rendered artifacts and human review are
-still pending. F2d remains execution-blocked at 5/6 by its Robotiq nominal
-catch. The remaining five modules are fail-closed contracts. No leaf is made
-pilot-eligible or released by this checkpoint, and large-scale generation is
-not yet allowed.
+for fixed review execution. Its F2b-only camera/background check now passes all
+six fixed cases, but a backend-`0.20.0-review` sealed run and hash-bound human
+review are still pending. F2d remains execution-blocked at 5/6 by its Robotiq
+nominal catch. The remaining five modules are fail-closed contracts. No leaf
+is made pilot-eligible or released by this checkpoint, and large-scale
+generation is not yet allowed.
 
 ## Sources of truth
 
@@ -306,14 +307,35 @@ profile for fixed review. F2d has no admitted rate: its Robotiq nominal case
 cannot simultaneously satisfy hardware-faithful retention, the penetration
 limits, and passive-finger acceleration limits, so that leaf remains blocked
 without changing its seed or label. F2e and F2f retain their 1200 Hz profiles.
-Their scoped camera/background repairs have passed the automated checks that
-motivated them, but new sealed rendered evidence is still being regenerated
-and hash-bound human review is pending. F2f also retains its explicit
+
+The new F2b-only rendered pre-commit validation passes all six fixed cases:
+every initial/apex/key/final checkpoint is visible, the minimum
+full-trajectory visible-frame fraction is 0.9242, and the minimum key-event
+target area is 75 pixels against a 64-pixel requirement. For clean R0, the
+clearance repair removes exactly two collision-disabled visual assets that
+intersect owned fixtures (`lab_bench_leg_a` and `lab_workbench`). It changes
+neither physics geometry nor any non-F2b camera path. These checks are not a
+sealed review run; F2b must still be regenerated under the current
+`0.20.0-review` provenance and receive hash-bound human review.
+
+The sealed `8d2aff0` F2e and F2f datasets passed all six automated rendered
+cases. Once the current source commit lands, however, those datasets, the
+`8d2aff0` F2b dataset, and the associated `8d2aff0` review-suite plan are
+immutable historical evidence because their source hashes predate backend
+`0.20.0-review`. Regenerate F2b, F2e, and F2f under the current provenance;
+do not alter or reuse the old sealed roots as current admission evidence.
+
+F2f also retains its explicit
 `positive_barrier_dual_embodiment_retained_catch_pending` pilot blocker: the
 four-candidate calibration admits the barrier geometry, but the positive
-Robotiq barrier catch is not yet retained. None of these facts constitutes
-pilot activation or production release. The established P0a-d, F1a-d, F2a,
-F2c, and F3b behavior is unchanged.
+Robotiq barrier catch is not yet physically admissible. A bounded
+hardware-faithful search found a best retained result at 2.633 mm gripper
+penetration, above the 2 mm limit; the best penetration-compliant result was
+1.956 mm but did not retain the ball. No runtime change from that search was
+admitted, and the blocker remains. None of these facts constitutes pilot
+activation or production release. An explicit 84-case established/non-F2b
+audit confirms that all 14 implemented non-F2b leaves, including still-blocked
+F2d, are behaviorally unchanged by the F2b-only camera/background repair.
 
 The diagnostic files ending in
 `rigid_breadth_F2b_F2d_F2e_F2f_fixed_six_honest_final_v2.json` and

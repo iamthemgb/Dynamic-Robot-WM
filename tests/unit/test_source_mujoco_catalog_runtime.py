@@ -18,7 +18,9 @@ from dynamic_robot_dataset.backends.source_mujoco.backend import (
 from dynamic_robot_dataset.backends.source_mujoco.model import (
     _add_secondary_camera,
     _build_external_sample,
+    _compiled_world_geom_aabb,
     _load_external_scene_builder,
+    _positive_aabb_overlap,
     _relocate_external_visual_boundaries,
     _remove_external_visual_work_surfaces,
     _repair_task_camera,
@@ -166,6 +168,89 @@ def kitchen_f1_runtime_manifest():
     ).robocasa_asset_manifest
 
 
+@pytest.fixture(scope="module")
+def f2b_compiled_review_suite():
+    mujoco, _ = _require_runtime_dependencies()
+    backend = SourceMujocoBackend()
+    rows = []
+    for rollout_index in range(6):
+        scenario = compile_review_case(_case("F2b", rollout_index))
+        compiled = compile_source_model(
+            scenario,
+            source_dependency=backend.source_dependency,
+            robocasa_dependency=backend.robocasa_dependency,
+        )
+        mujoco.mj_forward(compiled.model, compiled.data)
+        rows.append((scenario, compiled))
+    return mujoco, tuple(rows)
+
+
+def test_f2b_clean_r0_removes_exact_fixture_intersecting_visuals(
+    f2b_compiled_review_suite,
+) -> None:
+    _, rows = f2b_compiled_review_suite
+    scenario, compiled = rows[0]
+    assert scenario.scene_profile == "clean_R0"
+    assert scenario.requires_real_robocasa is False
+    assert compiled.removed_fixture_intersection_background_names == (
+        "lab_bench_leg_a",
+        "lab_workbench",
+    )
+    remaining = {
+        str(row["source_name"]) for row in compiled.background_geom_descriptors
+    }
+    assert "lab_bench_leg_a" not in remaining
+    assert "lab_workbench" not in remaining
+    assert {"back_wall", "lab_bench_leg_b", "left_wall"} <= remaining
+
+
+def test_all_six_f2b_backgrounds_clear_every_owned_fixture(
+    f2b_compiled_review_suite,
+) -> None:
+    mujoco, rows = f2b_compiled_review_suite
+    assert len(rows) == 6
+    for scenario, compiled in rows:
+        fixture_aabbs = tuple(
+            _compiled_world_geom_aabb(
+                compiled.model,
+                compiled.data,
+                int(
+                    mujoco.mj_name2id(
+                        compiled.model,
+                        mujoco.mjtObj.mjOBJ_GEOM,
+                        surface.name,
+                    )
+                ),
+            )
+            for surface in scenario.surfaces
+        )
+        for background in compiled.background_geom_descriptors:
+            background_aabb = _compiled_world_geom_aabb(
+                compiled.model,
+                compiled.data,
+                int(background["geom_id"]),
+            )
+            assert not any(
+                _positive_aabb_overlap(background_aabb, fixture_aabb)
+                for fixture_aabb in fixture_aabbs
+            ), (
+                scenario.scene_profile,
+                background["stable_id"],
+            )
+
+
+def test_f2b_clean_r0_cleanup_does_not_change_accepted_f2c() -> None:
+    backend = SourceMujocoBackend()
+    scenario = compile_review_case(_case("F2c", 0))
+    compiled = compile_source_model(
+        scenario,
+        source_dependency=backend.source_dependency,
+        robocasa_dependency=backend.robocasa_dependency,
+    )
+    assert scenario.requires_real_robocasa is False
+    assert compiled.removed_fixture_intersection_background_names == ()
+
+
 def test_compiled_r1_uses_only_its_content_bound_catalog_candidate(
     kitchen_runtime,
 ) -> None:
@@ -245,6 +330,65 @@ def test_runtime_candidate_is_review_valid_but_not_release_admitted(
         required_asset_ids=("kitchen-toaster-review-candidate-v1",),
         allow_pending_render_review=True,
     )
+
+
+@pytest.mark.parametrize("rollout_index", range(6))
+def test_f2b_uses_scoped_complete_ramp_launch_cameras(
+    rollout_index: int,
+) -> None:
+    scenario = compile_review_case(_case("F2b", rollout_index))
+    assert scenario.motion_kind == "ramp_launch_pickup_interception"
+    anchor = scenario.physical_target_position_m
+    assert anchor is not None
+    root = _camera_root()
+
+    _repair_task_camera(root, scenario, height_offset=0.0)
+    _add_secondary_camera(root, scenario, height_offset=0.0)
+
+    main = root.find(".//camera[@name='main_camera']")
+    secondary = root.find(".//camera[@name='secondary_camera']")
+    assert main is not None
+    assert secondary is not None
+    _assert_camera_looks_at(
+        main,
+        position=(anchor[0] - 1.15, anchor[1] - 1.18, anchor[2] + 0.65),
+        target=(0.15, 0.0, 0.30),
+        fovy=64.0,
+    )
+    _assert_camera_looks_at(
+        secondary,
+        position=(1.52, -0.65, 1.35),
+        target=(0.50, 0.0, 0.30),
+        fovy=62.0,
+    )
+
+
+def test_f2b_ramp_launch_cameras_are_outcome_branch_invariant() -> None:
+    nominal = compile_review_case(_case("F2b", 1))
+    assert nominal.controller_target_position_m is not None
+    negative = replace(
+        nominal,
+        branch_role="deterministic_negative_controller_timing",
+        intended_outcome="failure",
+        controller_target_position_m=(
+            nominal.controller_target_position_m[0],
+            nominal.controller_target_position_m[1] - 0.10,
+            nominal.controller_target_position_m[2],
+        ),
+    )
+
+    serialized: list[tuple[bytes, bytes]] = []
+    for scenario in (nominal, negative):
+        root = _camera_root()
+        _repair_task_camera(root, scenario, height_offset=0.0)
+        _add_secondary_camera(root, scenario, height_offset=0.0)
+        main = root.find(".//camera[@name='main_camera']")
+        secondary = root.find(".//camera[@name='secondary_camera']")
+        assert main is not None
+        assert secondary is not None
+        serialized.append((ET.tostring(main), ET.tostring(secondary)))
+
+    assert serialized[0] == serialized[1]
 
 
 @pytest.mark.parametrize(

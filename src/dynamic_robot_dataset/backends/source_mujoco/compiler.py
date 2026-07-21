@@ -36,7 +36,7 @@ from ...scenarios.f2f_arbitrary_surface_bounce import SampledSurfaceContract
 
 
 SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v9"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.19.0-review"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.20.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):
