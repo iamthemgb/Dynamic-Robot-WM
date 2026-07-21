@@ -276,6 +276,19 @@ class RigidReviewProfile:
         "F2c/robotiq_2f85_thick_pad/deterministic_negative_initial_state",
         "F2c/franka_hand/deterministic_negative_controller_timing",
         "F2c/robotiq_2f85_thick_pad/deterministic_negative_controller_timing",
+        # F2d's repaired Robotiq controller-negative branch is an honest miss
+        # at both rates, but its subsequent floor impact measures 4.458 mm
+        # penetration at 600 Hz versus 1.845 mm at the 1200 Hz reference.
+        "F2d/robotiq_2f85_thick_pad/deterministic_negative_controller_timing",
+        # Every F2e fixed class: the two-contact trajectory is phase-sensitive
+        # at 600 Hz.  Same-seed planned-event positions differ from the 1200 Hz
+        # reference by 39--59 mm, and both nominal outcomes flip to misses.
+        "F2e/franka_hand/nominal_success",
+        "F2e/robotiq_2f85_thick_pad/nominal_success",
+        "F2e/franka_hand/deterministic_negative_initial_state",
+        "F2e/robotiq_2f85_thick_pad/deterministic_negative_initial_state",
+        "F2e/franka_hand/deterministic_negative_controller_timing",
+        "F2e/robotiq_2f85_thick_pad/deterministic_negative_controller_timing",
     )
     release_state: str = "blocked"
     schema_version: str = SOURCE_MUJOCO_PROFILE_SCHEMA
@@ -425,6 +438,13 @@ class RigidReviewProfile:
             "F2c/robotiq_2f85_thick_pad/deterministic_negative_initial_state",
             "F2c/franka_hand/deterministic_negative_controller_timing",
             "F2c/robotiq_2f85_thick_pad/deterministic_negative_controller_timing",
+            "F2d/robotiq_2f85_thick_pad/deterministic_negative_controller_timing",
+            "F2e/franka_hand/nominal_success",
+            "F2e/robotiq_2f85_thick_pad/nominal_success",
+            "F2e/franka_hand/deterministic_negative_initial_state",
+            "F2e/robotiq_2f85_thick_pad/deterministic_negative_initial_state",
+            "F2e/franka_hand/deterministic_negative_controller_timing",
+            "F2e/robotiq_2f85_thick_pad/deterministic_negative_controller_timing",
         ):
             raise ValueError("reference-rate exception classes changed without calibration")
         if self.bounce_pad_solref != (0.005, 0.5):

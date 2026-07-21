@@ -11,12 +11,93 @@ import numpy as np
 from ._rigid_shared import rigid_module
 
 
-SCENARIO = rigid_module("F2e", "projectile_rebound", "multi_surface_rebound", fixture_policy="ordered grounded floor/table and wall fixtures", controller_kind="catch_after_ordered_rebounds", trajectory="jerk_limited_predictive_reach", retention_required=True, hand_orientation="pick_down", compact_pickup_ready=True, robotiq_tendon_profile="pickup", interior_joint_margin_rad=0.01)
-
-
 def _finite_vector(value: tuple[float, ...], size: int, label: str) -> None:
     if len(value) != size or any(not math.isfinite(float(item)) for item in value):
         raise ValueError(f"{label} must contain {size} finite values")
+
+
+F2E_FLOOR_TO_WALL_REPAIR_SCHEMA = "dynamic-robot-f2e-floor-to-wall-repair/v1"
+
+
+@dataclass(frozen=True, slots=True)
+class FloorToWallRepairProfile:
+    """Measured 1200 Hz repair for only the F2e floor-to-wall variant.
+
+    The physical floor and wall construction remains derived from the original
+    fixed seed.  These constants remove unused wall extent from the robot
+    workspace and bind the controller to the measured post-wall free-flight
+    trajectory.  They are not applied to ``flight_to_table_bounce``.
+    """
+
+    wall_tangent_half_extent_m: float = 0.10
+    catch_event_time_s: float = 0.590
+    measured_target_bias_world_xyz_m: tuple[float, float, float] = (
+        0.07385,
+        -0.036865,
+        0.09596,
+    )
+    robotiq_aim_bias_world_xyz_m: tuple[float, float, float] = (
+        -0.040,
+        0.0,
+        0.022,
+    )
+    negative_controller_aim_delta_world_xyz_m: tuple[float, float, float] = (
+        0.0,
+        -0.10,
+        0.0,
+    )
+    required_simulation_hz: int = 1200
+    rejected_comparison_simulation_hz: int = 600
+    schema_version: str = F2E_FLOOR_TO_WALL_REPAIR_SCHEMA
+
+    def validate(self) -> None:
+        if self.schema_version != F2E_FLOOR_TO_WALL_REPAIR_SCHEMA:
+            raise ValueError("unsupported F2e floor-to-wall repair profile")
+        if not 0.05 <= self.wall_tangent_half_extent_m <= 0.20:
+            raise ValueError("F2e repaired wall extent is outside its measured range")
+        if not 0.5 < self.catch_event_time_s < 0.7:
+            raise ValueError("F2e repaired catch event lies outside the rebound window")
+        for label, value in (
+            ("measured target bias", self.measured_target_bias_world_xyz_m),
+            ("Robotiq aim bias", self.robotiq_aim_bias_world_xyz_m),
+            (
+                "negative controller aim delta",
+                self.negative_controller_aim_delta_world_xyz_m,
+            ),
+        ):
+            _finite_vector(value, 3, label)
+        if self.robotiq_aim_bias_world_xyz_m[2] <= 0.0:
+            raise ValueError("F2e Robotiq aim must retain positive jaw clearance")
+        if self.negative_controller_aim_delta_world_xyz_m != (0.0, -0.10, 0.0):
+            raise ValueError("F2e negative controller branch lost its safe fixed miss")
+        if (
+            self.rejected_comparison_simulation_hz,
+            self.required_simulation_hz,
+        ) != (600, 1200):
+            raise ValueError("F2e floor-to-wall timestep decision is not calibrated")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+
+FLOOR_TO_WALL_REPAIR = FloorToWallRepairProfile()
+FLOOR_TO_WALL_REPAIR.validate()
+
+
+SCENARIO = rigid_module(
+    "F2e",
+    "projectile_rebound",
+    "multi_surface_rebound",
+    fixture_policy="ordered grounded floor/table and wall fixtures",
+    controller_kind="catch_after_ordered_rebounds",
+    trajectory="jerk_limited_predictive_reach",
+    retention_required=True,
+    hand_orientation="pick_down",
+    compact_pickup_ready=True,
+    robotiq_tendon_profile="pickup",
+    interior_joint_margin_rad=0.01,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,4 +134,10 @@ class OrderedContactContract:
         return asdict(self)
 
 
-__all__ = ["SCENARIO", "OrderedContactContract"]
+__all__ = [
+    "F2E_FLOOR_TO_WALL_REPAIR_SCHEMA",
+    "FLOOR_TO_WALL_REPAIR",
+    "FloorToWallRepairProfile",
+    "OrderedContactContract",
+    "SCENARIO",
+]

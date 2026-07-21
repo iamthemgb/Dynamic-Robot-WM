@@ -812,3 +812,283 @@ def test_v15_f2c_final_retention_repair_is_evaluator_bound_and_seed_preserving()
     assert remaining["hash_bound_human_review"] == "pending"
     assert evidence["admission_claimed"] is False
     assert evidence["formal_human_approval_recorded"] is False
+
+
+def test_f2e_floor_to_wall_repair_is_fixed_seed_strict_and_reference_rate_only() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"][
+        "f2e_floor_to_wall_repair_v1"
+    ]
+    thresholds = _mapping(EVIDENCE_PATH)["acceptance_thresholds"]
+
+    assert evidence["repair_schema"] == (
+        "dynamic-robot-f2e-floor-to-wall-repair/v1"
+    )
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["changed_task_variant"] == "floor_to_wall"
+    assert evidence["unchanged_task_variant"] == "flight_to_table_bounce"
+    assert evidence["controller_contract"]["callback_mutation_boundary"] == (
+        "data.ctrl_only"
+    )
+    assert all(
+        evidence["controller_contract"][name] == 0
+        for name in (
+            "object_state_writes_after_initialization",
+            "direct_robot_state_writes_after_initialization",
+            "mocap_writes_after_initialization",
+            "applied_force_writes_after_initialization",
+            "object_linked_equality_changes_after_initialization",
+            "model_physics_mutations_after_initialization",
+        )
+    )
+
+    fixed = evidence["fixed_six_1200hz"]
+    assert fixed["case_ids"] == [f"F2e-review-{index:02d}" for index in range(6)]
+    assert fixed["actual_outcomes"] == [
+        "success",
+        "success",
+        "miss",
+        "miss",
+        "miss",
+        "miss",
+    ]
+    assert set(fixed["strict_physics_qc_pass"]) == {True}
+    assert set(fixed["ordered_contact_sequence_pass"]) == {True}
+    assert set(fixed["intended_outcome_matches"]) == {True}
+    assert set(fixed["saved_artifact_objective_replay_matches"]) == {True}
+    assert fixed["maximum_arm_joint_acceleration_rad_s2"] <= 80.0
+    assert fixed["maximum_passive_finger_acceleration_rad_s2"] <= 200.0
+    assert fixed["maximum_object_gripper_penetration_m"] <= thresholds[
+        "maximum_object_gripper_penetration_m"
+    ]
+    assert fixed["maximum_object_task_surface_penetration_m"] <= thresholds[
+        "maximum_object_task_surface_penetration_m"
+    ]
+
+    halving = evidence["timestep_halving_measurements"]
+    assert max(halving["measured_event_time_shift_s_by_case"].values()) <= halving[
+        "maximum_allowed_event_time_shift_s"
+    ]
+    assert min(halving["planned_event_position_shift_m_by_case"].values()) > halving[
+        "maximum_allowed_key_event_position_shift_m"
+    ]
+    assert halving["nominal_600hz_actual_outcomes"] == ["miss", "miss"]
+    assert halving["nominal_1200hz_actual_outcomes"] == ["success", "success"]
+
+    from dynamic_robot_dataset.backends.source_mujoco import (
+        RIGID_REVIEW_PROFILE as PROFILE,
+    )
+
+    added = set(halving["added_reference_rate_classes"])
+    assert len(added) == 6
+    assert added <= set(PROFILE.reference_rate_required_case_classes)
+    assert evidence["execution_state"] == "review"
+    assert evidence["admission_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False
+
+
+def test_f2b_partial_repair_rejects_invisible_support_and_stays_blocked() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"][
+        "f2b_ramp_launch_partial_repair_v1"
+    ]
+    thresholds = _mapping(EVIDENCE_PATH)["acceptance_thresholds"]
+
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["execution_state"] == "blocked"
+    assert evidence["controller_contract"]["callback_mutation_boundary"] == (
+        "data.ctrl_only"
+    )
+    assert evidence["landed_parameters"]["robotiq_base_contact_margin_m"] == 0.0
+    assert evidence["landed_parameters"]["global_contact_or_qc_threshold_changed"] is False
+    for rate in ("600_hz", "1200_hz"):
+        current = evidence["current_nominal_measurements"][rate]
+        assert current["actual_outcome"] == "contact_failure"
+        assert current["final_retention"] is False
+        assert current["maximum_object_gripper_penetration_m"] <= thresholds[
+            "maximum_object_gripper_penetration_m"
+        ]
+        assert current["maximum_passive_finger_acceleration_rad_s2"] > 200.0
+
+    invisible = evidence["rejected_predictive_base_margin"]
+    assert invisible["minimum_final_positive_contact_gap_m"] > 0.0
+    assert invisible["maximum_force_at_positive_gap_n"] > 0.0
+    assert invisible["runtime_changes_landed"] is False
+    visible = evidence["rejected_visible_pad_candidate"]
+    assert visible["collision_pad_half_depth_m"] < visible[
+        "visible_pad_half_depth_m"
+    ]
+    assert visible["contact_margin_m"] == 0.0
+    assert visible["genuine_final_bilateral_retention"] is True
+    assert visible["maximum_object_gripper_penetration_m"] <= thresholds[
+        "maximum_object_gripper_penetration_m"
+    ]
+    assert min(visible["passive_finger_acceleration_rad_s2"].values()) > 200.0
+    assert visible["runtime_changes_landed"] is False
+    assert evidence["admission_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False
+
+
+def test_f2d_partial_repair_records_five_passes_and_keeps_nominal_blocked() -> None:
+    root = _mapping(EVIDENCE_PATH)
+    evidence = root["measurements"]["f2d_wall_rebound_partial_repair_v1"]
+    thresholds = root["acceptance_thresholds"]
+    blocker = (
+        "robotiq_nominal_reference_rate_no_hardware_faithful_overlap_"
+        "penetration_retention_acceleration"
+    )
+
+    assert evidence["repair_schema"].endswith("/v1")
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["execution_state"] == "blocked"
+    assert evidence["blocker_id"] == blocker
+    assert evidence["landed_scope"] == {
+        "controller_negative_branch_only": True,
+        "collision_geometry_changed": False,
+        "contact_material_changed": False,
+        "tendon_force_or_motion_changed": False,
+        "passive_joint_damping_changed": False,
+        "global_qc_threshold_changed": False,
+        "fixed_seed_or_label_changed": False,
+    }
+    fixed = evidence["fixed_six_diagnostic"]
+    assert fixed["case_ids"] == [f"F2d-review-{index:02d}" for index in range(6)]
+    assert fixed["scheduled_simulation_hz"] == [600, 600, 600, 600, 600, 1200]
+    assert fixed["strict_physics_qc_pass"] == [True, False, True, True, True, True]
+    assert fixed["passing_case_ids"] == [
+        "F2d-review-00",
+        "F2d-review-02",
+        "F2d-review-03",
+        "F2d-review-04",
+        "F2d-review-05",
+    ]
+    assert fixed["failing_case_ids"] == ["F2d-review-01"]
+    assert set(fixed["canonical_replay_completed_and_matches_online"]) == {True}
+    assert fixed["maximum_passing_object_gripper_penetration_m"] <= thresholds[
+        "maximum_object_gripper_penetration_m"
+    ]
+    assert fixed["maximum_passing_object_task_surface_penetration_m"] <= thresholds[
+        "maximum_object_task_surface_penetration_m"
+    ]
+
+    unresolved = evidence["unresolved_nominal_case"]
+    assert unresolved["case_id"] == "F2d-review-01"
+    assert unresolved["600_hz"]["maximum_object_gripper_penetration_m"] > thresholds[
+        "maximum_object_gripper_penetration_m"
+    ]
+    assert unresolved["600_hz"]["maximum_passive_finger_acceleration_rad_s2"] > 200.0
+    assert unresolved["1200_hz"]["maximum_object_gripper_penetration_m"] > thresholds[
+        "maximum_object_gripper_penetration_m"
+    ]
+    assert unresolved["1200_hz"]["maximum_passive_finger_acceleration_rad_s2"] > 200.0
+
+    timestep = evidence["controller_negative_timestep_evidence"]
+    assert timestep["600_hz"]["strict_physics_qc_pass"] is False
+    assert timestep["600_hz"]["maximum_object_task_surface_penetration_m"] > thresholds[
+        "maximum_object_task_surface_penetration_m"
+    ]
+    assert timestep["1200_hz"]["strict_physics_qc_pass"] is True
+    assert timestep["1200_hz"]["maximum_object_task_surface_penetration_m"] <= thresholds[
+        "maximum_object_task_surface_penetration_m"
+    ]
+
+    from dynamic_robot_dataset.backends.source_mujoco import (
+        RIGID_REVIEW_PROFILE as PROFILE,
+    )
+
+    assert timestep["reference_rate_required_class"] in set(
+        PROFILE.reference_rate_required_case_classes
+    )
+    assert evidence["rejected_hardware_search"]["runtime_changes_landed"] is False
+    assert evidence["admission_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False
+
+
+def test_honest_rigid_breadth_v2_preserves_independent_leaf_verdicts() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"][
+        "rigid_breadth_honest_fixed_and_halving_v2"
+    ]
+
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["seed_replacements"] == 0
+    assert evidence["qc_thresholds_relaxed"] is False
+    assert evidence["direct_state_or_constraint_assistance"] is False
+    assert evidence["predictive_contact_margins_admitted"] is False
+
+    fixed = evidence["honest_fixed_six"]
+    assert fixed["automated_qc_pass_count_by_leaf"] == {
+        "F2b": 5,
+        "F2d": 5,
+        "F2e": 6,
+        "F2f": 6,
+    }
+    assert set(fixed["canonical_replay_match_count_by_leaf"].values()) == {6}
+    assert fixed["failed_case_ids"] == ["F2b-review-01", "F2d-review-01"]
+    assert fixed["mutation_boundary_violations"] == 0
+
+    halving = evidence["honest_timestep_halving"]["decisions"]
+    assert halving["F2b"]["selected_simulation_hz"] is None
+    assert halving["F2d"]["selected_simulation_hz"] is None
+    assert halving["F2e"]["selected_simulation_hz"] == 1200
+    assert halving["F2f"]["selected_simulation_hz"] == 1200
+
+    surfaces = evidence["f2f_surface_admission"]
+    assert surfaces["probe_count"] == 100
+    assert surfaces["geometry_admitted_candidates"] == [
+        "plane_mid_285",
+        "plane_table_400",
+        "barrier_yaw_neg_15",
+        "barrier_yaw_neg_25",
+    ]
+    assert surfaces["positive_controller_admitted_candidates"] == [
+        "plane_mid_285",
+        "plane_table_400",
+    ]
+    assert surfaces["positive_controller_blocked_candidates"] == [
+        "barrier_yaw_neg_15",
+        "barrier_yaw_neg_25",
+    ]
+    assert evidence["leaf_decisions"]["F2b"]["execution_state"] == "blocked"
+    assert evidence["leaf_decisions"]["F2d"]["execution_state"] == "blocked"
+    assert evidence["leaf_decisions"]["F2e"]["execution_state"] == "review"
+    assert evidence["leaf_decisions"]["F2f"]["remaining_blockers"] == [
+        "positive_barrier_dual_embodiment_retained_catch_pending",
+        "human_review_pending",
+    ]
+    assert evidence["admission_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False
+
+
+def test_rejected_rigid_breadth_reports_cannot_activate_leaves() -> None:
+    evidence = _mapping(EVIDENCE_PATH)["measurements"][
+        "rigid_breadth_rejected_margin_diagnostics_v1"
+    ]
+
+    assert evidence["fixed_seeds_preserved"] is True
+    assert evidence["seed_replacements"] == 0
+    assert evidence["qc_thresholds_relaxed"] is False
+    assert evidence["direct_state_or_constraint_assistance"] is False
+    assert evidence["predictive_contact_margins_admitted"] is False
+    assert evidence["evidence_status"] == "rejected_not_activation_eligible"
+
+    fixed = evidence["predictive_base_margin_fixed_six"]
+    assert fixed["automated_qc_pass_count_by_leaf"] == {
+        "F2b": 6,
+        "F2d": 5,
+        "F2e": 6,
+        "F2f": 6,
+    }
+    assert set(fixed["canonical_replay_match_count_by_leaf"].values()) == {6}
+    assert fixed["sole_failed_case_id"] == "F2d-review-01"
+    assert fixed["mutation_boundary_violations"] == 0
+
+    halving = evidence["predictive_base_margin_timestep_halving"]["decisions"]
+    assert halving["F2b"]["selected_simulation_hz"] == 600
+    assert halving["F2d"]["selected_simulation_hz"] is None
+    assert halving["F2e"]["selected_simulation_hz"] == 1200
+    assert halving["F2f"]["selected_simulation_hz"] == 1200
+
+    rejected = evidence["rejected_predictive_pad_margin_diagnostics"]
+    assert rejected["activation_eligible"] is False
+    assert "separated" in rejected["reason"]
+    assert evidence["activation_eligible"] is False
+    assert evidence["admission_claimed"] is False
+    assert evidence["formal_human_approval_recorded"] is False

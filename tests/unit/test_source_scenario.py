@@ -9,6 +9,7 @@ from dynamic_robot_dataset.common.corpus_registry import (
     load_backend_capability_registry,
 )
 from dynamic_robot_dataset.common.grasp_retention import DEFAULT_GRASP_RETENTION
+from dynamic_robot_dataset.common.rebound import DEFAULT_REBOUND_ACCEPTANCE
 from dynamic_robot_dataset.common.source_scenario import (
     ActuatorPhaseSpec,
     CounterfactualIdentity,
@@ -128,6 +129,66 @@ def _valid_spec() -> SourceScenarioSpec:
     )
 
 
+def _admitted_f2f_spec(monkeypatch: pytest.MonkeyPatch) -> SourceScenarioSpec:
+    import dynamic_robot_dataset.scenarios.f2f_arbitrary_surface_bounce as f2f
+
+    admission = f2f.SurfaceAdmission(
+        grounded_supported=True,
+        reachability_checked=True,
+        swept_volume_clearance_checked=True,
+        background_clearance_checked=True,
+        calibrated_600_1200=True,
+    )
+    evidence = {
+        name: HASH_A
+        for name in (
+            "grounded_supported",
+            "reachability_checked",
+            "swept_volume_clearance_checked",
+            "background_clearance_checked",
+            "calibrated_600_1200",
+        )
+    }
+    monkeypatch.setattr(
+        f2f,
+        "_ARBITRARY_SURFACE_CANDIDATES",
+        tuple(
+            replace(
+                candidate,
+                admission=admission,
+                admission_evidence_sha256=evidence,
+            )
+            for candidate in f2f.admitted_surface_catalog()
+        ),
+    )
+    source_seed = 17
+    candidate = f2f.sample_surface_candidate(
+        "random_plane_bounce", source_seed=source_seed
+    )
+    sampled_contract = f2f.sampled_surface_contract(
+        candidate, source_seed=source_seed
+    )
+    base = _valid_spec()
+    return replace(
+        base,
+        scenario_id="F2f-review-source-hash-binding",
+        corpus_leaf_id="F2f",
+        task_variant="random_plane_bounce",
+        physics={
+            **base.physics,
+            "evaluator": "rigid_arbitrary_rebound_v1",
+            "object_radius_m": 0.0245,
+            "key_event_time_s": 0.8,
+            "rebound_acceptance": DEFAULT_REBOUND_ACCEPTANCE.to_dict(),
+            "sampled_surface_contract": sampled_contract.to_dict(),
+        },
+        source_hashes={
+            **base.source_hashes,
+            "rigid_breadth_surface_catalog": f2f.catalog_sha256(),
+        },
+    )
+
+
 def test_source_scenario_round_trips_with_stable_hash() -> None:
     spec = _valid_spec()
     spec.validate()
@@ -155,6 +216,25 @@ def test_current_source_mujoco_scenario_binds_evaluator_and_retention_exactly() 
     wrong_retention = dict(spec.physics, grasp_retention=changed_retention)
     with pytest.raises(SourceScenarioValidationError, match="differs from evaluator"):
         replace(spec, physics=wrong_retention).validate()
+
+
+def test_f2f_source_scenario_accepts_hash_bound_admitted_surface_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _admitted_f2f_spec(monkeypatch).validate()
+
+
+def test_f2f_source_scenario_rejects_tampered_surface_catalog_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = _admitted_f2f_spec(monkeypatch)
+    tampered_hashes = {
+        **spec.source_hashes,
+        "rigid_breadth_surface_catalog": HASH_B,
+    }
+
+    with pytest.raises(SourceScenarioValidationError, match="not source-hash bound"):
+        replace(spec, source_hashes=tampered_hashes).validate()
 
 
 def test_legacy_v1_source_scenario_remains_parseable_without_v2_bindings() -> None:

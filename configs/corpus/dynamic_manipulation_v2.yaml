@@ -154,7 +154,7 @@ leaves:
     evaluator: rigid_ramp_launch_v1
     required_metadata: [launch_state, surfaces, contact_sequence, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [fixed_review_robotiq_early_robot_arm_collision_3_0958mm, six_review_rollouts_not_all_qc_passed, 600_1200_calibration_pending, human_review_pending]
+    blockers: [robotiq_nominal_no_margin_controller_or_visible_pad_geometry_satisfies_dual_rate_retention_penetration_and_passive_acceleration]
   - id: F2c
     slug: table_floor_bounce
     title: Table/floor bounce interception
@@ -182,7 +182,7 @@ leaves:
     evaluator: rigid_rebound_v2
     required_metadata: [launch_state, surfaces, rebound_measurement, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [robotiq_rebound_retention_geometry_not_validated, fixed_review_penetration_failures_unresolved, six_review_rollouts_pending]
+    blockers: [robotiq_nominal_reference_rate_no_hardware_faithful_overlap_penetration_retention_acceleration]
   - id: F2e
     slug: multi_surface_rebound
     title: Multi-surface rebound
@@ -196,7 +196,7 @@ leaves:
     evaluator: rigid_multi_rebound_v1
     required_metadata: [launch_state, surfaces, contact_sequence, rebound_measurement, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [nominal_catch_retention_failed, fixed_review_joint_acceleration_failures, fixed_review_penetration_failures, 600_1200_calibration_pending, human_review_pending]
+    blockers: [human_review_pending]
   - id: F2f
     slug: arbitrary_surface_bounce
     title: Arbitrary surface bounce
@@ -210,7 +210,7 @@ leaves:
     evaluator: rigid_arbitrary_rebound_v1
     required_metadata: [launch_state, surfaces, contact_normals, rebound_measurement, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [arbitrary_surface_catalog_not_admitted, 600_1200_calibration_pending, robotiq_nominal_retention_failed, human_review_pending]
+    blockers: [positive_barrier_dual_embodiment_retained_catch_pending, human_review_pending]
 
   - id: F3a
     slug: oscillating_platform_handoff

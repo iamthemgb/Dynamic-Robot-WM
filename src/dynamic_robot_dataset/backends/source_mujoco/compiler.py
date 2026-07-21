@@ -1104,11 +1104,26 @@ def compile_review_case(
             and embodiment == ROBOTIQ_2F85_THICK_PAD
             and branch_role == "nominal_success"
         )
+        # The repaired F2d Robotiq controller-negative target is reachable at
+        # both rates, but the failed ball reaches the room floor after the
+        # miss.  The 600 Hz floor sample penetrates 4.458 mm while the same
+        # fixed seed at 1200 Hz measures 1.845 mm, so keep this one class on
+        # the calibrated reference rate rather than relaxing surface QC.
+        or (
+            leaf_id == "F2d"
+            and embodiment == ROBOTIQ_2F85_THICK_PAD
+            and branch_role == "deterministic_negative_controller_timing"
+        )
         # Every F2c fixed class: the 600 Hz candidate under-resolves the
         # stiff calibrated bounce-pad contact (measured pad restitution
         # 0.216 vs 0.301 at the reference rate), which measurably converts
         # the designed apex interception into a miss.
-        or leaf_id in {"F2b", "F2c", "F2e", "F2f"}
+        # F2b's leaf-scoped Robotiq contact/force calibration passes the full
+        # same-seed fixed-six comparison at both rates (outcome, replay,
+        # one-frame event time, and 1 cm position), so it uses the cheaper
+        # admitted 600 Hz profile.  F2c/F2e/F2f retain measured 1200 Hz
+        # exceptions.
+        or leaf_id in {"F2c", "F2e", "F2f"}
     )
     result = SourceMujocoCompiledScenario(
         case_id=str(value.get("case_id") or ""),

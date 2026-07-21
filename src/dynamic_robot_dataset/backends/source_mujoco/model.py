@@ -17,6 +17,7 @@ import numpy as np
 
 from ...common.assets import RoboCasaCatalogAsset, load_robocasa_catalog_policy
 from ...common.embodiments import FRANKA_HAND, ROBOTIQ_2F85_THICK_PAD
+from ...scenarios.registry import load_scenario_definition
 from .compiler import PhysicalSurface, SourceMujocoCompiledScenario
 from .profiles import RIGID_REVIEW_PROFILE
 from .provenance import (
@@ -354,6 +355,23 @@ def _remove_external_visual_work_surfaces(
                 )
             world.remove(marker)
             names = tuple(sorted((*names, "storage_floor_marker")))
+        if (
+            scenario.corpus_leaf_id == "F2f"
+            and scenario.scene_profile == "robocasa_kitchen"
+        ):
+            # The yawed-barrier negative branch legitimately rolls to the
+            # back of the room after its miss.  The procedural cabinet bulk
+            # occupied that floor sweep even though its collision was off.
+            # Remove only the intersecting visual bulk; the cabinet fronts,
+            # toe kick, counter, backsplash, and licensed RoboCasa asset stay
+            # in place, preserving an unmistakable kitchen background.
+            cabinet_bulk = world.find("./geom[@name='back_counter_base']")
+            if cabinet_bulk is None:
+                raise RuntimeError(
+                    "R1 F2f kitchen lacks its classified back-counter bulk"
+                )
+            world.remove(cabinet_bulk)
+            names = tuple(sorted((*names, "back_counter_base")))
         remaining = tuple(
             str(element.get("name") or "")
             for element in root.iter()
@@ -1145,6 +1163,9 @@ def _patch_calibrated_model(
                 # object.
                 geom.set("margin", "0.004")
     if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD:
+        controller_plan = load_scenario_definition(
+            scenario.corpus_leaf_id
+        ).module.controller_plan
         for name in (
             "rq_left_pad_thick_collision_pad",
             "rq_right_pad_thick_collision_pad",
@@ -1175,7 +1196,15 @@ def _patch_calibrated_model(
         actuator = root.find(".//actuator/general[@name='rq_fingers_actuator']")
         if actuator is None:
             raise RuntimeError("Robotiq tendon actuator is unavailable")
-        actuator.set("forcerange", "-0.16 0.16")
+        actuator_force_limit = (
+            controller_plan.robotiq_actuator_force_limit_n
+            if controller_plan.robotiq_actuator_force_limit_n is not None
+            else 0.16
+        )
+        actuator.set(
+            "forcerange",
+            f"{-actuator_force_limit:.9g} {actuator_force_limit:.9g}",
+        )
         actuator.set("forcelimited", "true")
         actuator.set("ctrlrange", "0 255")
         actuator.set("ctrllimited", "true")
@@ -1630,7 +1659,7 @@ def _remove_procedural_fixture_intersections(
         not scenario.surfaces
         or (
             not scenario.requires_real_robocasa
-            and scenario.corpus_leaf_id != "F3b"
+            and scenario.corpus_leaf_id not in {"F2f", "F3b"}
         )
     ):
         return ()

@@ -551,7 +551,11 @@ class SourceScenarioSpec:
                 validate_source_evaluator_contract(
                     evaluator_id=leaf.evaluator,
                     task_variant=self.task_variant,
-                    source_spec={"duration_s": self.duration_s, "physics": self.physics},
+                    source_spec={
+                        "duration_s": self.duration_s,
+                        "physics": self.physics,
+                        "source_hashes": self.source_hashes,
+                    },
                 )
             except ValueError as error:
                 raise SourceScenarioValidationError(str(error)) from error

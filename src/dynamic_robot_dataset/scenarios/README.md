@@ -17,11 +17,11 @@ their backend/common packages.
 | F1c | drifted_drop | `f1c_drifted_drop.py` | implemented |
 | F1d | mild_projectile | `f1d_mild_projectile.py` | implemented |
 | F2a | direct_interception | `f2a_direct_interception.py` | implemented |
-| F2b | ramp_launch | `f2b_ramp_launch.py` | implemented, acceptance blocked |
+| F2b | ramp_launch | `f2b_ramp_launch.py` | 5/6 automated fixed cases; Robotiq nominal physics blocked |
 | F2c | table_floor_bounce | `f2c_table_floor_bounce.py` | implemented |
-| F2d | wall_barrier_rebound | `f2d_wall_barrier_rebound.py` | implemented, acceptance blocked |
-| F2e | multi_surface_rebound | `f2e_multi_surface_rebound.py` | implemented, acceptance blocked |
-| F2f | arbitrary_surface_bounce | `f2f_arbitrary_surface_bounce.py` | implemented, admission blocked |
+| F2d | wall_barrier_rebound | `f2d_wall_barrier_rebound.py` | 5/6 automated fixed cases; Robotiq nominal physics blocked |
+| F2e | multi_surface_rebound | `f2e_multi_surface_rebound.py` | automated fixed-six pass; human review pending |
+| F2f | arbitrary_surface_bounce | `f2f_arbitrary_surface_bounce.py` | automated fixed-six geometry review passes; positive Robotiq barrier catch blocked |
 | F3a | oscillating_platform_handoff | `f3a_oscillating_platform_handoff.py` | contract only |
 | F3b | rolling_pickup | `f3b_rolling_pickup.py` | implemented |
 | F3c | water_current_pickup | `f3c_water_current_pickup.py` | contract only |

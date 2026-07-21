@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+import json
 import math
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
@@ -12,12 +14,23 @@ from ..common.hashing import sha256_json
 from ._rigid_shared import rigid_module
 
 
-SCENARIO = rigid_module("F2f", "projectile_rebound", "arbitrary_surface_bounce", fixture_policy="physics-RNG sampled admitted surface", controller_kind="catch_after_sampled_rebound", trajectory="jerk_limited_predictive_reach", retention_required=True, hand_orientation="auto", settled_aim_correction=True, robotiq_tendon_profile="pickup", interior_joint_margin_rad=0.01)
+SCENARIO = rigid_module("F2f", "projectile_rebound", "arbitrary_surface_bounce", fixture_policy="physics-RNG sampled admitted surface", controller_kind="catch_after_sampled_rebound", trajectory="jerk_limited_predictive_reach", retention_required=True, hand_orientation="auto", settled_aim_correction=True, robotiq_tendon_profile="f2c", interior_joint_margin_rad=0.01)
 
 
 RIGID_BREADTH_PROFILE_SCHEMA = "dynamic-robot-rigid-breadth-profile/v1"
 RIGID_BREADTH_PROFILE_VERSION = "rigid-breadth-review-2026-07-v1"
 ARBITRARY_SURFACE_CATALOG_VERSION = "rigid-arbitrary-surfaces/v1"
+F2F_ROBOTIQ_PLANE_INTERCEPT_BIAS_X_M = 0.018
+F2F_FRANKA_BARRIER_INTERCEPT_BIAS_M = (0.012, -0.008, 0.008)
+F2F_FRANKA_BARRIER_CANDIDATE_BIAS_M = {
+    "barrier_yaw_neg_25": (0.006, 0.0, -0.006),
+}
+F2F_BARRIER_HIT_Z_M = 1.20
+F2F_BARRIER_CATCH_Z_M = 0.75
+F2F_SURFACE_ADMISSION_EVIDENCE_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "configs/physics/f2f_surface_admission_v1.json"
+)
 
 
 def _finite_vector(value: tuple[float, ...], size: int, label: str) -> None:
@@ -247,10 +260,65 @@ _ARBITRARY_SURFACE_CANDIDATES = (
 )
 
 
-def admitted_surface_catalog() -> tuple[ArbitrarySurfaceCandidate, ...]:
+def raw_surface_candidate_catalog() -> tuple[ArbitrarySurfaceCandidate, ...]:
+    """Return the stable raw catalog order without any admission overlay."""
+
     for candidate in _ARBITRARY_SURFACE_CANDIDATES:
         candidate.validate()
     return _ARBITRARY_SURFACE_CANDIDATES
+
+
+def _verified_admission_bindings() -> dict[str, Mapping[str, str]]:
+    """Resolve measured evidence, returning no admission on any mismatch."""
+
+    if not F2F_SURFACE_ADMISSION_EVIDENCE_PATH.is_file():
+        return {}
+    try:
+        from ..common.f2f_surface_admission import (
+            verify_f2f_surface_admission_evidence,
+        )
+
+        raw = json.loads(
+            F2F_SURFACE_ADMISSION_EVIDENCE_PATH.read_text(encoding="utf-8")
+        )
+        summary = verify_f2f_surface_admission_evidence(raw)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        # Stale, incomplete, or tampered evidence must make every candidate
+        # unadmitted while still allowing the calibration tool to regenerate
+        # a fresh report from the stable raw catalog.
+        return {}
+    ready = set(summary["admission_ready_candidates"])
+    section_hashes = summary["verified_section_sha256"]
+    return {
+        candidate_id: dict(section_hashes[candidate_id])
+        for candidate_id in ready
+    }
+
+
+def admitted_surface_catalog() -> tuple[ArbitrarySurfaceCandidate, ...]:
+    """Overlay only hash-verified geometry admissions without reordering."""
+
+    bindings = _verified_admission_bindings()
+    admission = SurfaceAdmission(
+        grounded_supported=True,
+        reachability_checked=True,
+        swept_volume_clearance_checked=True,
+        background_clearance_checked=True,
+        calibrated_600_1200=True,
+    )
+    result = tuple(
+        replace(
+            candidate,
+            admission=admission,
+            admission_evidence_sha256=bindings[candidate.candidate_id],
+        )
+        if candidate.candidate_id in bindings
+        else candidate
+        for candidate in raw_surface_candidate_catalog()
+    )
+    for candidate in result:
+        candidate.validate()
+    return result
 
 
 def sample_surface_candidate(task_variant: str, *, source_seed: int) -> ArbitrarySurfaceCandidate:
@@ -317,6 +385,8 @@ def catalog_sha256() -> str:
 
 __all__ = [
     "ARBITRARY_SURFACE_CATALOG_VERSION",
+    "F2F_ROBOTIQ_PLANE_INTERCEPT_BIAS_X_M",
+    "F2F_SURFACE_ADMISSION_EVIDENCE_PATH",
     "ArbitrarySurfaceCandidate",
     "RIGID_BREADTH_PROFILE_SCHEMA",
     "RIGID_BREADTH_PROFILE_VERSION",
@@ -325,6 +395,7 @@ __all__ = [
     "SCENARIO",
     "admitted_surface_catalog",
     "catalog_sha256",
+    "raw_surface_candidate_catalog",
     "sample_admitted_surface",
     "sample_surface_candidate",
     "sampled_surface_contract",

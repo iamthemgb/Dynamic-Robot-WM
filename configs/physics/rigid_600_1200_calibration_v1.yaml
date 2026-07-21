@@ -915,6 +915,363 @@ measurements:
     admission_claimed: false
     formal_human_approval_recorded: false
 
+  f2e_floor_to_wall_repair_v1:
+    description: >-
+      remove unused wall extent from the F2e floor-to-wall robot workspace
+      and bind the same fixed seeds to the measured 1200 Hz post-wall catch
+      trajectory without state assistance or relaxed thresholds
+    repair_schema: dynamic-robot-f2e-floor-to-wall-repair/v1
+    evidence_status: exploratory_unbound
+    fixed_seeds_preserved: true
+    changed_task_variant: floor_to_wall
+    unchanged_task_variant: flight_to_table_bounce
+    controller_contract:
+      callback_mutation_boundary: data.ctrl_only
+      object_state_writes_after_initialization: 0
+      direct_robot_state_writes_after_initialization: 0
+      mocap_writes_after_initialization: 0
+      applied_force_writes_after_initialization: 0
+      object_linked_equality_changes_after_initialization: 0
+      model_physics_mutations_after_initialization: 0
+      tendon_target_unchanged: 140.0
+    measured_repair_constants:
+      wall_tangent_half_extent_before_m: 0.32
+      wall_tangent_half_extent_after_m: 0.10
+      catch_event_time_s: 0.590
+      measured_target_bias_world_xyz_m: [0.07385, -0.036865, 0.09596]
+      robotiq_aim_bias_world_xyz_m: [-0.040, 0.0, 0.022]
+      negative_controller_aim_delta_world_xyz_m: [0.0, -0.10, 0.0]
+    source_failures:
+      F2e-review-00:
+        initial_wall_hand_penetration_m: 0.004071711573311477
+        maximum_arm_joint_acceleration_rad_s2: 749.3927210558194
+      F2e-review-01:
+        maximum_object_gripper_penetration_m: 0.0058400539372135685
+        retained_through_final_state: false
+      F2e-review-04:
+        initial_robot_wall_contact_count: 17
+        maximum_initial_robot_wall_penetration_m: 0.07277840207392543
+        maximum_arm_joint_acceleration_rad_s2: 17920.41664591689
+      F2e-review-05:
+        initial_robot_wall_contact_count: 9
+        maximum_initial_robot_wall_penetration_m: 0.03916577250882024
+        maximum_arm_joint_acceleration_rad_s2: 7351.255693345274
+    fixed_six_1200hz:
+      case_ids:
+        - F2e-review-00
+        - F2e-review-01
+        - F2e-review-02
+        - F2e-review-03
+        - F2e-review-04
+        - F2e-review-05
+      actual_outcomes: [success, success, miss, miss, miss, miss]
+      strict_physics_qc_pass: [true, true, true, true, true, true]
+      ordered_contact_sequence_pass: [true, true, true, true, true, true]
+      intended_outcome_matches: [true, true, true, true, true, true]
+      saved_artifact_objective_replay_matches: [true, true, true, true, true, true]
+      maximum_arm_joint_acceleration_rad_s2: 24.829371804429144
+      maximum_passive_finger_acceleration_rad_s2: 46.86445070022553
+      maximum_object_gripper_penetration_m: 0.0017545887634987725
+      maximum_object_task_surface_penetration_m: 0.0014640126749073876
+      mutation_boundary_violations: 0
+      scene_construction_errors: 0
+    timestep_halving_measurements:
+      rates_hz: [600, 1200]
+      planned_event_position_shift_m_by_case:
+        F2e-review-00: 0.05630493806029346
+        F2e-review-01: 0.05860319266778601
+        F2e-review-02: 0.03905000557174195
+        F2e-review-03: 0.03948411251148823
+        F2e-review-04: 0.05860594811131239
+        F2e-review-05: 0.05860319266778601
+      measured_event_time_shift_s_by_case:
+        F2e-review-00: 0.01999999999976354
+        F2e-review-01: 0.024999999999761657
+        F2e-review-02: 0.0
+        F2e-review-03: 0.0
+        F2e-review-04: 0.0
+        F2e-review-05: 0.0
+      maximum_allowed_event_time_shift_s: 0.03333333333333333
+      maximum_allowed_key_event_position_shift_m: 0.01
+      nominal_600hz_actual_outcomes: [miss, miss]
+      nominal_1200hz_actual_outcomes: [success, success]
+      added_reference_rate_classes:
+        - F2e/franka_hand/nominal_success
+        - F2e/robotiq_2f85_thick_pad/nominal_success
+        - F2e/franka_hand/deterministic_negative_initial_state
+        - F2e/robotiq_2f85_thick_pad/deterministic_negative_initial_state
+        - F2e/franka_hand/deterministic_negative_controller_timing
+        - F2e/robotiq_2f85_thick_pad/deterministic_negative_controller_timing
+      decision: reject_600_hz_candidate_keep_1200_hz_reference_for_all_f2e_fixed_classes
+    execution_state: review
+    remaining_gates:
+      rendered_fixed_six: pending
+      hash_bound_human_review: pending
+    admission_claimed: false
+    formal_human_approval_recorded: false
+
+  f2b_ramp_launch_partial_repair_v1:
+    description: >-
+      bounded-tendon and no-margin controller/visible-pad search on the
+      unchanged ramp-launch seeds; preserve the honest Robotiq nominal stop
+      because no candidate satisfies every physical gate at both rates
+    fixed_seeds_preserved: true
+    execution_state: blocked
+    blocker_id: robotiq_nominal_no_margin_controller_or_visible_pad_geometry_satisfies_dual_rate_retention_penetration_and_passive_acceleration
+    controller_contract:
+      callback_mutation_boundary: data.ctrl_only
+      object_state_writes_after_initialization: 0
+      direct_robot_state_writes_after_initialization: 0
+      applied_force_writes_after_initialization: 0
+      object_linked_equality_changes_after_initialization: 0
+    landed_parameters:
+      robotiq_base_contact_margin_m: 0.0
+      robotiq_tendon_force_limit_n: 0.10
+      robotiq_tendon_target: 125.0
+      collision_pad_half_depth_m: 0.010
+      global_contact_or_qc_threshold_changed: false
+    current_nominal_measurements:
+      embodiment: robotiq_2f85_thick_pad
+      600_hz:
+        actual_outcome: contact_failure
+        final_retention: false
+        maximum_object_gripper_penetration_m: 0.001133863436972929
+        maximum_passive_finger_acceleration_rad_s2: 603.4510491369487
+      1200_hz:
+        actual_outcome: contact_failure
+        final_retention: false
+        maximum_object_gripper_penetration_m: 0.0011343013623586959
+        maximum_passive_finger_acceleration_rad_s2: 789.7091555687027
+    rejected_predictive_base_margin:
+      margin_m: 0.0025
+      maximum_positive_contact_gap_m: 0.0025
+      minimum_final_positive_contact_gap_m: 0.00056
+      maximum_force_at_positive_gap_n: 1.033
+      total_positive_gap_impulse_n_s: 1.540
+      rejection: persistent_invisible_base_support_materially_stabilized_retention
+      runtime_changes_landed: false
+    rejected_visible_pad_candidate:
+      collision_pad_half_depth_m: 0.0125
+      visible_pad_half_depth_m: 0.022
+      contact_margin_m: 0.0
+      genuine_final_bilateral_retention: true
+      rq_base_contact_count: 0
+      maximum_object_gripper_penetration_m: 0.001134
+      passive_finger_acceleration_rad_s2: {600: 904.28, 1200: 901.60}
+      rejection: passive_finger_acceleration_exceeds_200rad_s2_at_both_rates
+      runtime_changes_landed: false
+    admission_claimed: false
+    formal_human_approval_recorded: false
+
+  f2d_wall_rebound_partial_repair_v1:
+    description: >-
+      preserve the unchanged six F2d seeds while replacing only the unsafe
+      controller-negative target offset; retain the leaf-level admission stop
+      because the Robotiq nominal case has no measured hardware-faithful
+      overlap among penetration, retention, and passive-acceleration limits
+    repair_schema: dynamic-robot-f2d-wall-rebound-partial-repair/v1
+    evidence_status: exploratory_unbound
+    fixed_seeds_preserved: true
+    execution_state: blocked
+    blocker_id: robotiq_nominal_reference_rate_no_hardware_faithful_overlap_penetration_retention_acceleration
+    controller_contract:
+      callback_mutation_boundary: data.ctrl_only
+      negative_controller_offset_before_world_xyz_m: [0.10, 0.0, 0.0]
+      negative_controller_offset_after_world_xyz_m: [0.0, -0.10, 0.0]
+      object_state_writes_after_initialization: 0
+      direct_robot_state_writes_after_initialization: 0
+      mocap_writes_after_initialization: 0
+      applied_force_writes_after_initialization: 0
+      object_linked_equality_changes_after_initialization: 0
+      model_physics_mutations_after_initialization: 0
+    landed_scope:
+      controller_negative_branch_only: true
+      collision_geometry_changed: false
+      contact_material_changed: false
+      tendon_force_or_motion_changed: false
+      passive_joint_damping_changed: false
+      global_qc_threshold_changed: false
+      fixed_seed_or_label_changed: false
+    fixed_six_diagnostic:
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2d_fixed_six_partial_repair_v2.json
+      report_file_sha256: 665f17b6ca56d5bd5b24f10d2c92b3b18d886bdeccec693efad5d54a8c8da123
+      report_payload_sha256: ec53cc8f3f6f7e5ddad68095ad7553d91b7542636bb72e3b18019370df75d625
+      case_ids:
+        - F2d-review-00
+        - F2d-review-01
+        - F2d-review-02
+        - F2d-review-03
+        - F2d-review-04
+        - F2d-review-05
+      scheduled_simulation_hz: [600, 600, 600, 600, 600, 1200]
+      actual_outcomes: [success, invalid, miss, miss, contact_failure, miss]
+      strict_physics_qc_pass: [true, false, true, true, true, true]
+      intended_outcome_matches: [true, false, true, true, true, true]
+      canonical_replay_completed_and_matches_online: [true, true, true, true, true, true]
+      saved_artifact_objective_replay_matches: [true, false, true, true, true, true]
+      passing_case_ids:
+        - F2d-review-00
+        - F2d-review-02
+        - F2d-review-03
+        - F2d-review-04
+        - F2d-review-05
+      failing_case_ids: [F2d-review-01]
+      mutation_boundary_violations: 0
+      maximum_passing_object_gripper_penetration_m: 0.0
+      maximum_passing_object_task_surface_penetration_m: 0.002544310856751851
+      maximum_passing_arm_joint_acceleration_rad_s2: 18.35554898854773
+      maximum_passing_passive_finger_acceleration_rad_s2: 24.06010322512593
+    unresolved_nominal_case:
+      case_id: F2d-review-01
+      embodiment: robotiq_2f85_thick_pad
+      intended_outcome: success
+      600_hz:
+        actual_outcome: invalid
+        maximum_object_gripper_penetration_m: 0.006294449765721598
+        maximum_passive_finger_acceleration_rad_s2: 549.3609977089059
+        final_retention: false
+      1200_hz:
+        actual_outcome: invalid
+        maximum_object_gripper_penetration_m: 0.008416587360021308
+        maximum_passive_finger_acceleration_rad_s2: 491.7642463152428
+        final_retention: false
+    rejected_hardware_search:
+      runtime_changes_landed: false
+      rounded_pad_candidate:
+        description: 8mm-radius capsule with 23mm half-length and 15mm Y aim bias
+        600_hz: {retained: true, maximum_penetration_m: 0.001963, maximum_passive_acceleration_rad_s2: 23.67}
+        1200_hz: {retained: false, maximum_penetration_m: 0.006263}
+        rejection: timestep_halving_changes_outcome_and_exceeds_penetration_limit
+      reference_rate_force_tradeoff:
+        collision_candidate: stock_pad_boxes_disabled_capsule_margin_8mm
+        force_limit_0_12_n: {retained: false, bilateral_contact_s: 0.003, maximum_penetration_m: 0.001891, maximum_passive_acceleration_rad_s2: 50.0}
+        force_limit_0_14_n: {retained: true, maximum_penetration_m: 0.001646, maximum_passive_acceleration_rad_s2: 374.4}
+        force_limit_0_16_n: {retained: true, maximum_penetration_m: 0.001501, maximum_passive_acceleration_rad_s2: 345.7}
+        rejection: no_candidate_satisfies_retention_penetration_and_200rad_s2_limit
+      high_passive_damping_candidate:
+        damping_n_m_s_rad: 0.4
+        rejection: non_hardware_faithful_and_not_reference_rate_invariant
+    controller_negative_timestep_evidence:
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2d_timestep_halving_partial_repair_v2.json
+      report_file_sha256: acc1b01578620bd2cfa05472da98d855b68ee19079f9ecfa73ada7b3fc964824
+      report_payload_sha256: 6cb2319a8d1c2cbe33910d6946043ac2a327fd015cc1e8271272cad6fb133771
+      case_id: F2d-review-05
+      600_hz:
+        actual_outcome: invalid
+        strict_physics_qc_pass: false
+        maximum_object_gripper_penetration_m: 0.0
+        maximum_object_task_surface_penetration_m: 0.004457851998410367
+        maximum_passive_finger_acceleration_rad_s2: 23.670784469763152
+      1200_hz:
+        actual_outcome: miss
+        strict_physics_qc_pass: true
+        maximum_object_gripper_penetration_m: 0.0
+        maximum_object_task_surface_penetration_m: 0.0018446965895082094
+        maximum_passive_finger_acceleration_rad_s2: 24.06010322512593
+      reference_rate_required_class: F2d/robotiq_2f85_thick_pad/deterministic_negative_controller_timing
+      decision: reject_600_hz_candidate_keep_1200_hz_reference_for_this_case
+    admission_claimed: false
+    formal_human_approval_recorded: false
+
+  rigid_breadth_honest_fixed_and_halving_v2:
+    description: >-
+      final current-source non-rendered verdict with all rejected predictive
+      Robotiq pad/base margins absent and fixed seeds unchanged
+    evidence_status: hash_bound_diagnostic_human_review_pending
+    fixed_master_seed: 20260717
+    fixed_seeds_preserved: true
+    seed_replacements: 0
+    qc_thresholds_relaxed: false
+    direct_state_or_constraint_assistance: false
+    predictive_contact_margins_admitted: false
+    honest_fixed_six:
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2b_F2d_F2e_F2f_fixed_six_honest_final_v2.json
+      report_file_sha256: 9a71fdfb50d3a896fe9c99d70bc40cba1dd89ba6e3baf33084ca52e256a1ff25
+      report_payload_sha256: 6ddda219973432a6bbf256e1477681b5dbbfbd9bf4b4f6160f5eee2ffae0dcf5
+      automated_qc_pass_count_by_leaf: {F2b: 5, F2d: 5, F2e: 6, F2f: 6}
+      canonical_replay_match_count_by_leaf: {F2b: 6, F2d: 6, F2e: 6, F2f: 6}
+      mutation_boundary_violations: 0
+      failed_case_ids: [F2b-review-01, F2d-review-01]
+    honest_timestep_halving:
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2b_F2d_F2e_F2f_timestep_halving_honest_final_v2.json
+      report_file_sha256: fb3d4f8cbfc9a4ae1b71115fdaf9331e6f878a90b8886428270d975ad96ac38e
+      report_payload_sha256: c9af1a7a2ff7d44a16c341b5214b6bedbb811543e43bbd318877f9aa603a8e8f
+      decisions:
+        F2b: {reference_profile_admitted: false, cheaper_profile_admitted: false, selected_simulation_hz: null}
+        F2d: {reference_profile_admitted: false, cheaper_profile_admitted: false, selected_simulation_hz: null}
+        F2e: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
+        F2f: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
+    f2f_surface_admission:
+      path: configs/physics/f2f_surface_admission_v1.json
+      report_file_sha256: 0100abe20088f0b56989c7ef61e27e10e9f3009ffce954f90c3980b876f5be86
+      report_payload_sha256: 819fd55496650c7c23aea7ff4c8ab83d5b49c0bbc7f8d545cc534e5b8075338e
+      probe_count: 100
+      geometry_admitted_candidates:
+        - plane_mid_285
+        - plane_table_400
+        - barrier_yaw_neg_15
+        - barrier_yaw_neg_25
+      positive_controller_admitted_candidates: [plane_mid_285, plane_table_400]
+      positive_controller_blocked_candidates: [barrier_yaw_neg_15, barrier_yaw_neg_25]
+      pilot_ready_candidates: [plane_mid_285, plane_table_400]
+    leaf_decisions:
+      F2b:
+        execution_state: blocked
+        remaining_blockers: [robotiq_nominal_no_margin_controller_or_visible_pad_geometry_satisfies_dual_rate_retention_penetration_and_passive_acceleration]
+      F2d:
+        execution_state: blocked
+        remaining_blockers: [robotiq_nominal_reference_rate_no_hardware_faithful_overlap_penetration_retention_acceleration]
+      F2e: {execution_state: review, remaining_blockers: [human_review_pending]}
+      F2f:
+        execution_state: review
+        remaining_blockers: [positive_barrier_dual_embodiment_retained_catch_pending, human_review_pending]
+    admission_claimed: false
+    formal_human_approval_recorded: false
+
+  rigid_breadth_rejected_margin_diagnostics_v1:
+    description: >-
+      hash-bound numerical reports preserved after independent contact-gap
+      audits rejected their predictive Robotiq pad or base support
+    evidence_status: rejected_not_activation_eligible
+    fixed_master_seed: 20260717
+    fixed_seeds_preserved: true
+    seed_replacements: 0
+    qc_thresholds_relaxed: false
+    direct_state_or_constraint_assistance: false
+    predictive_contact_margins_admitted: false
+    predictive_base_margin_fixed_six:
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2b_F2d_F2e_F2f_fixed_six_rejected_predictive_base_margin_v1.json
+      report_file_sha256: 34840650484f41bad825480ea9625eae43410644d88ca2dbbe200ab4c4302462
+      report_payload_sha256: d89e51c103da0d5a1122626a1d90fa6b47a4f05a36b14fac17a6c630d5dc31b3
+      automated_qc_pass_count_by_leaf: {F2b: 6, F2d: 5, F2e: 6, F2f: 6}
+      canonical_replay_match_count_by_leaf: {F2b: 6, F2d: 6, F2e: 6, F2f: 6}
+      mutation_boundary_violations: 0
+      sole_failed_case_id: F2d-review-01
+    predictive_base_margin_timestep_halving:
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2b_F2d_F2e_F2f_timestep_halving_rejected_predictive_base_margin_v1.json
+      report_file_sha256: ee76297d33d4196f589466811f00115d3ab09535be85b727f9ce65884511bb06
+      report_payload_sha256: 8d6c2526206380a122ebd4cc849298fbf4a2320fedc7cf4b20ab621d537a66fd
+      decisions:
+        F2b: {reference_profile_admitted: true, cheaper_profile_admitted: true, selected_simulation_hz: 600}
+        F2d: {reference_profile_admitted: false, cheaper_profile_admitted: false, selected_simulation_hz: null}
+        F2e: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
+        F2f: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
+    rejected_predictive_pad_margin_diagnostics:
+      reason: >-
+        Robotiq forces appeared while the rendered pad faces were still
+        separated by roughly five to nine millimetres; these numerical passes
+        are preserved only as rejected audit history and cannot activate a leaf
+      fixed_six_path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2b_F2d_F2e_F2f_fixed_six_rejected_predictive_pad_margin_v1.json
+      fixed_six_file_sha256: 36e1c2075b19d102d1e27248e5afb3663608c6aeb989a870722740d1a6049d9c
+      fixed_six_payload_sha256: c1b7edfa36e2705be2f1eea25641034233dae8f39e058f9f1c23b8121cee8885
+      timestep_path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2b_F2d_F2e_F2f_timestep_halving_rejected_predictive_pad_margin_v1.json
+      timestep_file_sha256: 1877f1c73ba2ea2879eff1dab9a6c84084c9116d93ecaa2b16ff39f15d2c00b9
+      timestep_payload_sha256: 2a3321ddccd5350b930fc538b0cd802a82730d0c0bba9385d035185c508cde76
+      activation_eligible: false
+    activation_eligible: false
+    admission_claimed: false
+    formal_human_approval_recorded: false
+
 required_before_admission:
   - persist_exact_source_scenario_specs
   - bind_each_trial_to_episode_and_qc_sha256

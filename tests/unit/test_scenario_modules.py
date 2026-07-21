@@ -225,6 +225,49 @@ def test_projectile_sampling_is_independent_of_controller_branch() -> None:
     ] == "controller_target_offset"
 
 
+def test_f2d_negative_controller_offset_is_declarative_and_leaf_scoped() -> None:
+    definition = load_scenario_definition("F2d")
+    offset = definition.module.controller_plan.negative_controller_offset_m
+
+    assert offset == pytest.approx((0.0, -0.10, 0.0))
+    assert definition.to_dict()["controller_plan"][
+        "negative_controller_offset_m"
+    ] == pytest.approx(offset)
+    for other in list_scenario_definitions():
+        if other.leaf_id == "F2d":
+            continue
+        assert other.module.controller_plan.negative_controller_offset_m is None
+        assert "negative_controller_offset_m" not in other.to_dict()[
+            "controller_plan"
+        ]
+
+    cases = {
+        case.rollout_index: compile_review_case(case)
+        for case in build_review_suite_plan().cases
+        if case.corpus_leaf_id == "F2d"
+    }
+    panda_delta = tuple(
+        negative - nominal
+        for negative, nominal in zip(
+            cases[4].controller_target_position_m,
+            cases[0].controller_target_position_m,
+            strict=True,
+        )
+    )
+    robotiq_delta = tuple(
+        negative - nominal
+        for negative, nominal in zip(
+            cases[5].controller_target_position_m,
+            cases[1].controller_target_position_m,
+            strict=True,
+        )
+    )
+    assert panda_delta == pytest.approx(offset)
+    assert robotiq_delta == pytest.approx(offset)
+    assert cases[4].simulation_hz == 600
+    assert cases[5].simulation_hz == 1200
+
+
 def test_projectile_sample_cli_emits_reproducible_training_ineligible_specs(
     capsys,
 ) -> None:

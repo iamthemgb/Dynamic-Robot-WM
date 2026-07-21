@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from dynamic_robot_dataset.backends.source_mujoco import (
-    RIGID_REVIEW_PROFILE,
     SourceMujocoBackend,
     compile_review_case,
 )
@@ -12,9 +11,15 @@ from dynamic_robot_dataset.backends.source_mujoco.rigid_breadth import (
     sample_admitted_surface,
     sample_surface_candidate,
 )
+from dynamic_robot_dataset.backends.source_mujoco.source_spec import (
+    prepare_review_case,
+)
 from dynamic_robot_dataset.common.review_suite import build_review_suite_plan
 from dynamic_robot_dataset.common.source_evaluators import (
     validate_source_evaluator_contract,
+)
+from dynamic_robot_dataset.scenarios.f2e_multi_surface_rebound import (
+    FLOOR_TO_WALL_REPAIR,
 )
 
 
@@ -42,7 +47,7 @@ def test_f2b_compiles_a_grounded_ramp_and_transition_contract() -> None:
     assert contract is not None
     assert scenario.ordered_contact_contract is None
     assert scenario.sampled_surface_contract is None
-    assert scenario.simulation_hz == 1200
+    assert scenario.simulation_hz == 600
     assert contract.support_surface_id == "owned_ramp_launch_surface"
     assert contract.minimum_support_contact_s == pytest.approx(0.08)
     assert contract.minimum_free_flight_s == pytest.approx(0.08)
@@ -63,18 +68,30 @@ def test_f2b_compiles_a_grounded_ramp_and_transition_contract() -> None:
     )
 
 
-def test_f2b_fixed_robotiq_collision_is_invalid_not_an_online_success() -> None:
+def test_f2b_robotiq_nominal_failure_remains_physical_and_blocks_activation() -> None:
     result = SourceMujocoBackend().run(_case("F2b", 1), render=False)
     penetration = result.physics_qc["penetration"]["metrics"]
     evidence = result.physics_qc["task_evidence"]
 
     assert result.outcome["task_success"] is False
-    assert result.outcome["actual_outcome"] == "invalid"
-    assert result.outcome["saved_artifact_objective_replay_matches"] is False
+    assert result.outcome["actual_outcome"] == "contact_failure"
+    assert result.outcome["saved_artifact_objective_replay_matches"] is True
     assert result.physics_qc["physics_qc_pass"] is False
-    assert penetration["maximum_gripper_penetration_m"] > 0.002
+    assert penetration["maximum_gripper_penetration_m"] <= 0.002
+    assert (
+        result.physics_qc["maximum_passive_finger_acceleration_rad_s2"]
+        > result.physics_qc["passive_finger_acceleration_limit_rad_s2"]
+    )
+    assert evidence["sustained_opposing_bilateral_contacts"] is True
+    assert evidence["retained_through_final_state"] is False
     assert evidence["rolling_or_sliding_slip_within_limit"] is True
     assert evidence["friction_deceleration_consistent"] is True
+
+    source_spec = prepare_review_case(_case("F2b", 1))
+    controller_plan = source_spec.physics["controller_plan"]
+    assert controller_plan["robotiq_actuator_force_limit_n"] == pytest.approx(
+        0.10
+    )
 
 
 @pytest.mark.parametrize(
@@ -108,50 +125,124 @@ def test_f2e_binds_ordered_stable_surface_identities(
             assert len(_supports(scenario, surface_id)) == 4
 
 
-def test_f2f_sampler_is_deterministic_but_unadmitted_until_calibration() -> None:
-    seed = 0xD15EA5E
-    first = sample_surface_candidate("random_plane_bounce", source_seed=seed)
-    second = sample_surface_candidate("random_plane_bounce", source_seed=seed)
+def test_f2e_floor_to_wall_repair_is_variant_scoped_and_versioned() -> None:
+    repaired = compile_review_case(_case("F2e", 0))
+    unchanged = compile_review_case(_case("F2e", 2))
+    repair = FLOOR_TO_WALL_REPAIR.to_dict()
+
+    repaired_wall = next(
+        surface for surface in repaired.surfaces if surface.name == "owned_multi_wall"
+    )
+    unchanged_wall = next(
+        surface for surface in unchanged.surfaces if surface.name == "owned_multi_wall"
+    )
+    assert repair["schema_version"].endswith("/v1")
+    assert repaired.ballistic_event_time_s == pytest.approx(
+        repair["catch_event_time_s"]
+    )
+    assert repaired_wall.half_size_m[0] == pytest.approx(
+        repair["wall_tangent_half_extent_m"]
+    )
+    assert unchanged_wall.half_size_m[0] == pytest.approx(0.32)
+    assert unchanged.ballistic_event_time_s == pytest.approx(0.8631192660550459)
+
+
+@pytest.mark.parametrize(
+    ("rollout", "expected_outcome", "expected_rate"),
+    (
+        (4, "contact_failure", 600),
+        (5, "miss", 1200),
+    ),
+)
+def test_f2d_repaired_controller_negative_cases_pass_without_assistance(
+    rollout: int,
+    expected_outcome: str,
+    expected_rate: int,
+) -> None:
+    result = SourceMujocoBackend().run(_case("F2d", rollout), render=False)
+    penetration = result.physics_qc["penetration"]["metrics"]
+
+    assert result.scenario.simulation_hz == expected_rate
+    assert result.outcome["actual_outcome"] == expected_outcome
+    assert result.outcome["intended_outcome_match"] is True
+    assert result.outcome["saved_artifact_objective_replay_matches"] is True
+    assert result.physics_qc["physics_qc_pass"] is True
+    assert penetration["maximum_gripper_penetration_m"] <= 0.002
+    assert penetration["maximum_task_surface_penetration_m"] <= 0.003
+    assert result.runtime_audit["mutation_boundary_violations"] == 0
+
+
+@pytest.mark.parametrize("rollout", range(6))
+def test_f2e_fixed_six_passes_strict_physics_and_saved_replay(rollout: int) -> None:
+    case = _case("F2e", rollout)
+    result = SourceMujocoBackend().run(case, render=False)
+    penetration = result.physics_qc["penetration"]["metrics"]
+    evidence = result.physics_qc["task_evidence"]
+
+    assert result.scenario.simulation_hz == FLOOR_TO_WALL_REPAIR.required_simulation_hz
+    assert result.physics_qc["physics_qc_pass"] is True
+    assert result.outcome["task_success"] is (rollout in {0, 1})
+    assert result.outcome["intended_outcome_match"] is True
+    assert result.outcome["saved_artifact_objective_replay_matches"] is True
+    assert evidence["ordered_contact_sequence_pass"] is True
+    assert penetration["maximum_gripper_penetration_m"] <= 0.002
+    assert penetration["maximum_task_surface_penetration_m"] <= 0.003
+    assert result.runtime_audit["mutation_boundary_violations"] == 0
+
+
+def test_f2f_sampler_is_deterministic_and_fails_closed_for_rejected_candidates() -> None:
+    first = sample_surface_candidate("random_plane_bounce", source_seed=0)
+    second = sample_surface_candidate("random_plane_bounce", source_seed=0)
 
     assert first == second
-    assert first.admission == SurfaceAdmission()
-    assert first.admission.admitted is False
+    assert first.admission.admitted is True
+    assert sample_admitted_surface("random_plane_bounce", source_seed=0) == first
+
+    rejected = sample_surface_candidate("random_plane_bounce", source_seed=11)
+    assert rejected.candidate_id == "plane_low_170"
+    assert rejected.admission == SurfaceAdmission()
+    assert rejected.admission.admitted is False
     with pytest.raises(ValueError, match="not fully admitted"):
-        sample_admitted_surface("random_plane_bounce", source_seed=seed)
+        sample_admitted_surface("random_plane_bounce", source_seed=11)
 
 
 @pytest.mark.parametrize("rollout", (0, 2))
-def test_f2f_compilation_persists_exact_sample_but_evaluator_fails_closed(
+def test_f2f_compilation_persists_exact_hash_bound_admitted_sample(
     rollout: int,
 ) -> None:
-    scenario = compile_review_case(_case("F2f", rollout))
+    case = _case("F2f", rollout)
+    scenario = compile_review_case(case)
     contract = scenario.sampled_surface_contract
 
     assert contract is not None
     assert contract.source_seed == scenario.rng_subseeds["physics"]
-    assert set(contract.admission.values()) == {False}
+    assert set(contract.admission.values()) == {True}
+    assert set(contract.admission_evidence_sha256) == set(contract.admission)
     stable_id = f"owned_arbitrary_surface__{contract.candidate_id}"
     fixture = next(surface for surface in scenario.surfaces if surface.name == stable_id)
     assert fixture.position_m == contract.position_m
     assert fixture.euler_rad == contract.euler_rad
     assert fixture.half_size_m == contract.half_size_m
 
-    source_spec = {
-        "duration_s": scenario.duration_s,
-        "physics": {
-            "simulation_hz": scenario.simulation_hz,
-            "key_event_time_s": scenario.key_event_time_s,
-            "object_radius_m": scenario.object_radius_m,
-            "rebound_acceptance": (
-                RIGID_REVIEW_PROFILE.rebound_acceptance().to_dict()
-            ),
-            "grasp_retention": RIGID_REVIEW_PROFILE.grasp_retention().to_dict(),
-            "sampled_surface_contract": contract.to_dict(),
-        },
-    }
-    with pytest.raises(ValueError, match="is not admitted"):
-        validate_source_evaluator_contract(
-            evaluator_id="rigid_arbitrary_rebound_v1",
-            task_variant=scenario.task_variant,
-            source_spec=source_spec,
-        )
+    source_spec = prepare_review_case(case).to_dict()
+    validate_source_evaluator_contract(
+        evaluator_id="rigid_arbitrary_rebound_v1",
+        task_variant=scenario.task_variant,
+        source_spec=source_spec,
+    )
+
+
+@pytest.mark.parametrize("rollout", range(6))
+def test_f2f_fixed_six_passes_strict_physics_and_saved_replay(
+    rollout: int,
+) -> None:
+    result = SourceMujocoBackend().run(_case("F2f", rollout), render=False)
+    penetration = result.physics_qc["penetration"]["metrics"]
+
+    assert result.physics_qc["physics_qc_pass"] is True
+    assert result.outcome["task_success"] is (rollout in {0, 1})
+    assert result.outcome["intended_outcome_match"] is True
+    assert result.outcome["saved_artifact_objective_replay_matches"] is True
+    assert penetration["maximum_gripper_penetration_m"] <= 0.002
+    assert penetration["maximum_task_surface_penetration_m"] <= 0.003
+    assert result.runtime_audit["mutation_boundary_violations"] == 0

@@ -24,7 +24,7 @@ from ...common.source_scenario import (
     SourceCameraSpec,
     SourceScenarioSpec,
 )
-from ...scenarios import scenario_source_hashes
+from ...scenarios import load_scenario_definition, scenario_source_hashes
 from .backend import (
     SourceMujocoBackend,
     _background_clearance_static_rows,
@@ -412,6 +412,9 @@ def prepare_review_case(
         if row["expected_task_contact"] is True
     )
     tool_visibility_topology = _compiled_tool_visibility_topology(compiled)
+    controller_plan = load_scenario_definition(
+        scenario.corpus_leaf_id
+    ).module.controller_plan
     spec = SourceScenarioSpec(
         # ReviewArtifactRequest binds SourceScenarioSpec to the fixed logical
         # case ID.  The storage UUID is a separate run-plan identity and must
@@ -445,6 +448,11 @@ def prepare_review_case(
                 RIGID_BREADTH_PROFILE_VERSION
                 if scenario.corpus_leaf_id in {"F2b", "F2e", "F2f"}
                 else None
+            ),
+            **(
+                {"controller_plan": controller_plan.to_dict()}
+                if scenario.corpus_leaf_id in {"F2b", "F2d", "F2e", "F2f"}
+                else {}
             ),
             "surface_transition_contract": (
                 scenario.surface_transition_contract.to_dict()

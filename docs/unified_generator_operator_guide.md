@@ -9,11 +9,11 @@ It separates three questions that must never be conflated:
    production quota?
 
 A declared capability is not a release claim. At this checkpoint 15 rigid
-leaf modules have physical fixed-review implementations. Eleven are currently
-review-executable (P0a-d, F1a-d, F2a, F2c, and F3b); F2b/F2d/F2e/F2f remain
-repair-only and the remaining five modules are fail-closed contracts. Every
-leaf remains release-blocked until its own evidence gate passes. Large-scale
-generation is not yet allowed.
+leaf modules have physical fixed-review implementations. Thirteen are
+review-executable: P0a-d, F1a-d, F2a, F2c, F2e, F2f, and F3b. F2b and F2d
+remain execution-blocked by their Robotiq nominal catches; the remaining five
+modules are fail-closed contracts. Every leaf remains release-blocked until
+its own evidence gate passes. Large-scale generation is not yet allowed.
 
 ## Sources of truth
 
@@ -267,7 +267,11 @@ before requesting any media generation:
 ```bash
 MUJOCO_GL=egl uv run --frozen python tools/run_rigid_breadth_fixed_six.py \
   --leaves F2b F2d F2e F2f \
-  --output /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_fixed_six_v1.json
+  --output /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_fixed_six_next.json
+
+MUJOCO_GL=egl uv run --frozen python tools/run_rigid_breadth_timestep_halving.py \
+  --leaves F2b F2d F2e F2f \
+  --output /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_timestep_halving_next.json
 ```
 
 The report hashes its source files, review plan, cases, measurements, mutation
@@ -277,6 +281,29 @@ pending 600/1200 Hz admission remains blocked; `review-suite` media and pilot
 commands must not be used to bypass that result. In particular, F2f surface
 admission is catalog- and seed-replayed and each admission boolean requires a
 SHA-256 evidence artifact.
+
+Regenerate and verify that F2f artifact whenever a bound source file changes:
+
+```bash
+MUJOCO_GL=egl uv run --frozen python tools/calibrate_f2f_surface_catalog.py \
+  --jobs 4 \
+  --candidate plane_mid_285 \
+  --candidate plane_table_400 \
+  --candidate barrier_yaw_neg_15 \
+  --candidate barrier_yaw_neg_25 \
+  --output configs/physics/f2f_surface_admission_v1.json
+
+uv run --frozen python tools/calibrate_f2f_surface_catalog.py \
+  --verify configs/physics/f2f_surface_admission_v1.json
+```
+
+The current honest fixed verdict is F2b 5/6, F2d 5/6, F2e 6/6, and F2f
+6/6. F2b and F2d have no admitted rate: their Robotiq nominal catches cannot
+simultaneously satisfy retention, visible penetration, and passive-finger
+acceleration. F2e and F2f select 1200 Hz. F2f admits four sampled geometries,
+but only the two plane candidates currently have genuine retained positive
+catches for both embodiments. Its barrier candidates remain review-only until
+the Robotiq positive catch is repaired.
 
 ## Activation and scale gates
 
@@ -304,11 +331,12 @@ review ledger. Do not use them to claim this unified suite passed.
 [`configs/physics/rigid_600_1200_calibration_v1.yaml`](../configs/physics/rigid_600_1200_calibration_v1.yaml)
 records the current wall-rebound and Robotiq timestep-halving measurements. The
 600 Hz candidate is used only for fixed review classes that satisfy strict QC;
-P0c speed variants and Panda F1a/F1b controller-timing negatives run at the
-1200 Hz reference because the 600 Hz fixed attempts failed penetration or
-separated-event checks. Neither rate is production-admitted. Admission still
-requires hash-bound rollouts across every applicable rigid leaf/embodiment and
-completed human review.
+F2e/F2f require the 1200 Hz reference; F2b and F2d have no admitted rate. The
+file also binds the honest fixed-six/timestep reports, the 100-probe F2f
+surface evidence, and rejected predictive-pad/base diagnostics so numerical
+false positives cannot activate a leaf. Neither rate is production-admitted.
+Admission still requires sealed rendered rollouts and completed hash-bound
+human review.
 
 ## Conversion tool boundary
 

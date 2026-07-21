@@ -11,7 +11,7 @@ import numpy as np
 from ._rigid_shared import rigid_module
 
 
-SCENARIO = rigid_module("F2b", "projectile_rebound", "ramp_launch", fixture_policy="owned grounded ramp with four supports", controller_kind="catch_or_deflect", trajectory="jerk_limited_predictive_reach", retention_required=False, hand_orientation="pick_down", compact_pickup_ready=True, robotiq_reach_arrival_lead_s=0.13, robotiq_tendon_profile="f2c", interior_joint_margin_rad=0.01)
+SCENARIO = rigid_module("F2b", "projectile_rebound", "ramp_launch", fixture_policy="owned grounded ramp with four supports", controller_kind="catch_or_deflect", trajectory="jerk_limited_predictive_reach", retention_required=False, hand_orientation="pick_down", compact_pickup_ready=True, robotiq_reach_arrival_lead_s=0.13, robotiq_tendon_profile="f2c", robotiq_actuator_force_limit_n=0.10, interior_joint_margin_rad=0.01)
 
 
 def _finite_vector(value: tuple[float, ...], size: int, label: str) -> None:

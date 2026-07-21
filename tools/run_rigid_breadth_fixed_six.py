@@ -34,6 +34,8 @@ SOURCE_FILES = (
     "src/dynamic_robot_dataset/backends/source_mujoco/model.py",
     "src/dynamic_robot_dataset/backends/source_mujoco/profiles.py",
     "src/dynamic_robot_dataset/backends/source_mujoco/rigid_breadth.py",
+    "src/dynamic_robot_dataset/backends/source_mujoco/source_spec.py",
+    "src/dynamic_robot_dataset/common/source_scenario.py",
     "src/dynamic_robot_dataset/common/source_evaluators.py",
     "src/dynamic_robot_dataset/scenarios/_rigid_shared.py",
     "src/dynamic_robot_dataset/scenarios/registry.py",
@@ -42,6 +44,7 @@ SOURCE_FILES = (
     "src/dynamic_robot_dataset/scenarios/f2d_wall_barrier_rebound.py",
     "src/dynamic_robot_dataset/scenarios/f2e_multi_surface_rebound.py",
     "src/dynamic_robot_dataset/scenarios/f2f_arbitrary_surface_bounce.py",
+    "tools/run_rigid_breadth_fixed_six.py",
 )
 
 

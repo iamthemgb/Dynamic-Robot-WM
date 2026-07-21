@@ -186,8 +186,16 @@ def _recipe_payload(
     )
     from ..backends.source_mujoco.profiles import RIGID_REVIEW_PROFILE
     from .f2b_ramp_launch import SurfaceTransitionContract
-    from .f2e_multi_surface_rebound import OrderedContactContract
+    from .f2e_multi_surface_rebound import (
+        FLOOR_TO_WALL_REPAIR,
+        OrderedContactContract,
+    )
     from .f2f_arbitrary_surface_bounce import (
+        F2F_BARRIER_CATCH_Z_M,
+        F2F_BARRIER_HIT_Z_M,
+        F2F_FRANKA_BARRIER_CANDIDATE_BIAS_M,
+        F2F_FRANKA_BARRIER_INTERCEPT_BIAS_M,
+        F2F_ROBOTIQ_PLANE_INTERCEPT_BIAS_X_M,
         sample_surface_candidate,
         sampled_surface_contract,
     )
@@ -864,7 +872,19 @@ def _recipe_payload(
             if "initial_state" in branch_role:
                 start_xy[0] += 0.135
             elif "controller" in branch_role:
-                controller_target[0] += 0.10
+                from .f2d_wall_barrier_rebound import SCENARIO as F2D_SCENARIO
+
+                negative_offset = (
+                    F2D_SCENARIO.controller_plan.negative_controller_offset_m
+                )
+                if negative_offset is None:
+                    raise RuntimeError(
+                        "F2d controller-negative branch lacks a declared offset"
+                    )
+                controller_target += np.asarray(
+                    negative_offset,
+                    dtype=np.float64,
+                )
             else:
                 controller_target[1] -= 0.10
         base.update(
@@ -913,6 +933,17 @@ def _recipe_payload(
         in_xy = np.asarray((0.0, 1.10), dtype=np.float64)
 
         if task_variant == "floor_to_wall":
+            FLOOR_TO_WALL_REPAIR.validate()
+            # The original 640 mm-wide wall extended far beyond the ball's
+            # centered impact corridor and overlapped the initialized Panda
+            # hand by 4.07 mm.  Retain the exact contact face and normal while
+            # removing only that unused tangential extent from the robot
+            # workspace.  The alternate F2e variant keeps its original wall.
+            wall_half = (
+                FLOOR_TO_WALL_REPAIR.wall_tangent_half_extent_m,
+                wall_half[1],
+                wall_half[2],
+            )
             # A faster but still timestep-resolved floor lane creates enough
             # post-wall normal separation for the real finger geometry.  At
             # the earlier 1.1 m/s lane the calibrated low-restitution wall
@@ -948,8 +979,10 @@ def _recipe_payload(
                 + wall_vz_out * post_time
                 - 0.5 * gravity_mag * post_time**2
             )
-            target = np.asarray((0.47, 0.0, target_z), dtype=np.float64)
-            wall_contact_xy = target[:2] - wall_out_xy * post_time
+            construction_target = np.asarray(
+                (0.47, 0.0, target_z), dtype=np.float64
+            )
+            wall_contact_xy = construction_target[:2] - wall_out_xy * post_time
             pad_contact_xy = wall_contact_xy - floor_out_xy * wall_delay
             start_xy = pad_contact_xy - in_xy * pad_time
             initial_vz = -impact_speed + gravity_mag * pad_time
@@ -966,7 +999,16 @@ def _recipe_payload(
                 (0.0, 0.0, 1.0),
                 (float(normal[0]), float(normal[1]), 0.0),
             )
-            event_time = pad_time + wall_delay + post_time
+            # At the required 1200 Hz reference rate, the realized two-contact
+            # trajectory reaches its catchable post-wall apex before the
+            # analytical mixed-contact estimate.  Bind the physical/controller
+            # target to that same-seed measured trajectory; do not move the
+            # fixtures or resample an easier initial state.
+            target = construction_target + np.asarray(
+                FLOOR_TO_WALL_REPAIR.measured_target_bias_world_xyz_m,
+                dtype=np.float64,
+            )
+            event_time = FLOOR_TO_WALL_REPAIR.catch_event_time_s
             pad = _surface(
                 ordered_ids[0],
                 "floor",
@@ -1077,14 +1119,34 @@ def _recipe_payload(
 
         controller_target = target.copy()
         if embodiment == ROBOTIQ_2F85_THICK_PAD:
-            controller_target[2] += RIGID_REVIEW_PROFILE.robotiq_pickup_standoff_m
+            if task_variant == "floor_to_wall":
+                controller_target += np.asarray(
+                    FLOOR_TO_WALL_REPAIR.robotiq_aim_bias_world_xyz_m,
+                    dtype=np.float64,
+                )
+            else:
+                controller_target[2] += (
+                    RIGID_REVIEW_PROFILE.robotiq_pickup_standoff_m
+                )
         if negative:
             if "initial_state" in branch_role:
                 # Shift across the fixture width without changing the ordered
                 # surface construction or selecting a replacement seed.
                 start_xy[0] += 0.135
             elif "controller" in branch_role:
-                controller_target[1] += 0.10
+                if task_variant == "floor_to_wall":
+                    # Move away from the angled wall and the incoming lane.
+                    # The former +Y branch embedded both real grippers in the
+                    # wall; this fixed -Y miss preserves the seed and label.
+                    negative_aim_delta = (
+                        FLOOR_TO_WALL_REPAIR.negative_controller_aim_delta_world_xyz_m
+                    )
+                    controller_target += np.asarray(
+                        negative_aim_delta,
+                        dtype=np.float64,
+                    )
+                else:
+                    controller_target[1] += 0.10
             else:
                 controller_target[0] -= 0.10
         ordered = OrderedContactContract(
@@ -1163,6 +1225,7 @@ def _recipe_payload(
                     RIGID_REVIEW_PROFILE.robotiq_pickup_closure_duration_s
                     - RIGID_REVIEW_PROFILE.robotiq_pickup_closure_start_before_event_s
                 )
+                controller_target[0] += F2F_ROBOTIQ_PLANE_INTERCEPT_BIAS_X_M
             if negative:
                 if "initial_state" in branch_role:
                     start_xy[1] += 0.135
@@ -1192,7 +1255,7 @@ def _recipe_payload(
             launch = RIGID_REVIEW_PROFILE.wall_rebound_launch_speed_m_s
             wall_time = RIGID_REVIEW_PROFILE.wall_rebound_wall_time_s
             post_time = RIGID_REVIEW_PROFILE.wall_rebound_post_time_s
-            z_hit = RIGID_REVIEW_PROFILE.wall_rebound_hit_z_m
+            z_hit = F2F_BARRIER_HIT_Z_M
             restitution = RIGID_REVIEW_PROFILE.wall_rebound_effective_restitution
             retention = RIGID_REVIEW_PROFILE.barrier_tangential_retention
             yaw = candidate.euler_rad[2]
@@ -1209,11 +1272,14 @@ def _recipe_payload(
             ) * normal
             target_xy = contact_xy + out_xy * post_time
             target = np.asarray(
-                (target_xy[0], target_xy[1], close_z), dtype=np.float64
+                (target_xy[0], target_xy[1], F2F_BARRIER_CATCH_Z_M),
+                dtype=np.float64,
             )
             start_xy = contact_xy - in_xy * wall_time
             vz_wall = (
-                close_z - z_hit + 0.5 * gravity_mag * post_time**2
+                F2F_BARRIER_CATCH_Z_M
+                - z_hit
+                + 0.5 * gravity_mag * post_time**2
             ) / (retention * post_time)
             initial_vz = vz_wall + gravity_mag * wall_time
             start_z = z_hit - initial_vz * wall_time + 0.5 * gravity_mag * wall_time**2
@@ -1225,6 +1291,17 @@ def _recipe_payload(
                     - RIGID_REVIEW_PROFILE.bounce_closure_start_before_event_s
                 )
                 controller_target[:2] += out_xy * wrap_lead_s
+                controller_target += np.asarray(
+                    F2F_FRANKA_BARRIER_INTERCEPT_BIAS_M,
+                    dtype=np.float64,
+                )
+                controller_target += np.asarray(
+                    F2F_FRANKA_BARRIER_CANDIDATE_BIAS_M.get(
+                        candidate.candidate_id,
+                        (0.0, 0.0, 0.0),
+                    ),
+                    dtype=np.float64,
+                )
             if negative:
                 if "initial_state" in branch_role:
                     start_xy[0] += 0.135
@@ -1301,6 +1378,8 @@ def rigid_module(
     compact_pickup_ready: bool = False,
     robotiq_reach_arrival_lead_s: float | None = None,
     robotiq_tendon_profile: str = "default",
+    robotiq_actuator_force_limit_n: float | None = None,
+    negative_controller_offset_m: tuple[float, float, float] | None = None,
     interior_joint_margin_rad: float = 0.0,
     randomization_contract: dict[str, Any] | None = None,
     sampled_projectile_ready_offset_m: tuple[float, float, float] = (
@@ -1324,6 +1403,8 @@ def rigid_module(
             compact_pickup_ready=compact_pickup_ready,
             robotiq_reach_arrival_lead_s=robotiq_reach_arrival_lead_s,
             robotiq_tendon_profile=robotiq_tendon_profile,
+            robotiq_actuator_force_limit_n=robotiq_actuator_force_limit_n,
+            negative_controller_offset_m=negative_controller_offset_m,
             interior_joint_margin_rad=interior_joint_margin_rad,
             sampled_projectile_ready_offset_m=(
                 sampled_projectile_ready_offset_m

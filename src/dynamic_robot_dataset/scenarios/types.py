@@ -46,6 +46,8 @@ class ControllerPlan:
     compact_pickup_ready: bool = False
     robotiq_reach_arrival_lead_s: float | None = None
     robotiq_tendon_profile: str = "default"
+    robotiq_actuator_force_limit_n: float | None = None
+    negative_controller_offset_m: tuple[float, float, float] | None = None
     interior_joint_margin_rad: float = 0.0
     sampled_projectile_ready_offset_m: tuple[float, float, float] = (
         0.0,
@@ -63,6 +65,21 @@ class ControllerPlan:
         if self.robotiq_tendon_profile not in {"default", "pickup", "f2c"}:
             raise ValueError("scenario Robotiq tendon profile is invalid")
         if (
+            self.robotiq_actuator_force_limit_n is not None
+            and not 0.0 < self.robotiq_actuator_force_limit_n <= 0.16
+        ):
+            raise ValueError("scenario Robotiq actuator force limit is invalid")
+        if self.negative_controller_offset_m is not None and (
+            len(self.negative_controller_offset_m) != 3
+            or not all(
+                math.isfinite(float(value))
+                for value in self.negative_controller_offset_m
+            )
+        ):
+            raise ValueError(
+                "scenario negative-controller offset must be a finite 3-vector"
+            )
+        if (
             self.robotiq_reach_arrival_lead_s is not None
             and self.robotiq_reach_arrival_lead_s <= 0.0
         ):
@@ -77,6 +94,18 @@ class ControllerPlan:
             )
         ):
             raise ValueError("scenario projectile ready offset must be a finite 3-vector")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize without changing leaves that do not declare new options."""
+
+        payload = asdict(self)
+        for name in (
+            "robotiq_actuator_force_limit_n",
+            "negative_controller_offset_m",
+        ):
+            if payload[name] is None:
+                payload.pop(name)
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +241,7 @@ class ScenarioDefinition:
             "embodiments": list(self.embodiments),
             "evaluator_id": self.evaluator_id,
             "fixture_policy": self.module.fixture_policy,
-            "controller_plan": asdict(self.module.controller_plan),
+            "controller_plan": self.module.controller_plan.to_dict(),
             "implemented": self.implemented,
             "implementation_note": self.module.implementation_note,
             "randomization_contract": (

@@ -524,9 +524,18 @@ def test_sampled_surface_contract_replays_catalog_and_rejects_self_authored_geom
     )
 
     uncalibrated = deepcopy(spec)
-    candidate = sample_surface_candidate("random_plane_bounce", source_seed=17)
+    # Seed 17 now resolves to the hash-admitted ``plane_table_400``.  Keep
+    # this failure injection on a catalog member that intentionally remains
+    # unadmitted rather than expecting an admitted candidate to fail.
+    unadmitted_seed = 11
+    candidate = sample_surface_candidate(
+        "random_plane_bounce", source_seed=unadmitted_seed
+    )
+    assert candidate.admission.admitted is False
     uncalibrated["physics"]["sampled_surface_contract"] = (
-        sampled_surface_contract(candidate, source_seed=17).to_dict()
+        sampled_surface_contract(
+            candidate, source_seed=unadmitted_seed
+        ).to_dict()
     )
     with pytest.raises(ValueError, match="is not admitted"):
         evaluate_source_rows(
