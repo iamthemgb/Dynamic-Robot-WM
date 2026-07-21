@@ -934,7 +934,7 @@ def _sampled_surface_contract(
     # The import is intentionally local: the evaluator remains importable while
     # the source-MuJoCo package initializes, and resolution happens only during
     # validation/replay after module loading has completed.
-    from ..backends.source_mujoco.rigid_breadth import (
+    from ..scenarios.f2f_arbitrary_surface_bounce import (
         catalog_sha256,
         sample_surface_candidate,
     )

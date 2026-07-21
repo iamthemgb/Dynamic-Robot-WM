@@ -151,6 +151,7 @@ class CorpusLeaf:
     title: str
     family: str
     subfamily: str
+    scenario_module: str
     backend: str
     supported_embodiments: tuple[str, ...]
     task_variants: tuple[str, ...]
@@ -173,12 +174,22 @@ class CorpusLeaf:
             "title": self.title,
             "family": self.family,
             "subfamily": self.subfamily,
+            "scenario_module": self.scenario_module,
             "evaluator": self.evaluator,
         }
         missing = sorted(name for name, value in required_text.items() if not value.strip())
         if missing:
             raise RegistryValidationError(
                 f"{self.corpus_id} has empty required fields: {', '.join(missing)}"
+            )
+        expected_module_prefix = "dynamic_robot_dataset.scenarios."
+        if (
+            not self.scenario_module.startswith(expected_module_prefix)
+            or not self.scenario_module.endswith(":SCENARIO")
+            or self.scenario_module.count(":") != 1
+        ):
+            raise RegistryValidationError(
+                f"{self.corpus_id} has an invalid canonical scenario module reference"
             )
         if not self.supported_embodiments or len(set(self.supported_embodiments)) != len(
             self.supported_embodiments
@@ -226,6 +237,7 @@ class CorpusLeaf:
             title=str(value.get("title", "")),
             family=str(value.get("family", "")),
             subfamily=str(value.get("subfamily", "")),
+            scenario_module=str(value.get("scenario_module", "")),
             backend=str(value.get("backend", "")),
             supported_embodiments=tuple(
                 str(item) for item in value.get("supported_embodiments", ())

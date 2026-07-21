@@ -38,6 +38,7 @@ from ...common.visual_qc import (
     SOURCE_MUJOCO_VISIBILITY_QC_SCHEMA,
     SOURCE_MUJOCO_VISUAL_THRESHOLDS,
 )
+from ...scenarios import load_scenario_definition, scenario_source_hashes
 from .compiler import (
     SOURCE_MUJOCO_BACKEND_VERSION,
     SourceMujocoCompiledScenario,
@@ -50,7 +51,9 @@ from .controller import (
 )
 from .model import CompiledSourceModel, compile_source_model
 from .profiles import RIGID_REVIEW_PROFILE
-from .rigid_breadth import catalog_sha256 as rigid_breadth_catalog_sha256
+from ...scenarios.f2f_arbitrary_surface_bounce import (
+    catalog_sha256 as rigid_breadth_catalog_sha256,
+)
 from .provenance import (
     PINNED_ROLLING_ISLAND_MANIFEST_SHA256,
     PINNED_ROLLING_ISLAND_SOURCE_FILES,
@@ -267,15 +270,19 @@ def _solve_arm_ik(
     arm_joint_ids = ids.robot_joint_ids[:7]
     arm_qpos = np.asarray(ids.robot_qpos_adrs[:7], dtype=np.int32)
     ranges = _joint_ranges(model, arm_joint_ids)
-    if scenario.corpus_leaf_id in {"F2b", "F2c", "F2d", "F2e", "F2f"}:
+    controller_plan = load_scenario_definition(
+        scenario.corpus_leaf_id
+    ).module.controller_plan
+    joint_margin = controller_plan.interior_joint_margin_rad
+    if joint_margin > 0.0:
         # Keep the rebound-interception solutions strictly interior.  The
         # deep-fold F2c ready pose otherwise solves with its elbow exactly on
         # the model limit, which is unreplayable on hardware and fails the
         # joint-motion gate on the first servo correction.  This is scoped to
         # the newly calibrated rebound leaves so established leaves retain
         # their already-reviewed IK behavior.
-        ranges[:, 0] += 0.01
-        ranges[:, 1] -= 0.01
+        ranges[:, 0] += joint_margin
+        ranges[:, 1] -= joint_margin
     initial = PANDA_HOME_Q.copy() if initial_arm_q is None else initial_arm_q.copy()
     data.qpos[arm_qpos] = initial
     if scenario.embodiment == FRANKA_HAND:
@@ -494,6 +501,9 @@ def _controller_for_scenario(
     if scenario.embodiment == "no_robot":
         return None, np.empty(0, dtype=np.float64), ()
     assert scenario.controller_target_position_m is not None
+    controller_plan = load_scenario_definition(
+        scenario.corpus_leaf_id
+    ).module.controller_plan
     diagnostics: list[IKDiagnostics] = []
     # A ballistic catch cups the falling object with the Panda fingers
     # pointing up; a surface pickup must instead descend onto the object
@@ -501,9 +511,11 @@ def _controller_for_scenario(
     # impossible (the wrist would sit 10 cm below the fingertips, inside
     # the floor — measured on every IK branch), so the pickup motion kinds
     # command the top-down grasp orientation.
-    hand_orientation = (
-        "pick_down" if "pickup" in scenario.motion_kind else "catch_up"
-    )
+    hand_orientation = controller_plan.hand_orientation
+    if hand_orientation == "auto":
+        hand_orientation = (
+            "pick_down" if "pickup" in scenario.motion_kind else "catch_up"
+        )
     intercept, intercept_diagnostics = _solve_arm_ik(
         mujoco,
         least_squares,
@@ -515,9 +527,7 @@ def _controller_for_scenario(
     aim_target = tuple(
         float(value) for value in scenario.controller_target_position_m
     )
-    if (
-        "bounce" in scenario.motion_kind or "rebound" in scenario.motion_kind
-    ) and scenario.corpus_leaf_id != "F2e":
+    if controller_plan.settled_aim_correction:
         # The settled Robotiq jaw measured 9 mm off its commanded aim and
         # the drifting carom slid down the jaw flank instead of nesting, so
         # the correction applies to both embodiments.
@@ -550,7 +560,7 @@ def _controller_for_scenario(
     # rollout that begins at the intercept produces a stationary interception
     # that automated free-contact QC cannot distinguish from a real reach.
     if "pickup" in scenario.motion_kind:
-        compact_rebound_reach = scenario.corpus_leaf_id in {"F2b", "F2e"}
+        compact_rebound_reach = controller_plan.compact_pickup_ready
         ready_retract_x = (
             0.015
             if compact_rebound_reach
@@ -662,8 +672,8 @@ def _controller_for_scenario(
     )
     closure_start = max(0.0, event_time - closure_lead_s)
     reach_arrival_lead_s = (
-        0.13
-        if scenario.corpus_leaf_id == "F2b"
+        controller_plan.robotiq_reach_arrival_lead_s
+        if controller_plan.robotiq_reach_arrival_lead_s is not None
         and scenario.embodiment == ROBOTIQ_2F85_THICK_PAD
         else
         RIGID_REVIEW_PROFILE.robotiq_pickup_reach_arrival_before_event_s
@@ -689,7 +699,8 @@ def _controller_for_scenario(
         open_gripper = 0.0
         closed_gripper = (
             RIGID_REVIEW_PROFILE.f2c_robotiq_tendon_target
-            if robotiq_pickup and scenario.corpus_leaf_id in {"F2b", "F2c"}
+            if robotiq_pickup
+            and controller_plan.robotiq_tendon_profile == "f2c"
             else RIGID_REVIEW_PROFILE.robotiq_pickup_tendon_target
             if robotiq_pickup
             else RIGID_REVIEW_PROFILE.robotiq_tendon_target
@@ -4231,6 +4242,7 @@ class SourceMujocoBackend:
                 compiled.source_asset_sha256
             ),
             "rigid_breadth_surface_catalog": rigid_breadth_catalog_sha256(),
+            **scenario_source_hashes(scenario.corpus_leaf_id),
             "robocasa_license": self.robocasa_dependency.license_sha256,
         }
         quality_flags = list(qc_flags)

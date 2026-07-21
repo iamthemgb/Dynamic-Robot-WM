@@ -1,4 +1,8 @@
-"""Planar free-contact rolling interception smoke model."""
+"""Legacy planar rolling-interception smoke model.
+
+This analytical adapter is diagnostic only. Canonical rendered implementations
+are registered under :mod:`dynamic_robot_dataset.scenarios`.
+"""
 
 from __future__ import annotations
 

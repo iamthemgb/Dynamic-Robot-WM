@@ -24,6 +24,7 @@ from ...common.source_scenario import (
     SourceCameraSpec,
     SourceScenarioSpec,
 )
+from ...scenarios import scenario_source_hashes
 from .backend import (
     SourceMujocoBackend,
     _background_clearance_static_rows,
@@ -37,7 +38,7 @@ from .compiler import SourceMujocoCompiledScenario
 from .model import CompiledSourceModel, compile_source_model
 from .profiles import RIGID_REVIEW_PROFILE
 from .provenance import PINNED_ROLLING_ISLAND_SOURCE_FILES, PINNED_SOURCE_FILES
-from .rigid_breadth import (
+from ...scenarios.f2f_arbitrary_surface_bounce import (
     RIGID_BREADTH_PROFILE_VERSION,
     catalog_sha256 as rigid_breadth_catalog_sha256,
 )
@@ -352,6 +353,7 @@ def prepare_review_case(
         "compiled_scene_xml": compiled.xml_sha256,
         "compiled_asset_manifest": combined_manifest_hash(compiled.source_asset_sha256),
         "rigid_breadth_surface_catalog": rigid_breadth_catalog_sha256(),
+        **scenario_source_hashes(scenario.corpus_leaf_id),
     }
     embodiment = _embodiment(scenario.embodiment)
     actuator_phases, robot_initial_joint_qpos = _actuator_phases(

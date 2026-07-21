@@ -8,18 +8,36 @@ It separates three questions that must never be conflated:
 3. Has that leaf passed enough evidence gates to receive review, pilot, or
    production quota?
 
-A declared capability is not a release claim. At this checkpoint P0a-d and
-F1a-d can execute their fixed review matrix; the other 12 leaves receive zero
-execution quota. Every leaf remains release-blocked until its own evidence
-gate passes. Large-scale generation is not yet allowed.
+A declared capability is not a release claim. At this checkpoint 15 rigid
+leaf modules have physical fixed-review implementations. Eleven are currently
+review-executable (P0a-d, F1a-d, F2a, F2c, and F3b); F2b/F2d/F2e/F2f remain
+repair-only and the remaining five modules are fail-closed contracts. Every
+leaf remains release-blocked until its own evidence gate passes. Large-scale
+generation is not yet allowed.
 
 ## Sources of truth
 
 The runtime taxonomy is
 [`configs/corpus/dynamic_manipulation_v2.yaml`](../configs/corpus/dynamic_manipulation_v2.yaml).
 It contains exactly 20 leaves and defines each leaf's backend, embodiments,
-task variants, rates, evaluator, required metadata, release state, and blockers.
-Do not add a scenario by bypassing this registry in a script.
+task variants, rates, evaluator, required metadata, release state, blockers,
+and canonical Python module. Do not add a scenario by bypassing this registry
+in a script.
+
+All leaf modules are collected under
+[`src/dynamic_robot_dataset/scenarios/`](../src/dynamic_robot_dataset/scenarios/).
+Their filenames include both the corpus ID and subfamily, for example
+`f2b_ramp_launch.py`. Inspect the complete inventory or one contract with:
+
+```bash
+python -m dynamic_robot_dataset.scenarios list
+python -m dynamic_robot_dataset.scenarios show F2b
+```
+
+The modules declare fixture and controller policy and own recipe dispatch;
+the backend retains only shared IK, actuator control, rendering, mutation
+auditing, and persistence. The older `families/*/adapter.py` files are
+analytical diagnostics, not canonical rendered scenario implementations.
 
 Backend support and hash pins are declared in
 [`configs/backends/capabilities_v1.yaml`](../configs/backends/capabilities_v1.yaml).

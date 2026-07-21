@@ -1,4 +1,9 @@
-"""Free-contact projectile/rebound family with parameter counterfactuals."""
+"""Legacy analytical projectile/rebound diagnostic adapter.
+
+This is not a canonical rendered MuJoCo scenario. Canonical corpus recipes
+live in :mod:`dynamic_robot_dataset.scenarios`; outputs from this adapter are
+diagnostic only and cannot satisfy review, pilot, or production gates.
+"""
 
 from __future__ import annotations
 

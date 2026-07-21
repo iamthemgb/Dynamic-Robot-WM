@@ -18,6 +18,7 @@ leaves:
     title: Freefall (no arm)
     family: passive_no_franka
     subfamily: freefall
+    scenario_module: dynamic_robot_dataset.scenarios.p0a_freefall:SCENARIO
     backend: source_mujoco
     supported_embodiments: [no_robot]
     task_variants: [nominal_freefall, lateral_freefall]
@@ -31,6 +32,7 @@ leaves:
     title: Projectile (no arm)
     family: passive_no_franka
     subfamily: projectile
+    scenario_module: dynamic_robot_dataset.scenarios.p0b_projectile:SCENARIO
     backend: source_mujoco
     supported_embodiments: [no_robot]
     task_variants: [ballistic_projectile, angled_projectile]
@@ -44,6 +46,7 @@ leaves:
     title: Bounce / rebound (no arm)
     family: passive_no_franka
     subfamily: bounce_rebound
+    scenario_module: dynamic_robot_dataset.scenarios.p0c_bounce_rebound:SCENARIO
     backend: source_mujoco
     supported_embodiments: [no_robot]
     task_variants: [table_bounce, wall_rebound]
@@ -57,6 +60,7 @@ leaves:
     title: Rolling (no arm)
     family: passive_no_franka
     subfamily: rolling
+    scenario_module: dynamic_robot_dataset.scenarios.p0d_rolling:SCENARIO
     backend: source_mujoco
     supported_embodiments: [no_robot]
     task_variants: [straight_roll, slope_roll]
@@ -71,6 +75,7 @@ leaves:
     title: Nominal vertical drop
     family: falling_catch
     subfamily: centered_vertical_drop
+    scenario_module: dynamic_robot_dataset.scenarios.f1a_centered_vertical_drop:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [catch_retain, catch_transport]
@@ -84,6 +89,7 @@ leaves:
     title: Off-center vertical drop
     family: falling_catch
     subfamily: off_center_drop
+    scenario_module: dynamic_robot_dataset.scenarios.f1b_off_center_drop:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [off_center_catch, off_center_near_miss]
@@ -97,6 +103,7 @@ leaves:
     title: Freefall with lateral drift
     family: falling_catch
     subfamily: drifted_drop
+    scenario_module: dynamic_robot_dataset.scenarios.f1c_drifted_drop:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [drift_catch, drift_near_miss]
@@ -110,6 +117,7 @@ leaves:
     title: Mild projectile release
     family: falling_catch
     subfamily: mild_projectile
+    scenario_module: dynamic_robot_dataset.scenarios.f1d_mild_projectile:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [mild_projectile_catch, mild_projectile_near_miss]
@@ -124,6 +132,7 @@ leaves:
     title: Direct projectile interception
     family: projectile_rebound
     subfamily: direct_interception
+    scenario_module: dynamic_robot_dataset.scenarios.f2a_direct_interception:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [direct_catch, direct_deflection]
@@ -137,6 +146,7 @@ leaves:
     title: Ramp-launched projectile
     family: projectile_rebound
     subfamily: ramp_launch
+    scenario_module: dynamic_robot_dataset.scenarios.f2b_ramp_launch:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [ramp_launch_catch, ramp_launch_deflection]
@@ -150,6 +160,7 @@ leaves:
     title: Table/floor bounce interception
     family: projectile_rebound
     subfamily: table_floor_bounce
+    scenario_module: dynamic_robot_dataset.scenarios.f2c_table_floor_bounce:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [table_bounce, floor_bounce]
@@ -163,6 +174,7 @@ leaves:
     title: Wall/barrier rebound interception
     family: projectile_rebound
     subfamily: wall_barrier_rebound
+    scenario_module: dynamic_robot_dataset.scenarios.f2d_wall_barrier_rebound:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [wall_rebound, angled_barrier_rebound]
@@ -176,6 +188,7 @@ leaves:
     title: Multi-surface rebound
     family: projectile_rebound
     subfamily: multi_surface_rebound
+    scenario_module: dynamic_robot_dataset.scenarios.f2e_multi_surface_rebound:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [floor_to_wall, flight_to_table_bounce]
@@ -189,6 +202,7 @@ leaves:
     title: Arbitrary surface bounce
     family: projectile_rebound
     subfamily: arbitrary_surface_bounce
+    scenario_module: dynamic_robot_dataset.scenarios.f2f_arbitrary_surface_bounce:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [random_plane_bounce, random_barrier_bounce]
@@ -203,6 +217,7 @@ leaves:
     title: Receiver + donor oscillating-platform handoff
     family: dynamic_handoff
     subfamily: oscillating_platform_handoff
+    scenario_module: dynamic_robot_dataset.scenarios.f3a_oscillating_platform_handoff:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [platform_receive, platform_handoff]
@@ -216,6 +231,7 @@ leaves:
     title: Ball rolling on table, arm picks it up
     family: dynamic_handoff
     subfamily: rolling_pickup
+    scenario_module: dynamic_robot_dataset.scenarios.f3b_rolling_pickup:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [rolling_pickup, rolling_pickup_transport]
@@ -229,6 +245,7 @@ leaves:
     title: Ball on water current, arm picks it up
     family: dynamic_handoff
     subfamily: water_current_pickup
+    scenario_module: dynamic_robot_dataset.scenarios.f3c_water_current_pickup:SCENARIO
     backend: source_genesis_fluid
     supported_embodiments: [franka_hand]
     task_variants: [cross_current_pickup, downstream_pickup]
@@ -242,6 +259,7 @@ leaves:
     title: Moving base + launched projectile catch
     family: dynamic_handoff
     subfamily: moving_base_catch
+    scenario_module: dynamic_robot_dataset.scenarios.f3d_moving_base_catch:SCENARIO
     backend: source_mujoco
     supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
     task_variants: [linear_base_catch, oscillating_base_catch]
@@ -256,6 +274,7 @@ leaves:
     title: Cloth manipulation
     family: deformable
     subfamily: cloth
+    scenario_module: dynamic_robot_dataset.scenarios.d1_cloth:SCENARIO
     backend: source_mujoco_deformable
     supported_embodiments: [franka_hand]
     task_variants: [poke_cloth, lift_corner_release, fold_edge_fixed_line]
@@ -269,6 +288,7 @@ leaves:
     title: Rope/cable manipulation
     family: deformable
     subfamily: rope
+    scenario_module: dynamic_robot_dataset.scenarios.d2_rope:SCENARIO
     backend: source_mujoco_deformable
     supported_embodiments: [franka_hand]
     task_variants: [drag_endpoint, tug, lift_and_drape, wrap_around_post, thread_through_ring]
