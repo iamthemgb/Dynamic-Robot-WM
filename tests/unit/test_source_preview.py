@@ -7,10 +7,17 @@ import pytest
 
 from dynamic_robot_dataset.common.review_suite import write_review_suite_bundle
 from dynamic_robot_dataset.common.source_preview import (
+    SOURCE_PREVIEW_ARROW_EXTRA_FIELDS,
     _prepare_source_review_declarations_isolated,
     _run_preview_shards_isolated,
     select_source_review_cases,
 )
+
+
+def test_source_preview_declares_nullable_task_surface_arrow_identity() -> None:
+    assert SOURCE_PREVIEW_ARROW_EXTRA_FIELDS == {
+        "events": {"task_surface_id": "string"}
+    }
 
 
 def test_source_preview_selection_preserves_fixed_order_and_filters_clean_r0(

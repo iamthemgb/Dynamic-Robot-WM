@@ -48,6 +48,9 @@ SOURCE_REVIEW_INPUT_PROVENANCE_SCHEMA = (
 SOURCE_PREVIEW_PREPARE_REQUEST_SCHEMA = (
     "dynamic-robot-source-preview-prepare-request/v1"
 )
+SOURCE_PREVIEW_ARROW_EXTRA_FIELDS = {
+    "events": {"task_surface_id": "string"},
+}
 
 
 def _canonical_copy(value: Any) -> Any:
@@ -406,6 +409,10 @@ def execute_source_review_preview(
         "control_hz": 60,
         "video_hz": 30,
         "views": ["main", "secondary"],
+        # Contact rows always carry this stable-identity extension. It is
+        # legitimately null for fixtureless catches, so per-episode Arrow
+        # inference cannot determine its type without this declaration.
+        "arrow_extra_fields": SOURCE_PREVIEW_ARROW_EXTRA_FIELDS,
         "release_state": "review_only_blocked",
     }
     # One episode per shard keeps renderer/native simulator lifetime bounded;
@@ -610,6 +617,7 @@ def execute_source_review_preview(
 
 
 __all__ = [
+    "SOURCE_PREVIEW_ARROW_EXTRA_FIELDS",
     "SOURCE_PREVIEW_RUN_SCHEMA",
     "SourcePreviewResult",
     "_prepare_source_review_declarations_isolated",
