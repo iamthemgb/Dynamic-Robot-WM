@@ -33,6 +33,18 @@ Use `python -m dynamic_robot_dataset.scenarios list` for the registry-bound
 inventory and `python -m dynamic_robot_dataset.scenarios show F2b` for one
 leaf's variants, embodiments, evaluator, blockers, and normal review command.
 
+F1d and F2a additionally expose versioned projectile initial-state samplers:
+
+```bash
+python -m dynamic_robot_dataset.scenarios sample F1d --count 6 --seed 7
+python -m dynamic_robot_dataset.scenarios sample F2a --count 6 --seed 7
+```
+
+These commands inspect deterministic `sampled_preview` specifications without
+simulation. The sampled envelope is training-ineligible until its fixed seeds,
+controller behavior, 600/1200 Hz comparison, and human review pass. The
+official fixed-review recipes remain unchanged.
+
 The older `families/*/adapter.py` modules are analytical/diagnostic adapters.
 They are not canonical rendered MuJoCo scenario implementations and do not
 constitute review, pilot, or production evidence.

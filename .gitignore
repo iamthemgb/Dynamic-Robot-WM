@@ -10,28 +10,10 @@ build/
 dist/
 *.egg-info/
 
-# Smoke artifacts stay local. Keep small reports and contact sheets reviewable.
-outputs/smoke_tests/**/data/
-outputs/smoke_tests/**/videos/
-outputs/smoke_tests/**/high_rate/
-outputs/smoke_tests/**/events/
-outputs/smoke_tests/**/objects/
-outputs/smoke_tests/**/tracks/
-outputs/smoke_tests/**/*.mp4
-outputs/smoke_tests/**/*.parquet
-outputs/smoke_tests/**/*.npz
-outputs/smoke_tests/**/*.partial
-outputs/smoke_tests/**/.records/
-outputs/smoke_tests/**/.staging/
-outputs/smoke_tests/**/.finalize_context.json
-
-# Native executions are immutable local datasets and Slurm logs, not source.
-outputs/native_*/
-outputs/acceptance/
-outputs/slurm-*.out
-
-# Real-gripper example renders are reproducible local QC artifacts.
-outputs/examples/
+# Generated datasets, reports, contact sheets, and logs are reproducible
+# artifacts rather than source. Keep only the navigation note in Git.
+outputs/**
+!outputs/README.md
 
 # Local asset roots and resolved run state are machine-specific.
 configs/assets/asset_roots.local.yaml

@@ -35,8 +35,8 @@ from ...scenarios.f2e_multi_surface_rebound import OrderedContactContract
 from ...scenarios.f2f_arbitrary_surface_bounce import SampledSurfaceContract
 
 
-SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v8"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.17.0-review"
+SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v9"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.18.0-review"
 
 
 class SourceMujocoUnsupported(ValueError):
@@ -199,6 +199,8 @@ class SourceMujocoCompiledScenario:
     rng_subseeds: Mapping[str, int]
     evaluator: str
     rolling_island_scene: RollingIslandScenePlan | None
+    initial_state_mode: str = "fixed_review"
+    initial_state_sampling_contract: Mapping[str, Any] | None = None
     surface_transition_contract: SurfaceTransitionContract | None = None
     ordered_contact_contract: OrderedContactContract | None = None
     sampled_surface_contract: SampledSurfaceContract | None = None
@@ -523,6 +525,48 @@ class SourceMujocoCompiledScenario:
         values = [int(self.rng_subseeds[name]) for name in sorted(required_rng)]
         if len(set(values)) != len(values) or any(value < 0 or value >= 2**64 for value in values):
             raise SourceMujocoUnsupported("review RNG sub-seeds are invalid or coupled")
+        if self.initial_state_mode not in {"fixed_review", "sampled_preview"}:
+            raise SourceMujocoUnsupported("unknown initial-state sampling mode")
+        if self.initial_state_mode == "sampled_preview":
+            if self.corpus_leaf_id not in {"F1d", "F2a"}:
+                raise SourceMujocoUnsupported(
+                    "sampled projectile previews are restricted to F1d/F2a"
+                )
+            contract = self.initial_state_sampling_contract
+            if not isinstance(contract, Mapping):
+                raise SourceMujocoUnsupported(
+                    f"{self.corpus_leaf_id} lacks its projectile initial-state contract"
+                )
+            if contract.get("source_seed") != int(self.rng_subseeds["initial_state"]):
+                raise SourceMujocoUnsupported(
+                    "projectile initial-state contract uses the wrong RNG stream"
+                )
+            bound = {
+                "applied_initial_position_m": self.object_initial_position_m,
+                "applied_initial_linear_velocity_m_s": (
+                    self.object_initial_linear_velocity_m_s
+                ),
+                "applied_initial_angular_velocity_rad_s": (
+                    self.object_initial_angular_velocity_rad_s
+                ),
+                "applied_physical_target_position_m": (
+                    self.physical_target_position_m
+                ),
+                "applied_controller_target_position_m": (
+                    self.controller_target_position_m
+                ),
+            }
+            if any(
+                tuple(contract.get(name, ())) != tuple(expected or ())
+                for name, expected in bound.items()
+            ):
+                raise SourceMujocoUnsupported(
+                    "projectile initial-state contract differs from compiled state"
+                )
+        elif self.initial_state_sampling_contract is not None:
+            raise SourceMujocoUnsupported(
+                "projectile initial-state contracts are restricted to F1d/F2a"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -996,6 +1040,7 @@ def compile_review_case(
     )
     robot_base_euler = None if embodiment == "no_robot" else (0.0, 0.0, 0.0)
     branch_role = str(value.get("branch_role") or "")
+    initial_state_mode = str(value.get("initial_state_mode") or "fixed_review")
     passive_variation_profile = (
         str(value.get("passive_variation_profile") or "")
         if leaf_id.startswith("P0")
@@ -1012,6 +1057,7 @@ def compile_review_case(
                 physics_seed=rng_subseeds["physics"],
                 tabletop_height_m=task_height,
                 rolling_island_scene=rolling_island_scene,
+                initial_state_mode=initial_state_mode,
             )
         )
     except (RuntimeError, TypeError, ValueError) as error:
@@ -1091,6 +1137,7 @@ def compile_review_case(
         rng_subseeds=rng_subseeds,
         evaluator=str(value.get("evaluator") or leaf.evaluator),
         rolling_island_scene=rolling_island_scene,
+        initial_state_mode=initial_state_mode,
         **recipe,
     )
     result.validate()

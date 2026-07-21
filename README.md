@@ -5,13 +5,26 @@ QC layer for the 20-leaf dynamic-manipulation corpus. It uses the physics
 backend appropriate to each leaf while emitting one
 `dynamic-robot-dataset/v2` contract.
 
-The repository is fail-closed. P0a-d and F1a-d currently have executable
-review implementations; the other 12 leaves have zero execution quota. All 20
-remain release-blocked pending their fixed acceptance evidence, so executable
-review code is not a claim that large-scale generation is ready.
+The repository is fail-closed. Fifteen rigid leaves currently have executable
+review implementations; F3a/F3c/F3d/D1/D2 remain contract-only. All 20 remain
+release-blocked pending their fixed acceptance evidence, so executable review
+code is not a claim that large-scale generation is ready.
 
 For the exact operating procedure, start with the
 [unified generator operator guide](docs/unified_generator_operator_guide.md).
+
+## Start here
+
+- Scenario scripts by subfamily:
+  [`src/dynamic_robot_dataset/scenarios/`](src/dynamic_robot_dataset/scenarios/)
+- Configuration map: [`configs/README.md`](configs/README.md)
+- Documentation map: [`docs/README.md`](docs/README.md)
+- Developer-tool map: [`tools/README.md`](tools/README.md)
+- Historical source quarantine:
+  [`legacy_sources/README.md`](legacy_sources/README.md)
+- Migration evidence: [`migration/README.md`](migration/README.md)
+- Generated datasets:
+  `/gpfs/radev/project/sous/zl664/dataset_generation_runs/`
 
 ## Canonical boundary
 
@@ -219,6 +232,20 @@ retain their fixed streams.
 records exploratory wall-rebound and Robotiq 600/1200 Hz measurements. Both
 profiles remain explicitly unadmitted until the full timestep-halving matrix,
 hash-bound artifacts, fixed reviews, and human approval exist.
+
+F1d and F2a expose a deterministic, outcome-independent sampled projectile
+envelope for development inspection. It is explicitly training-ineligible
+until the fixed seeds pass physics calibration and review:
+
+```bash
+uv run --frozen python -m dynamic_robot_dataset.scenarios sample F1d \
+  --count 6 --seed 7
+uv run --frozen python -m dynamic_robot_dataset.scenarios sample F2a \
+  --count 6 --seed 7
+```
+
+The normal fixed-review path continues to use its preserved initial states.
+`sampled_preview` is not silently substituted into acceptance or production.
 
 ## Collaborator harmonizer boundary
 

@@ -3,7 +3,9 @@
 This document describes the production-oriented revision of the maintained
 generator. It is an implementation and release contract, not evidence that a
 production corpus has already been generated. The immutable source-migration
-decisions remain in [`plan.md`](../plan.md) and `migration/`; neither this
+decisions remain in
+[`original_consolidation_plan.md`](archive/original_consolidation_plan.md) and
+`migration/`; neither this
 revision nor its commands write to a source dataset or to the Wan training
 workspace.
 

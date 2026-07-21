@@ -25,6 +25,7 @@ class ScenarioBuildContext:
     physics_seed: int
     tabletop_height_m: float
     rolling_island_scene: Any | None = None
+    initial_state_mode: str = "fixed_review"
 
 
 class RecipeBuilder(Protocol):
@@ -76,6 +77,7 @@ class ScenarioModuleSpec:
     controller_plan: ControllerPlan
     build_recipe: RecipeBuilder | None
     implementation_note: str
+    randomization_contract: Mapping[str, Any] | None = None
 
     @property
     def implemented(self) -> bool:
@@ -95,6 +97,8 @@ class ScenarioModuleSpec:
         ):
             raise ValueError("scenario module identity is incomplete")
         self.controller_plan.validate()
+        if self.randomization_contract is not None and not self.randomization_contract:
+            raise ValueError("scenario randomization contract cannot be empty")
 
     def build(self, context: ScenarioBuildContext) -> dict[str, Any]:
         self.validate()
@@ -197,6 +201,11 @@ class ScenarioDefinition:
             "controller_plan": asdict(self.module.controller_plan),
             "implemented": self.implemented,
             "implementation_note": self.module.implementation_note,
+            "randomization_contract": (
+                None
+                if self.module.randomization_contract is None
+                else dict(self.module.randomization_contract)
+            ),
             "release_state": self.release_state,
             "blockers": list(self.blockers),
         }

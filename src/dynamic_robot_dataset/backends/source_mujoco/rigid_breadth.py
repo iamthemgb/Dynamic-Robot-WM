@@ -1,7 +1,7 @@
 """Compatibility exports for rigid-breadth scenario contracts.
 
 Canonical ownership moved to the clearly labelled F2 scenario modules. New
-code should import from :mod:\`dynamic_robot_dataset.scenarios\` directly.
+code should import from ``dynamic_robot_dataset.scenarios`` directly.
 """
 
 from ...scenarios.f2b_ramp_launch import SurfaceTransitionContract

@@ -56,7 +56,7 @@
     {
       "id_prefix": "legacy-smoke",
       "artifact_id": "legacy-smoke-canonical-120",
-      "path": "/gpfs/radev/project/sous/zl664/dataset_generation/outputs/smoke_tests/canonical_smoke_120",
+      "path": "/gpfs/radev/project/sous/zl664/dataset_generation_runs/legacy_inrepo_outputs_20260721/smoke_tests/canonical_smoke_120",
       "discovery": "self",
       "kind": "legacy_smoke_dataset",
       "category": "legacy/smoke",
@@ -66,7 +66,7 @@
     {
       "id_prefix": "legacy-smoke-export",
       "artifact_id": "legacy-smoke-canonical-120-wan",
-      "path": "/gpfs/radev/project/sous/zl664/dataset_generation/outputs/smoke_tests/canonical_smoke_120_wan",
+      "path": "/gpfs/radev/project/sous/zl664/dataset_generation_runs/legacy_inrepo_outputs_20260721/smoke_tests/canonical_smoke_120_wan",
       "discovery": "self",
       "kind": "legacy_smoke_export",
       "category": "legacy/smoke",
@@ -74,7 +74,7 @@
     },
     {
       "id_prefix": "owned-examples",
-      "path": "/gpfs/radev/project/sous/zl664/dataset_generation/outputs/examples",
+      "path": "/gpfs/radev/project/sous/zl664/dataset_generation_runs/legacy_inrepo_outputs_20260721/examples",
       "discovery": "children",
       "kind": "preview",
       "category": "previews",

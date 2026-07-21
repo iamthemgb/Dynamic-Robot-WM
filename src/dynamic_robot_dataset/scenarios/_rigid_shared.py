@@ -18,6 +18,148 @@ from ..common.embodiments import FRANKA_HAND, ROBOTIQ_2F85_THICK_PAD
 from .types import ControllerPlan, ScenarioBuildContext, ScenarioModuleSpec
 
 
+PROJECTILE_INITIAL_STATE_SAMPLER_VERSION = (
+    "dynamic-robot-projectile-initial-state/v1"
+)
+
+# These are deliberately bounded review/pilot ranges, not an unconstrained
+# production distribution.  F1d stays a mild, longer-flight projectile; F2a
+# starts farther away and requires the arm to cover a broader interception
+# workspace.  Position/velocity/spin are sampled from the initial-state RNG,
+# while object size remains governed by the existing rigid physics profile.
+_PROJECTILE_INITIAL_STATE_RANGES: dict[str, dict[str, tuple[float, float]]] = {
+    "F1d": {
+        "target_x_m": (0.43, 0.51),
+        "target_y_m": (-0.06, 0.06),
+        "incoming_azimuth_deg": (-22.0, 22.0),
+        "horizontal_distance_m": (0.12, 0.20),
+        "flight_time_s": (0.42, 0.50),
+        "initial_vertical_velocity_m_s": (-0.10, 0.20),
+        "initial_spin_z_rad_s": (-4.0, 4.0),
+    },
+    "F2a": {
+        "target_x_m": (0.41, 0.53),
+        "target_y_m": (-0.08, 0.08),
+        "incoming_azimuth_deg": (-30.0, 30.0),
+        "horizontal_distance_m": (0.18, 0.30),
+        "flight_time_s": (0.44, 0.54),
+        "initial_vertical_velocity_m_s": (0.20, 0.70),
+        "initial_spin_z_rad_s": (-6.0, 6.0),
+    },
+}
+
+
+def projectile_randomization_contract(leaf_id: str) -> dict[str, Any]:
+    """Return the public, versioned sampling envelope for one projectile leaf."""
+
+    ranges = _PROJECTILE_INITIAL_STATE_RANGES.get(leaf_id)
+    if ranges is None:
+        raise ValueError(f"{leaf_id} has no projectile initial-state policy")
+    return {
+        "schema_version": PROJECTILE_INITIAL_STATE_SAMPLER_VERSION,
+        "rng_stream": "initial_state",
+        "sampling": "continuous_uniform_with_ballistic_solve",
+        "derive_velocity_from_sampled_launch_target_and_flight_time": True,
+        "outcome_conditioned_resampling": False,
+        "ranges": {name: list(bounds) for name, bounds in ranges.items()},
+    }
+
+
+def _projectile_rng(seed: int) -> np.random.Generator:
+    """Namespace the projectile sampler without depending on draw order elsewhere."""
+
+    if seed < 0 or seed >= 2**64:
+        raise ValueError("projectile initial-state seed must be an unsigned 64-bit value")
+    sequence = np.random.SeedSequence(
+        [seed & 0xFFFFFFFF, seed >> 32, 0x50524F4A, 1]
+    )
+    return np.random.default_rng(sequence)
+
+
+def _sample_projectile_initial_state(
+    leaf_id: str,
+    *,
+    seed: int,
+    target_z_m: float,
+    gravity_z_m_s2: float,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    float,
+    tuple[float, float, float],
+    dict[str, Any],
+]:
+    """Sample a reachable ballistic arc without looking at branch/outcome labels."""
+
+    ranges = _PROJECTILE_INITIAL_STATE_RANGES[leaf_id]
+    rng = _projectile_rng(seed)
+
+    def sample(name: str) -> float:
+        lower, upper = ranges[name]
+        return float(rng.uniform(lower, upper))
+
+    target = np.asarray(
+        (sample("target_x_m"), sample("target_y_m"), target_z_m),
+        dtype=np.float64,
+    )
+    azimuth_deg = sample("incoming_azimuth_deg")
+    azimuth_rad = math.radians(azimuth_deg)
+    direction_xy = np.asarray(
+        (math.cos(azimuth_rad), math.sin(azimuth_rad)), dtype=np.float64
+    )
+    horizontal_distance = sample("horizontal_distance_m")
+    flight_time = sample("flight_time_s")
+    initial_vertical_velocity = sample("initial_vertical_velocity_m_s")
+    launch_height = (
+        target[2]
+        - initial_vertical_velocity * flight_time
+        - 0.5 * gravity_z_m_s2 * flight_time**2
+    )
+    # Spawn beyond the interception point and travel back toward the robot.
+    # The opposite construction (spawn between the robot base and target)
+    # crossed the lower arm during its reach and created an unintended early
+    # contact event before the gripper could perform the interception.
+    start = np.asarray(
+        (
+            target[0] + horizontal_distance * direction_xy[0],
+            target[1] + horizontal_distance * direction_xy[1],
+            launch_height,
+        ),
+        dtype=np.float64,
+    )
+    velocity = np.empty(3, dtype=np.float64)
+    velocity[:2] = -horizontal_distance * direction_xy / flight_time
+    velocity[2] = initial_vertical_velocity
+    spin = (0.0, 0.0, sample("initial_spin_z_rad_s"))
+    arrival = start + velocity * flight_time
+    arrival[2] += 0.5 * gravity_z_m_s2 * flight_time**2
+    if not np.allclose(arrival, target, atol=1e-12, rtol=0.0):
+        raise RuntimeError("projectile sampler failed its ballistic construction")
+    final_vertical_velocity = velocity[2] + gravity_z_m_s2 * flight_time
+    if final_vertical_velocity >= 0.0:
+        raise RuntimeError("projectile must reach the gripper on its descending arc")
+    contract = projectile_randomization_contract(leaf_id)
+    contract.update(
+        {
+            "source_seed": int(seed),
+            "sampled_target_position_m": target.tolist(),
+            "sampled_base_initial_position_m": start.tolist(),
+            "sampled_base_initial_linear_velocity_m_s": velocity.tolist(),
+            "sampled_base_initial_angular_velocity_rad_s": list(spin),
+            "sampled_incoming_azimuth_deg": azimuth_deg,
+            "sampled_horizontal_distance_m": horizontal_distance,
+            "sampled_flight_time_s": flight_time,
+            "sampled_launch_height_m": launch_height,
+            "sampled_initial_vertical_velocity_m_s": initial_vertical_velocity,
+            "sampled_arrival_vertical_velocity_m_s": float(
+                final_vertical_velocity
+            ),
+        }
+    )
+    return target, start, velocity, flight_time, spin, contract
+
+
 
 def _recipe_payload(
     leaf_id: str,
@@ -29,6 +171,7 @@ def _recipe_payload(
     physics_seed: int,
     tabletop_height_m: float,
     rolling_island_scene: RollingIslandScenePlan | None = None,
+    initial_state_mode: str = "fixed_review",
 ) -> dict[str, Any]:
     from ..backends.source_mujoco.compiler import (
         PhysicalSurface,
@@ -187,18 +330,43 @@ def _recipe_payload(
         # 55 mm below the actual event and let the ball sink into the hand.
         target = np.array((0.47, 0.0, close_z), dtype=np.float64)
         start_xy = target[:2].copy()
+        initial_spin = (0.0, 0.0, 0.0)
+        sampling_contract = None
         if leaf_id == "F1b":
             target[1] = 0.035
             start_xy = target[:2].copy()
         elif leaf_id == "F1c":
             start_xy += np.array((-0.09, 0.05))
+        elif leaf_id in {"F1d", "F2a"} and initial_state_mode == "sampled_preview":
+            (
+                target,
+                sampled_start,
+                sampled_velocity,
+                event_time,
+                initial_spin,
+                sampling_contract,
+            ) = _sample_projectile_initial_state(
+                leaf_id,
+                seed=seed,
+                target_z_m=close_z,
+                gravity_z_m_s2=gravity[2],
+            )
+            start_xy = sampled_start[:2].copy()
         elif leaf_id in {"F1d", "F2a"}:
+            if initial_state_mode != "fixed_review":
+                raise ValueError(
+                    f"unsupported projectile initial-state mode {initial_state_mode!r}"
+                )
             start_xy += np.array((-0.12, -0.055))
         # Freeze the nominal physical velocity before applying a negative
         # initial-state intervention.  Recomputing it after shifting the start
         # position silently steered the object back to the grasp target and
         # turned every intended initial-state failure into a success.
-        velocity_xy = (target[:2] - start_xy) / event_time
+        velocity_xy = (
+            sampled_velocity[:2].copy()
+            if leaf_id in {"F1d", "F2a"} and sampling_contract is not None
+            else (target[:2] - start_xy) / event_time
+        )
         controller_target = target.copy()
         if negative:
             # Keep the physical initial state and intended difficult seed.  The
@@ -213,7 +381,16 @@ def _recipe_payload(
                 controller_target[1] += 0.10
             else:
                 controller_target[0] -= 0.10
-        start_z = float(target[2]) + 0.5 * 9.81 * event_time**2
+        start_z = (
+            float(sampled_start[2])
+            if leaf_id in {"F1d", "F2a"} and sampling_contract is not None
+            else float(target[2]) + 0.5 * 9.81 * event_time**2
+        )
+        velocity_z = (
+            float(sampled_velocity[2])
+            if leaf_id in {"F1d", "F2a"} and sampling_contract is not None
+            else 0.0
+        )
         transport = (
             (float(controller_target[0] + 0.12), float(controller_target[1]), catch_z + 0.06)
             if task_variant == "catch_transport"
@@ -223,13 +400,49 @@ def _recipe_payload(
             key_event_time_s=event_time,
             motion_kind="direct_free_contact_interception",
             object_initial_position_m=(float(start_xy[0]), float(start_xy[1]), float(start_z)),
-            object_initial_linear_velocity_m_s=(float(velocity_xy[0]), float(velocity_xy[1]), 0.0),
+            object_initial_linear_velocity_m_s=(
+                float(velocity_xy[0]),
+                float(velocity_xy[1]),
+                velocity_z,
+            ),
+            object_initial_angular_velocity_rad_s=initial_spin,
             ballistic_event_time_s=event_time,
             physical_target_position_m=tuple(float(value) for value in target),
             controller_target_position_m=tuple(float(value) for value in controller_target),
             controller_transport_position_m=transport,
             surfaces=(),
+            initial_state_sampling_contract=sampling_contract,
         )
+        if sampling_contract is not None:
+            intervention = (
+                "initial_state_lateral_shift"
+                if negative and "initial_state" in branch_role
+                else (
+                    "controller_target_offset"
+                    if negative and "controller" in branch_role
+                    else "none"
+                )
+            )
+            sampling_contract.update(
+                {
+                    "applied_initial_position_m": list(
+                        base["object_initial_position_m"]
+                    ),
+                    "applied_initial_linear_velocity_m_s": list(
+                        base["object_initial_linear_velocity_m_s"]
+                    ),
+                    "applied_initial_angular_velocity_rad_s": list(
+                        base["object_initial_angular_velocity_rad_s"]
+                    ),
+                    "applied_physical_target_position_m": list(
+                        base["physical_target_position_m"]
+                    ),
+                    "applied_controller_target_position_m": list(
+                        base["controller_target_position_m"]
+                    ),
+                    "declared_intervention": intervention,
+                }
+            )
     elif leaf_id == "F2b":
         # A grounded incline redirects an admitted rolling initial state into
         # a projectile.  The ball traverses the physical ramp for ~0.49 s,
@@ -1067,6 +1280,7 @@ def build_source_mujoco_recipe(context: ScenarioBuildContext):
         physics_seed=context.physics_seed,
         tabletop_height_m=context.tabletop_height_m,
         rolling_island_scene=context.rolling_island_scene,
+        initial_state_mode=context.initial_state_mode,
     )
 
 
@@ -1085,6 +1299,7 @@ def rigid_module(
     robotiq_reach_arrival_lead_s: float | None = None,
     robotiq_tendon_profile: str = "default",
     interior_joint_margin_rad: float = 0.0,
+    randomization_contract: dict[str, Any] | None = None,
 ) -> ScenarioModuleSpec:
     return ScenarioModuleSpec(
         leaf_id=leaf_id,
@@ -1105,6 +1320,7 @@ def rigid_module(
         ),
         build_recipe=build_source_mujoco_recipe,
         implementation_note="canonical source_mujoco fixed-review recipe",
+        randomization_contract=randomization_contract,
     )
 
 
@@ -1134,4 +1350,10 @@ def blocked_module(
     )
 
 
-__all__ = ["blocked_module", "build_source_mujoco_recipe", "rigid_module"]
+__all__ = [
+    "PROJECTILE_INITIAL_STATE_SAMPLER_VERSION",
+    "blocked_module",
+    "build_source_mujoco_recipe",
+    "projectile_randomization_contract",
+    "rigid_module",
+]

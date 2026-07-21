@@ -1,8 +1,0 @@
-{
-  "canonical_paths_remain_relative": true,
-  "modality_path_root": "canonical_source_root",
-  "modality_sidecars_are_referenced_not_copied": true,
-  "schema_version": "wan-physics-manifest/v1",
-  "source_episodes_sha256": "449954c3b8afd4559ed4fc7ce5c9f08bdbbb6bfe9c762065c4c0849f5bc82325",
-  "source_root_at_export": "/gpfs/radev/project/sous/zl664/dataset_generation/outputs/smoke_tests/canonical_smoke_120"
-}

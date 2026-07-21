@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -119,3 +122,147 @@ def test_scenario_discovery_cli_lists_and_describes_modules(capsys) -> None:
     shown = capsys.readouterr().out
     assert '"module_path": "dynamic_robot_dataset.scenarios.f2b_ramp_launch:SCENARIO"' in shown
     assert '"settled_aim_correction": false' in shown
+
+
+@pytest.mark.parametrize("leaf_id", ("F1d", "F2a"))
+def test_projectile_sampler_is_deterministic_bounded_and_ballistic(
+    leaf_id: str,
+) -> None:
+    definition = load_scenario_definition(leaf_id)
+    public = definition.module.randomization_contract
+    assert public is not None
+    assert public["rng_stream"] == "initial_state"
+    assert public["outcome_conditioned_resampling"] is False
+    ranges = public["ranges"]
+    seen = set()
+    for seed in range(32):
+        context = ScenarioBuildContext(
+            leaf_id=leaf_id,
+            task_variant=definition.variants[0],
+            embodiment="franka_hand",
+            branch_role="nominal_success",
+            seed=seed,
+            physics_seed=10_000 + seed,
+            tabletop_height_m=0.0,
+            initial_state_mode="sampled_preview",
+        )
+        first = definition.build(context)
+        second = definition.build(context)
+        assert first == second
+        contract = first["initial_state_sampling_contract"]
+        assert contract["source_seed"] == seed
+        for name, bounds in ranges.items():
+            sampled_name = {
+                "target_x_m": "sampled_target_position_m",
+                "target_y_m": "sampled_target_position_m",
+                "incoming_azimuth_deg": "sampled_incoming_azimuth_deg",
+                "horizontal_distance_m": "sampled_horizontal_distance_m",
+                "flight_time_s": "sampled_flight_time_s",
+                "initial_vertical_velocity_m_s": (
+                    "sampled_initial_vertical_velocity_m_s"
+                ),
+                "initial_spin_z_rad_s": (
+                    "sampled_base_initial_angular_velocity_rad_s"
+                ),
+            }[name]
+            sampled = contract[sampled_name]
+            if name == "target_x_m":
+                sampled = sampled[0]
+            elif name == "target_y_m":
+                sampled = sampled[1]
+            elif name == "initial_spin_z_rad_s":
+                sampled = sampled[2]
+            assert bounds[0] <= sampled <= bounds[1]
+        position = first["object_initial_position_m"]
+        velocity = first["object_initial_linear_velocity_m_s"]
+        target = first["physical_target_position_m"]
+        event_time = first["ballistic_event_time_s"]
+        arrival = (
+            position[0] + velocity[0] * event_time,
+            position[1] + velocity[1] * event_time,
+            position[2]
+            + velocity[2] * event_time
+            - 0.5 * 9.81 * event_time**2,
+        )
+        assert arrival == pytest.approx(target, abs=1e-12)
+        assert velocity[2] - 9.81 * event_time < 0.0
+        seen.add((position, velocity, target))
+    assert len(seen) == 32
+
+
+def test_projectile_sampling_is_independent_of_controller_branch() -> None:
+    definition = load_scenario_definition("F1d")
+
+    def build(branch_role: str):
+        return definition.build(
+            ScenarioBuildContext(
+                leaf_id="F1d",
+                task_variant="mild_projectile_catch",
+                embodiment="franka_hand",
+                branch_role=branch_role,
+                seed=123,
+                physics_seed=456,
+                tabletop_height_m=0.0,
+                initial_state_mode="sampled_preview",
+            )
+        )
+
+    nominal = build("nominal_success")
+    controller_negative = build("deterministic_negative_controller_timing")
+    assert (
+        nominal["object_initial_position_m"]
+        == controller_negative["object_initial_position_m"]
+    )
+    assert (
+        nominal["object_initial_linear_velocity_m_s"]
+        == controller_negative["object_initial_linear_velocity_m_s"]
+    )
+    assert nominal["controller_target_position_m"] != (
+        controller_negative["controller_target_position_m"]
+    )
+    assert controller_negative["initial_state_sampling_contract"][
+        "declared_intervention"
+    ] == "controller_target_offset"
+
+
+def test_projectile_sample_cli_emits_reproducible_training_ineligible_specs(
+    capsys,
+) -> None:
+    argv = ["sample", "F2a", "--count", "3", "--seed", "91"]
+    assert scenarios_main(argv) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert scenarios_main(argv) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert first == second
+    assert first["training_eligible"] is False
+    assert first["sample_count"] == 3
+    assert len({row["initial_state_seed"] for row in first["samples"]}) == 3
+    assert all(
+        math.isfinite(row["object_initial_speed_m_s"])
+        for row in first["samples"]
+    )
+
+
+def test_compiler_persists_and_binds_sampled_projectile_contract() -> None:
+    case = next(
+        case
+        for case in build_review_suite_plan().cases
+        if case.case_id == "F2a-review-00"
+    ).to_dict()
+    case["initial_state_mode"] = "sampled_preview"
+    scenario = compile_review_case(case)
+    contract = scenario.initial_state_sampling_contract
+    assert scenario.initial_state_mode == "sampled_preview"
+    assert contract is not None
+    assert tuple(contract["applied_initial_position_m"]) == (
+        scenario.object_initial_position_m
+    )
+    assert tuple(contract["applied_initial_linear_velocity_m_s"]) == (
+        scenario.object_initial_linear_velocity_m_s
+    )
+    assert contract["source_seed"] == scenario.rng_subseeds["initial_state"]
+
+    tampered = dict(contract)
+    tampered["applied_initial_position_m"] = [0.0, 0.0, 0.0]
+    with pytest.raises(ValueError, match="differs from compiled state"):
+        replace(scenario, initial_state_sampling_contract=tampered).validate()

@@ -19,7 +19,8 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.parse_args()
     print(
-        "error: no versioned Cosmos export contract is defined in plan.md; "
+        "error: no versioned Cosmos export contract is defined in "
+        "docs/archive/original_consolidation_plan.md; "
         "canonical data and the implemented Wan export remain model-independent",
         file=sys.stderr,
     )

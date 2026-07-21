@@ -1,9 +1,0 @@
-{
-  "episode_count": 120,
-  "excluded_count": 0,
-  "manifest_path": "manifest.jsonl",
-  "output_root": "/gpfs/radev/project/sous/zl664/dataset_generation/outputs/smoke_tests/canonical_smoke_120_wan",
-  "source_root": "/gpfs/radev/project/sous/zl664/dataset_generation/outputs/smoke_tests/canonical_smoke_120",
-  "total_duration_s": 605.0,
-  "video_count": 240
-}

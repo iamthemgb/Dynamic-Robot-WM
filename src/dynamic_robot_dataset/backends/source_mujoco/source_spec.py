@@ -520,6 +520,7 @@ def prepare_review_case(
                 scenario.object_initial_angular_velocity_rad_s
             ),
             "motion_kind": scenario.motion_kind,
+            "initial_state_mode": scenario.initial_state_mode,
             "physical_target_position_m": scenario.physical_target_position_m,
             "controller_target_position_m": scenario.controller_target_position_m,
             "controller_transport_position_m": (
@@ -528,6 +529,11 @@ def prepare_review_case(
             "branch_role": scenario.branch_role,
             "intended_outcome": scenario.intended_outcome,
             "passive_variation_profile": scenario.passive_variation_profile,
+            "initial_state_sampling_contract": (
+                None
+                if scenario.initial_state_sampling_contract is None
+                else dict(scenario.initial_state_sampling_contract)
+            ),
             "robot_base_position_m": scenario.robot_base_position_m,
             "robot_base_euler_rad": scenario.robot_base_euler_rad,
             "robot_base_quaternion_wxyz": compiled.robot_base_quaternion_wxyz,
