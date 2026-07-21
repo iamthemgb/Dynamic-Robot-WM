@@ -10,4 +10,5 @@ SCENARIO = rigid_module(
     trajectory="jerk_limited_predictive_reach",
     retention_required=False,
     randomization_contract=projectile_randomization_contract("F2a"),
+    sampled_projectile_ready_offset_m=(0.0, 0.14, 0.13),
 )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
+import math
 from typing import Any, Callable, Mapping, Protocol, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,6 +47,11 @@ class ControllerPlan:
     robotiq_reach_arrival_lead_s: float | None = None
     robotiq_tendon_profile: str = "default"
     interior_joint_margin_rad: float = 0.0
+    sampled_projectile_ready_offset_m: tuple[float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+    )
 
     def validate(self) -> None:
         if not self.kind or not self.trajectory:
@@ -63,6 +69,14 @@ class ControllerPlan:
             raise ValueError("scenario reach-arrival lead must be positive")
         if self.interior_joint_margin_rad < 0.0:
             raise ValueError("scenario joint-limit margin cannot be negative")
+        if (
+            len(self.sampled_projectile_ready_offset_m) != 3
+            or not all(
+                math.isfinite(float(value))
+                for value in self.sampled_projectile_ready_offset_m
+            )
+        ):
+            raise ValueError("scenario projectile ready offset must be a finite 3-vector")
 
 
 @dataclass(frozen=True, slots=True)

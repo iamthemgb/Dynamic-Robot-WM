@@ -29,21 +29,24 @@ PROJECTILE_INITIAL_STATE_SAMPLER_VERSION = (
 # while object size remains governed by the existing rigid physics profile.
 _PROJECTILE_INITIAL_STATE_RANGES: dict[str, dict[str, tuple[float, float]]] = {
     "F1d": {
-        "target_x_m": (0.43, 0.51),
-        "target_y_m": (-0.06, 0.06),
-        "incoming_azimuth_deg": (-22.0, 22.0),
-        "horizontal_distance_m": (0.12, 0.20),
-        "flight_time_s": (0.42, 0.50),
-        "initial_vertical_velocity_m_s": (-0.10, 0.20),
+        # Keep the preview target inside the strict palm-up IK envelope; the
+        # projectile diversity comes from launch position/velocity, not from
+        # accepting 5--9 mm IK residuals at workspace-edge targets.
+        "target_x_m": (0.465, 0.475),
+        "target_y_m": (-0.015, 0.015),
+        "incoming_azimuth_deg": (-18.0, 18.0),
+        "horizontal_distance_m": (0.35, 0.48),
+        "flight_time_s": (0.58, 0.68),
+        "initial_vertical_velocity_m_s": (1.50, 2.30),
         "initial_spin_z_rad_s": (-4.0, 4.0),
     },
     "F2a": {
         "target_x_m": (0.41, 0.53),
         "target_y_m": (-0.08, 0.08),
-        "incoming_azimuth_deg": (-30.0, 30.0),
-        "horizontal_distance_m": (0.18, 0.30),
-        "flight_time_s": (0.44, 0.54),
-        "initial_vertical_velocity_m_s": (0.20, 0.70),
+        "incoming_azimuth_deg": (-22.0, 22.0),
+        "horizontal_distance_m": (0.45, 0.65),
+        "flight_time_s": (0.60, 0.72),
+        "initial_vertical_velocity_m_s": (1.70, 2.60),
         "initial_spin_z_rad_s": (-6.0, 6.0),
     },
 }
@@ -1300,6 +1303,11 @@ def rigid_module(
     robotiq_tendon_profile: str = "default",
     interior_joint_margin_rad: float = 0.0,
     randomization_contract: dict[str, Any] | None = None,
+    sampled_projectile_ready_offset_m: tuple[float, float, float] = (
+        0.0,
+        0.0,
+        0.0,
+    ),
 ) -> ScenarioModuleSpec:
     return ScenarioModuleSpec(
         leaf_id=leaf_id,
@@ -1317,6 +1325,9 @@ def rigid_module(
             robotiq_reach_arrival_lead_s=robotiq_reach_arrival_lead_s,
             robotiq_tendon_profile=robotiq_tendon_profile,
             interior_joint_margin_rad=interior_joint_margin_rad,
+            sampled_projectile_ready_offset_m=(
+                sampled_projectile_ready_offset_m
+            ),
         ),
         build_recipe=build_source_mujoco_recipe,
         implementation_note="canonical source_mujoco fixed-review recipe",
