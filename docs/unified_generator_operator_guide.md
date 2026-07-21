@@ -9,11 +9,14 @@ It separates three questions that must never be conflated:
    production quota?
 
 A declared capability is not a release claim. At this checkpoint 15 rigid
-leaf modules have physical fixed-review implementations. Thirteen are
-review-executable: P0a-d, F1a-d, F2a, F2c, F2e, F2f, and F3b. F2b and F2d
-remain execution-blocked by their Robotiq nominal catches; the remaining five
-modules are fail-closed contracts. Every leaf remains release-blocked until
-its own evidence gate passes. Large-scale generation is not yet allowed.
+leaf modules have physical fixed-review implementations. Fourteen are
+review-executable: P0a-d, F1a-d, F2a, F2b, F2c, F2e, F2f, and F3b. F2b has
+passed its automated fixed-six and dual-rate checks and is admitted at 600 Hz
+for fixed review execution; hash-bound rendered artifacts and human review are
+still pending. F2d remains execution-blocked at 5/6 by its Robotiq nominal
+catch. The remaining five modules are fail-closed contracts. No leaf is made
+pilot-eligible or released by this checkpoint, and large-scale generation is
+not yet allowed.
 
 ## Sources of truth
 
@@ -297,13 +300,28 @@ uv run --frozen python tools/calibrate_f2f_surface_catalog.py \
   --verify configs/physics/f2f_surface_admission_v1.json
 ```
 
-The current honest fixed verdict is F2b 5/6, F2d 5/6, F2e 6/6, and F2f
-6/6. F2b and F2d have no admitted rate: their Robotiq nominal catches cannot
-simultaneously satisfy retention, visible penetration, and passive-finger
-acceleration. F2e and F2f select 1200 Hz. F2f admits four sampled geometries,
-but only the two plane candidates currently have genuine retained positive
-catches for both embodiments. Its barrier candidates remain review-only until
-the Robotiq positive catch is repaired.
+The current scoped automated verdict is F2b 6/6, F2d 5/6, F2e 6/6, and F2f
+6/6. F2b passes the 600/1200 Hz comparison and selects the admitted 600 Hz
+profile for fixed review. F2d has no admitted rate: its Robotiq nominal case
+cannot simultaneously satisfy hardware-faithful retention, the penetration
+limits, and passive-finger acceleration limits, so that leaf remains blocked
+without changing its seed or label. F2e and F2f retain their 1200 Hz profiles.
+Their scoped camera/background repairs have passed the automated checks that
+motivated them, but new sealed rendered evidence is still being regenerated
+and hash-bound human review is pending. F2f also retains its explicit
+`positive_barrier_dual_embodiment_retained_catch_pending` pilot blocker: the
+four-candidate calibration admits the barrier geometry, but the positive
+Robotiq barrier catch is not yet retained. None of these facts constitutes
+pilot activation or production release. The established P0a-d, F1a-d, F2a,
+F2c, and F3b behavior is unchanged.
+
+The diagnostic files ending in
+`rigid_breadth_F2b_F2d_F2e_F2f_fixed_six_honest_final_v2.json` and
+`rigid_breadth_F2b_F2d_F2e_F2f_timestep_halving_honest_final_v2.json` are
+immutable historical evidence tied to the pre-repair source hashes. Preserve
+them, but do not treat them as current admission evidence or overwrite them.
+The post-repair reports and rendered review datasets must use new names and
+new source bindings once regeneration completes.
 
 ## Activation and scale gates
 
@@ -331,8 +349,9 @@ review ledger. Do not use them to claim this unified suite passed.
 [`configs/physics/rigid_600_1200_calibration_v1.yaml`](../configs/physics/rigid_600_1200_calibration_v1.yaml)
 records the current wall-rebound and Robotiq timestep-halving measurements. The
 600 Hz candidate is used only for fixed review classes that satisfy strict QC;
-F2e/F2f require the 1200 Hz reference; F2b and F2d have no admitted rate. The
-file also binds the honest fixed-six/timestep reports, the 100-probe F2f
+F2b now selects 600 Hz, F2e/F2f require the 1200 Hz reference, and F2d has no
+admitted rate. The file also binds the honest fixed-six/timestep reports, the
+100-probe F2f
 surface evidence, and rejected predictive-pad/base diagnostics so numerical
 false positives cannot activate a leaf. Neither rate is production-admitted.
 Admission still requires sealed rendered rollouts and completed hash-bound

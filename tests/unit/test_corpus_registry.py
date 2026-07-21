@@ -77,6 +77,7 @@ def test_review_execution_is_per_leaf_and_does_not_release_production() -> None:
         "F1c",
         "F1d",
         "F2a",
+        "F2b",
         "F2c",
         "F2e",
         "F2f",
@@ -106,7 +107,7 @@ def test_review_execution_is_per_leaf_and_does_not_release_production() -> None:
                 assert support.blockers
 
 
-def test_repaired_f2_leaves_are_isolated_from_blocked_f2b_and_f2d() -> None:
+def test_repaired_f2_leaves_are_isolated_from_blocked_f2d() -> None:
     corpus = load_corpus_registry()
     source = load_backend_capability_registry(corpus=corpus).by_name[
         "source_mujoco"
@@ -121,13 +122,10 @@ def test_repaired_f2_leaves_are_isolated_from_blocked_f2b_and_f2d() -> None:
     assert f2c.implemented_task_variants == ("table_bounce", "floor_bounce")
     assert f2c.blockers == ()
 
-    expected_f2b_blocker = (
-        "robotiq_nominal_no_margin_controller_or_visible_pad_geometry_"
-        "satisfies_dual_rate_retention_penetration_and_passive_acceleration"
-    )
-    assert f2b.execution_state is ExecutionState.BLOCKED
-    assert f2b.blockers == (expected_f2b_blocker,)
-    assert corpus.resolve("F2b").blockers == (expected_f2b_blocker,)
+    assert f2b.execution_state is ExecutionState.REVIEW
+    assert f2b.blockers == ()
+    assert corpus.resolve("F2b").release_state is ReleaseState.BLOCKED
+    assert corpus.resolve("F2b").blockers == ("human_review_pending",)
 
     assert f2e.execution_state is ExecutionState.REVIEW
     assert f2e.implemented_task_variants == (

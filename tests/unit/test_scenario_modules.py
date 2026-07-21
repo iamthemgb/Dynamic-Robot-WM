@@ -268,6 +268,75 @@ def test_f2d_negative_controller_offset_is_declarative_and_leaf_scoped() -> None
     assert cases[5].simulation_hz == 1200
 
 
+def test_f2b_robotiq_contact_repair_is_declarative_and_leaf_scoped() -> None:
+    definition = load_scenario_definition("F2b")
+    plan = definition.module.controller_plan
+    serialized = definition.to_dict()["controller_plan"]
+
+    assert plan.robotiq_controller_target_bias_m == pytest.approx(
+        (0.019, 0.0, 0.0)
+    )
+    assert plan.robotiq_tendon_target == pytest.approx(96.0)
+    assert plan.robotiq_actuator_force_limit_n == pytest.approx(0.085)
+    assert plan.robotiq_pad_half_depth_m == pytest.approx(0.0125)
+    assert plan.robotiq_pad_contact_margin_m == pytest.approx(0.0)
+    assert serialized["robotiq_controller_target_bias_m"] == pytest.approx(
+        plan.robotiq_controller_target_bias_m
+    )
+
+    for other in list_scenario_definitions():
+        if other.leaf_id == "F2b":
+            continue
+        other_plan = other.module.controller_plan
+        other_serialized = other.to_dict()["controller_plan"]
+        assert other_plan.robotiq_controller_target_bias_m is None
+        assert other_plan.robotiq_tendon_target is None
+        assert other_plan.robotiq_pad_half_depth_m is None
+        assert other_plan.robotiq_pad_contact_margin_m is None
+        for field in (
+            "robotiq_controller_target_bias_m",
+            "robotiq_tendon_target",
+            "robotiq_pad_half_depth_m",
+            "robotiq_pad_contact_margin_m",
+        ):
+            assert field not in other_serialized
+
+    cases = {
+        case.rollout_index: compile_review_case(case)
+        for case in build_review_suite_plan().cases
+        if case.corpus_leaf_id == "F2b"
+    }
+    assert cases[0].controller_target_position_m == pytest.approx(
+        cases[0].physical_target_position_m
+    )
+    assert tuple(
+        controller - physical
+        for controller, physical in zip(
+            cases[1].controller_target_position_m,
+            cases[1].physical_target_position_m,
+            strict=True,
+        )
+    ) == pytest.approx(plan.robotiq_controller_target_bias_m)
+
+
+@pytest.mark.parametrize(
+    "override",
+    (
+        {"robotiq_tendon_target": 0.0},
+        {"robotiq_actuator_force_limit_n": 0.17},
+        {"robotiq_pad_half_depth_m": 0.0221},
+        {"robotiq_pad_contact_margin_m": -1e-6},
+        {"robotiq_controller_target_bias_m": (0.051, 0.0, 0.0)},
+    ),
+)
+def test_f2b_robotiq_contact_repair_rejects_unphysical_values(
+    override: dict[str, object],
+) -> None:
+    plan = load_scenario_definition("F2b").module.controller_plan
+    with pytest.raises(ValueError, match="scenario Robotiq"):
+        replace(plan, **override).validate()
+
+
 def test_projectile_sample_cli_emits_reproducible_training_ineligible_specs(
     capsys,
 ) -> None:

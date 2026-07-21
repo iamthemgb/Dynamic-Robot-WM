@@ -16,8 +16,12 @@ from dynamic_robot_dataset.backends.source_mujoco.backend import (
     _robocasa_manifest,
 )
 from dynamic_robot_dataset.backends.source_mujoco.model import (
+    _add_secondary_camera,
     _build_external_sample,
     _load_external_scene_builder,
+    _relocate_external_visual_boundaries,
+    _remove_external_visual_work_surfaces,
+    _repair_task_camera,
     compile_source_model,
 )
 from dynamic_robot_dataset.common.assets import (
@@ -46,6 +50,98 @@ def _kitchen_f1_case():
         for case in build_review_suite_plan().cases
         if case.corpus_leaf_id == "F1a" and case.rollout_index == 2
     )
+
+
+def _case(leaf_id: str, rollout_index: int):
+    return next(
+        case
+        for case in build_review_suite_plan().cases
+        if case.corpus_leaf_id == leaf_id
+        and case.rollout_index == rollout_index
+    )
+
+
+def _camera_root() -> ET.Element:
+    root = ET.Element("mujoco")
+    world = ET.SubElement(root, "worldbody")
+    ET.SubElement(world, "camera", name="main_camera")
+    return root
+
+
+def _camera_forward(camera: ET.Element) -> tuple[float, float, float]:
+    values = tuple(float(value) for value in str(camera.get("xyaxes") or "").split())
+    assert len(values) == 6
+    x_axis = values[:3]
+    y_axis = values[3:]
+    camera_z = (
+        x_axis[1] * y_axis[2] - x_axis[2] * y_axis[1],
+        x_axis[2] * y_axis[0] - x_axis[0] * y_axis[2],
+        x_axis[0] * y_axis[1] - x_axis[1] * y_axis[0],
+    )
+    return tuple(-value for value in camera_z)
+
+
+def _direction(
+    position: tuple[float, float, float],
+    target: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    delta = tuple(right - left for left, right in zip(position, target))
+    norm = sum(value * value for value in delta) ** 0.5
+    return tuple(value / norm for value in delta)
+
+
+def _camera_pose(camera: ET.Element) -> tuple[float, float, float]:
+    return tuple(float(value) for value in str(camera.get("pos") or "").split())
+
+
+def _assert_camera_looks_at(
+    camera: ET.Element,
+    *,
+    position: tuple[float, float, float],
+    target: tuple[float, float, float],
+    fovy: float,
+) -> None:
+    assert _camera_pose(camera) == pytest.approx(position, abs=1e-8)
+    assert float(camera.get("fovy", "nan")) == pytest.approx(fovy)
+    assert _camera_forward(camera) == pytest.approx(
+        _direction(position, target), abs=1e-8
+    )
+
+
+def _background_root() -> ET.Element:
+    root = ET.Element("mujoco")
+    world = ET.SubElement(root, "worldbody")
+    for name in (
+        "robot_table_top",
+        "robot_table_leg_0",
+        "back_counter_base",
+        "back_counter_top",
+    ):
+        ET.SubElement(
+            world,
+            "geom",
+            name=name,
+            type="box",
+            pos="0 0 0.5",
+            size="0.1 0.1 0.1",
+        )
+    ET.SubElement(
+        world,
+        "geom",
+        name="left_wall",
+        type="box",
+        pos="-0.95 0.1 1.1",
+        size="0.03 1.1 1.1",
+    )
+    ET.SubElement(
+        world,
+        "geom",
+        name="backsplash_left_return",
+        type="box",
+        pos="-0.94 0.5 0.9",
+        size="0.02 0.2 0.2",
+    )
+    return root
 
 
 @pytest.fixture(scope="module")
@@ -149,6 +245,173 @@ def test_runtime_candidate_is_review_valid_but_not_release_admitted(
         required_asset_ids=("kitchen-toaster-review-candidate-v1",),
         allow_pending_render_review=True,
     )
+
+
+@pytest.mark.parametrize(
+    ("rollout_index", "secondary_offset", "secondary_target_z", "secondary_fovy"),
+    (
+        (0, (-1.15, -1.18, 0.65), 0.17, 62.0),
+        (1, (0.20, -1.10, 0.75), 0.02, 52.0),
+    ),
+)
+def test_f2e_floor_to_wall_uses_scoped_overview_and_embodiment_event_camera(
+    rollout_index: int,
+    secondary_offset: tuple[float, float, float],
+    secondary_target_z: float,
+    secondary_fovy: float,
+) -> None:
+    scenario = compile_review_case(_case("F2e", rollout_index))
+    assert scenario.task_variant == "floor_to_wall"
+    anchor = scenario.physical_target_position_m
+    assert anchor is not None
+    root = _camera_root()
+
+    _repair_task_camera(root, scenario, height_offset=0.0)
+    _add_secondary_camera(root, scenario, height_offset=0.0)
+
+    main = root.find(".//camera[@name='main_camera']")
+    secondary = root.find(".//camera[@name='secondary_camera']")
+    assert main is not None
+    assert secondary is not None
+    _assert_camera_looks_at(
+        main,
+        position=(-1.30, -2.20, 2.60),
+        target=(-0.05, -0.20, 0.70),
+        fovy=70.0,
+    )
+    secondary_position = tuple(
+        anchor[index] + secondary_offset[index] for index in range(3)
+    )
+    _assert_camera_looks_at(
+        secondary,
+        position=secondary_position,
+        target=(anchor[0], anchor[1], anchor[2] + secondary_target_z),
+        fovy=secondary_fovy,
+    )
+
+
+def test_f2e_floor_to_wall_camera_is_outcome_branch_invariant() -> None:
+    nominal = compile_review_case(_case("F2e", 1))
+    assert nominal.controller_target_position_m is not None
+    negative = replace(
+        nominal,
+        branch_role="deterministic_negative_controller_timing",
+        intended_outcome="failure",
+        controller_target_position_m=(
+            nominal.controller_target_position_m[0],
+            nominal.controller_target_position_m[1] - 0.10,
+            nominal.controller_target_position_m[2],
+        ),
+    )
+
+    serialized: list[tuple[bytes, bytes]] = []
+    for scenario in (nominal, negative):
+        root = _camera_root()
+        _repair_task_camera(root, scenario, height_offset=0.0)
+        _add_secondary_camera(root, scenario, height_offset=0.0)
+        main = root.find(".//camera[@name='main_camera']")
+        secondary = root.find(".//camera[@name='secondary_camera']")
+        assert main is not None
+        assert secondary is not None
+        serialized.append((ET.tostring(main), ET.tostring(secondary)))
+
+    assert serialized[0] == serialized[1]
+
+
+@pytest.mark.parametrize(
+    ("leaf_id", "rollout_index"),
+    (("F2e", 2), ("F2c", 0)),
+)
+def test_f2e_camera_repair_does_not_change_other_variants_or_good_leaves(
+    leaf_id: str,
+    rollout_index: int,
+) -> None:
+    scenario = compile_review_case(_case(leaf_id, rollout_index))
+    if leaf_id == "F2e":
+        assert scenario.task_variant == "flight_to_table_bounce"
+    anchor = scenario.physical_target_position_m
+    assert anchor is not None
+    root = _camera_root()
+
+    _repair_task_camera(root, scenario, height_offset=0.0)
+    _add_secondary_camera(root, scenario, height_offset=0.0)
+
+    main = root.find(".//camera[@name='main_camera']")
+    secondary = root.find(".//camera[@name='secondary_camera']")
+    assert main is not None
+    assert secondary is not None
+    _assert_camera_looks_at(
+        main,
+        position=(anchor[0] - 1.15, anchor[1] - 1.18, anchor[2] + 0.65),
+        target=(anchor[0], anchor[1], anchor[2] + 0.17),
+        fovy=62.0,
+    )
+    _assert_camera_looks_at(
+        secondary,
+        position=(anchor[0] + 1.05, anchor[1] - 0.35, anchor[2] + 0.45),
+        target=(anchor[0], anchor[1], anchor[2] + 0.05),
+        fovy=55.0,
+    )
+
+
+def test_f2e_floor_to_wall_removes_only_swept_bulk_and_relocates_boundary() -> None:
+    scenario = compile_review_case(_case("F2e", 1))
+    root = _background_root()
+
+    visual, task_volume = _remove_external_visual_work_surfaces(root, scenario)
+    relocation = _relocate_external_visual_boundaries(root, scenario)
+
+    world = root.find("worldbody")
+    assert world is not None
+    names = {str(geom.get("name")) for geom in world.findall("./geom")}
+    assert visual == ()
+    assert task_volume == tuple(sorted(task_volume))
+    assert set(task_volume) == {
+        "back_counter_base",
+        "robot_table_leg_0",
+        "robot_table_top",
+    }
+    assert "back_counter_base" not in names
+    assert "back_counter_top" in names
+    assert not any(name.startswith("robot_table_") for name in names)
+    by_name = {str(row["name"]): row for row in relocation}
+    assert set(by_name) == {"left_wall", "backsplash_left_return"}
+    assert all(
+        row["maximum_x_m"] == pytest.approx(-1.20)
+        and row["reason"] == "clear_owned_f2e_floor_to_wall_negative_sweep"
+        for row in by_name.values()
+    )
+    left_wall = world.find("./geom[@name='left_wall']")
+    backsplash = world.find("./geom[@name='backsplash_left_return']")
+    assert left_wall is not None
+    assert backsplash is not None
+    assert _camera_pose(left_wall)[0] == pytest.approx(-1.23)
+    assert _camera_pose(backsplash)[0] == pytest.approx(-1.22)
+
+
+@pytest.mark.parametrize(
+    ("leaf_id", "rollout_index"),
+    (("F2e", 2), ("F2c", 1)),
+)
+def test_f2e_background_repair_does_not_change_other_variants_or_good_leaves(
+    leaf_id: str,
+    rollout_index: int,
+) -> None:
+    scenario = compile_review_case(_case(leaf_id, rollout_index))
+    root = _background_root()
+
+    _, task_volume = _remove_external_visual_work_surfaces(root, scenario)
+    relocation = _relocate_external_visual_boundaries(root, scenario)
+
+    world = root.find("worldbody")
+    assert world is not None
+    names = {str(geom.get("name")) for geom in world.findall("./geom")}
+    assert "back_counter_base" in names
+    assert "back_counter_base" not in task_volume
+    assert relocation == ()
+    left_wall = world.find("./geom[@name='left_wall']")
+    assert left_wall is not None
+    assert _camera_pose(left_wall) == pytest.approx((-0.95, 0.1, 1.1))
 
 
 def test_external_random_robocasa_imports_and_kitchen_appliances_are_absent(

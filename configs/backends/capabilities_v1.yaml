@@ -92,8 +92,8 @@ backends:
         subfamily: ramp_launch
         embodiments: [franka_hand, robotiq_2f85_thick_pad]
         implemented_task_variants: [ramp_launch_catch, ramp_launch_deflection]
-        execution_state: blocked
-        blockers: [robotiq_nominal_no_margin_controller_or_visible_pad_geometry_satisfies_dual_rate_retention_penetration_and_passive_acceleration]
+        execution_state: review
+        blockers: []
       - leaf: F2c
         family: projectile_rebound
         subfamily: table_floor_bounce

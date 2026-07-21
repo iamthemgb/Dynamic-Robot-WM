@@ -154,7 +154,7 @@ leaves:
     evaluator: rigid_ramp_launch_v1
     required_metadata: [launch_state, surfaces, contact_sequence, object_properties, robot_control, source_hashes]
     release_state: blocked
-    blockers: [robotiq_nominal_no_margin_controller_or_visible_pad_geometry_satisfies_dual_rate_retention_penetration_and_passive_acceleration]
+    blockers: [human_review_pending]
   - id: F2c
     slug: table_floor_bounce
     title: Table/floor bounce interception

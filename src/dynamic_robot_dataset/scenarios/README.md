@@ -17,11 +17,11 @@ their backend/common packages.
 | F1c | drifted_drop | `f1c_drifted_drop.py` | implemented |
 | F1d | mild_projectile | `f1d_mild_projectile.py` | implemented |
 | F2a | direct_interception | `f2a_direct_interception.py` | implemented |
-| F2b | ramp_launch | `f2b_ramp_launch.py` | 5/6 automated fixed cases; Robotiq nominal physics blocked |
+| F2b | ramp_launch | `f2b_ramp_launch.py` | automated fixed-six pass; 600 Hz selected after dual-rate admission; human review pending |
 | F2c | table_floor_bounce | `f2c_table_floor_bounce.py` | implemented |
-| F2d | wall_barrier_rebound | `f2d_wall_barrier_rebound.py` | 5/6 automated fixed cases; Robotiq nominal physics blocked |
-| F2e | multi_surface_rebound | `f2e_multi_surface_rebound.py` | automated fixed-six pass; human review pending |
-| F2f | arbitrary_surface_bounce | `f2f_arbitrary_surface_bounce.py` | automated fixed-six geometry review passes; positive Robotiq barrier catch blocked |
+| F2d | wall_barrier_rebound | `f2d_wall_barrier_rebound.py` | 5/6 automated fixed cases; Robotiq nominal blocked by the hardware-faithful retention/penetration/acceleration tradeoff |
+| F2e | multi_surface_rebound | `f2e_multi_surface_rebound.py` | automated fixed-six pass; repaired rendered camera/background evidence is being regenerated; human review pending |
+| F2f | arbitrary_surface_bounce | `f2f_arbitrary_surface_bounce.py` | automated fixed-six pass; rendered evidence and human review pending; positive Robotiq barrier catch still blocks pilot activation |
 | F3a | oscillating_platform_handoff | `f3a_oscillating_platform_handoff.py` | contract only |
 | F3b | rolling_pickup | `f3b_rolling_pickup.py` | implemented |
 | F3c | water_current_pickup | `f3c_water_current_pickup.py` | contract only |
@@ -32,6 +32,11 @@ their backend/common packages.
 Use `python -m dynamic_robot_dataset.scenarios list` for the registry-bound
 inventory and `python -m dynamic_robot_dataset.scenarios show F2b` for one
 leaf's variants, embodiments, evaluator, blockers, and normal review command.
+
+This status is deliberately leaf-scoped. The established P0a-d, F1a-d, F2a,
+F2c, and F3b implementations have not been changed by the F2b/F2d/F2e/F2f
+repair work. Automated fixed-six and timestep admission are preconditions for
+rendered review, not human approval, pilot activation, or production release.
 
 F1d and F2a additionally expose versioned projectile initial-state samplers:
 

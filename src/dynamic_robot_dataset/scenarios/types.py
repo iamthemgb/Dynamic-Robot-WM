@@ -46,7 +46,11 @@ class ControllerPlan:
     compact_pickup_ready: bool = False
     robotiq_reach_arrival_lead_s: float | None = None
     robotiq_tendon_profile: str = "default"
+    robotiq_tendon_target: float | None = None
     robotiq_actuator_force_limit_n: float | None = None
+    robotiq_pad_half_depth_m: float | None = None
+    robotiq_pad_contact_margin_m: float | None = None
+    robotiq_controller_target_bias_m: tuple[float, float, float] | None = None
     negative_controller_offset_m: tuple[float, float, float] | None = None
     interior_joint_margin_rad: float = 0.0
     sampled_projectile_ready_offset_m: tuple[float, float, float] = (
@@ -65,10 +69,45 @@ class ControllerPlan:
         if self.robotiq_tendon_profile not in {"default", "pickup", "f2c"}:
             raise ValueError("scenario Robotiq tendon profile is invalid")
         if (
+            self.robotiq_tendon_target is not None
+            and not 0.0 < self.robotiq_tendon_target <= 200.0
+        ):
+            raise ValueError("scenario Robotiq tendon target is invalid")
+        if (
             self.robotiq_actuator_force_limit_n is not None
             and not 0.0 < self.robotiq_actuator_force_limit_n <= 0.16
         ):
             raise ValueError("scenario Robotiq actuator force limit is invalid")
+        if (
+            self.robotiq_pad_half_depth_m is not None
+            and not 0.010 <= self.robotiq_pad_half_depth_m <= 0.022
+        ):
+            raise ValueError(
+                "scenario Robotiq collision pad must stay inside the visible pad"
+            )
+        if (
+            self.robotiq_pad_contact_margin_m is not None
+            and not 0.0 <= self.robotiq_pad_contact_margin_m <= 0.004
+        ):
+            raise ValueError("scenario Robotiq pad contact margin is invalid")
+        if self.robotiq_controller_target_bias_m is not None and (
+            len(self.robotiq_controller_target_bias_m) != 3
+            or not all(
+                math.isfinite(float(value))
+                for value in self.robotiq_controller_target_bias_m
+            )
+            or math.sqrt(
+                sum(
+                    float(value) ** 2
+                    for value in self.robotiq_controller_target_bias_m
+                )
+            )
+            > 0.05
+        ):
+            raise ValueError(
+                "scenario Robotiq controller-target bias must be a bounded "
+                "finite 3-vector"
+            )
         if self.negative_controller_offset_m is not None and (
             len(self.negative_controller_offset_m) != 3
             or not all(
@@ -100,7 +139,11 @@ class ControllerPlan:
 
         payload = asdict(self)
         for name in (
+            "robotiq_tendon_target",
             "robotiq_actuator_force_limit_n",
+            "robotiq_pad_half_depth_m",
+            "robotiq_pad_contact_margin_m",
+            "robotiq_controller_target_bias_m",
             "negative_controller_offset_m",
         ):
             if payload[name] is None:

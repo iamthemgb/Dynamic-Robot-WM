@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from xml.etree import ElementTree as ET
+
 import pytest
 
 from dynamic_robot_dataset.backends.source_mujoco import (
     SourceMujocoBackend,
     compile_review_case,
+)
+from dynamic_robot_dataset.backends.source_mujoco.model import compile_source_model
+from dynamic_robot_dataset.backends.source_mujoco.profiles import (
+    RIGID_REVIEW_PROFILE,
+    timestep_comparison_failures,
 )
 from dynamic_robot_dataset.backends.source_mujoco.rigid_breadth import (
     SurfaceAdmission,
@@ -68,30 +76,147 @@ def test_f2b_compiles_a_grounded_ramp_and_transition_contract() -> None:
     )
 
 
-def test_f2b_robotiq_nominal_failure_remains_physical_and_blocks_activation() -> None:
+def test_f2b_robotiq_model_overrides_do_not_change_f2c_defaults() -> None:
+    backend = SourceMujocoBackend()
+
+    def compiled_xml(leaf_id: str) -> ET.Element:
+        scenario = backend.compile_case(_case(leaf_id, 1))
+        compiled = compile_source_model(
+            scenario,
+            source_dependency=backend.source_dependency,
+            robocasa_dependency=(
+                backend.robocasa_dependency
+                if scenario.requires_real_robocasa
+                else None
+            ),
+        )
+        return ET.fromstring(compiled.xml)
+
+    f2b = compiled_xml("F2b")
+    f2c = compiled_xml("F2c")
+    for name in (
+        "rq_left_pad_thick_collision_pad",
+        "rq_right_pad_thick_collision_pad",
+    ):
+        f2b_pad = f2b.find(f".//geom[@name='{name}']")
+        f2c_pad = f2c.find(f".//geom[@name='{name}']")
+        assert f2b_pad is not None
+        assert f2c_pad is not None
+        assert float(f2b_pad.get("size", "").split()[0]) == pytest.approx(
+            0.0125
+        )
+        assert float(f2b_pad.get("margin", "nan")) == pytest.approx(0.0)
+        assert float(f2c_pad.get("size", "").split()[0]) == pytest.approx(
+            RIGID_REVIEW_PROFILE.robotiq_pad_half_depth_m
+        )
+
+    f2b_actuator = f2b.find(".//actuator/general[@name='rq_fingers_actuator']")
+    f2c_actuator = f2c.find(".//actuator/general[@name='rq_fingers_actuator']")
+    assert f2b_actuator is not None
+    assert f2c_actuator is not None
+    assert tuple(
+        float(value) for value in f2b_actuator.get("forcerange", "").split()
+    ) == pytest.approx((-0.085, 0.085))
+    assert tuple(
+        float(value) for value in f2c_actuator.get("forcerange", "").split()
+    ) == pytest.approx((-0.16, 0.16))
+
+
+def test_f2b_robotiq_nominal_success_is_physical_and_replayable() -> None:
     result = SourceMujocoBackend().run(_case("F2b", 1), render=False)
     penetration = result.physics_qc["penetration"]["metrics"]
     evidence = result.physics_qc["task_evidence"]
 
-    assert result.outcome["task_success"] is False
-    assert result.outcome["actual_outcome"] == "contact_failure"
+    assert result.outcome["task_success"] is True
+    assert result.outcome["actual_outcome"] == "success"
+    assert result.outcome["intended_outcome_match"] is True
     assert result.outcome["saved_artifact_objective_replay_matches"] is True
-    assert result.physics_qc["physics_qc_pass"] is False
+    assert result.physics_qc["physics_qc_pass"] is True
     assert penetration["maximum_gripper_penetration_m"] <= 0.002
     assert (
         result.physics_qc["maximum_passive_finger_acceleration_rad_s2"]
-        > result.physics_qc["passive_finger_acceleration_limit_rad_s2"]
+        <= result.physics_qc["passive_finger_acceleration_limit_rad_s2"]
     )
     assert evidence["sustained_opposing_bilateral_contacts"] is True
-    assert evidence["retained_through_final_state"] is False
+    assert evidence["stable_object_to_grasp_transform"] is True
+    assert evidence["retained_through_final_state"] is True
     assert evidence["rolling_or_sliding_slip_within_limit"] is True
     assert evidence["friction_deceleration_consistent"] is True
+    assert result.runtime_audit["mutation_boundary_violations"] == 0
 
     source_spec = prepare_review_case(_case("F2b", 1))
     controller_plan = source_spec.physics["controller_plan"]
-    assert controller_plan["robotiq_actuator_force_limit_n"] == pytest.approx(
-        0.10
+    assert controller_plan["robotiq_controller_target_bias_m"] == pytest.approx(
+        (0.019, 0.0, 0.0)
     )
+    assert controller_plan["robotiq_tendon_target"] == pytest.approx(96.0)
+    assert controller_plan["robotiq_actuator_force_limit_n"] == pytest.approx(0.085)
+    assert controller_plan["robotiq_pad_half_depth_m"] == pytest.approx(0.0125)
+    assert controller_plan["robotiq_pad_contact_margin_m"] == pytest.approx(0.0)
+
+
+@pytest.mark.integration
+def test_f2b_robotiq_nominal_passes_the_600_1200_timestep_gate() -> None:
+    backend = SourceMujocoBackend()
+    scenario = backend.compile_case(_case("F2b", 1))
+    observations = []
+    for simulation_hz in (600, 1200):
+        result = backend.run(
+            replace(scenario, simulation_hz=simulation_hz), render=False
+        )
+        event_time = float(result.outcome["key_event_time_s"])
+        event = min(
+            result.high_rate_rows,
+            key=lambda row: abs(float(row["timestamp"]) - event_time),
+        )
+        penetration = result.physics_qc["penetration"]["metrics"]
+        assert result.outcome["actual_outcome"] == "success"
+        assert result.physics_qc["physics_qc_pass"] is True
+        assert result.outcome["saved_artifact_objective_replay_matches"] is True
+        assert penetration["maximum_gripper_penetration_m"] <= 0.002
+        observations.append(
+            {
+                "outcome": result.outcome["actual_outcome"],
+                "task_success": result.outcome["task_success"],
+                "physics_qc_pass": result.physics_qc["physics_qc_pass"],
+                "saved_artifact_objective_replay_matches": result.outcome[
+                    "saved_artifact_objective_replay_matches"
+                ],
+                "key_event_time_s": event_time,
+                "key_event_position_m": event["object.position"],
+            }
+        )
+    assert timestep_comparison_failures(*observations) == ()
+
+
+@pytest.mark.parametrize(
+    ("rollout", "expected_outcome"),
+    (
+        (0, "success"),
+        (1, "success"),
+        (2, "miss"),
+        (3, "miss"),
+        (4, "contact_failure"),
+        (5, "contact_failure"),
+    ),
+)
+def test_f2b_fixed_six_passes_strict_physics_and_saved_replay(
+    rollout: int,
+    expected_outcome: str,
+) -> None:
+    result = SourceMujocoBackend().run(_case("F2b", rollout), render=False)
+    penetration = result.physics_qc["penetration"]["metrics"]
+    evidence = result.physics_qc["task_evidence"]
+
+    assert result.outcome["actual_outcome"] == expected_outcome
+    assert result.outcome["task_success"] is (rollout in {0, 1})
+    assert result.outcome["intended_outcome_match"] is True
+    assert result.outcome["saved_artifact_objective_replay_matches"] is True
+    assert result.physics_qc["physics_qc_pass"] is True
+    assert evidence["surface_transition_pass"] is True
+    assert penetration["maximum_gripper_penetration_m"] <= 0.002
+    assert penetration["maximum_task_surface_penetration_m"] <= 0.003
+    assert result.runtime_audit["mutation_boundary_violations"] == 0
 
 
 @pytest.mark.parametrize(

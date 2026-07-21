@@ -528,6 +528,17 @@ def _recipe_payload(
         target[0] = target_x
         event_time = support_time + free_flight_time
         controller_target = target.copy()
+        if embodiment == ROBOTIQ_2F85_THICK_PAD:
+            from .f2b_ramp_launch import SCENARIO as F2B_SCENARIO
+
+            robotiq_bias = (
+                F2B_SCENARIO.controller_plan.robotiq_controller_target_bias_m
+            )
+            if robotiq_bias is None:
+                raise RuntimeError(
+                    "F2b Robotiq controller lacks its calibrated target bias"
+                )
+            controller_target += np.asarray(robotiq_bias, dtype=np.float64)
         # Unlike a surface pickup, the ramp-launched ball is airborne at the
         # apex.  The Robotiq knuckles therefore need no table-clearance
         # standoff; adding the F3b 22 mm offset put the complete ball below the
@@ -1378,7 +1389,11 @@ def rigid_module(
     compact_pickup_ready: bool = False,
     robotiq_reach_arrival_lead_s: float | None = None,
     robotiq_tendon_profile: str = "default",
+    robotiq_tendon_target: float | None = None,
     robotiq_actuator_force_limit_n: float | None = None,
+    robotiq_pad_half_depth_m: float | None = None,
+    robotiq_pad_contact_margin_m: float | None = None,
+    robotiq_controller_target_bias_m: tuple[float, float, float] | None = None,
     negative_controller_offset_m: tuple[float, float, float] | None = None,
     interior_joint_margin_rad: float = 0.0,
     randomization_contract: dict[str, Any] | None = None,
@@ -1403,7 +1418,13 @@ def rigid_module(
             compact_pickup_ready=compact_pickup_ready,
             robotiq_reach_arrival_lead_s=robotiq_reach_arrival_lead_s,
             robotiq_tendon_profile=robotiq_tendon_profile,
+            robotiq_tendon_target=robotiq_tendon_target,
             robotiq_actuator_force_limit_n=robotiq_actuator_force_limit_n,
+            robotiq_pad_half_depth_m=robotiq_pad_half_depth_m,
+            robotiq_pad_contact_margin_m=robotiq_pad_contact_margin_m,
+            robotiq_controller_target_bias_m=(
+                robotiq_controller_target_bias_m
+            ),
             negative_controller_offset_m=negative_controller_offset_m,
             interior_joint_margin_rad=interior_joint_margin_rad,
             sampled_projectile_ready_offset_m=(

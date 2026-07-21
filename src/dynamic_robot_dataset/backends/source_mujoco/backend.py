@@ -709,7 +709,9 @@ def _controller_for_scenario(
     if scenario.embodiment == ROBOTIQ_2F85_THICK_PAD:
         open_gripper = 0.0
         closed_gripper = (
-            RIGID_REVIEW_PROFILE.f2c_robotiq_tendon_target
+            controller_plan.robotiq_tendon_target
+            if controller_plan.robotiq_tendon_target is not None
+            else RIGID_REVIEW_PROFILE.f2c_robotiq_tendon_target
             if robotiq_pickup
             and controller_plan.robotiq_tendon_profile == "f2c"
             else RIGID_REVIEW_PROFILE.robotiq_pickup_tendon_target

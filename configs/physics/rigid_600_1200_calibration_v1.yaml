@@ -1228,6 +1228,87 @@ measurements:
     admission_claimed: false
     formal_human_approval_recorded: false
 
+  rigid_breadth_render_repair_v3:
+    description: >-
+      hash-bound current-source verdict after the scoped F2b Robotiq
+      hardware-faithful repair and F2e/F2f rendered-camera repair; historical
+      v2 evidence remains unchanged and F2d remains independently blocked
+    evidence_status: hash_bound_diagnostic_human_review_pending
+    fixed_master_seed: 20260717
+    fixed_seeds_preserved: true
+    seed_replacements: 0
+    qc_thresholds_relaxed: false
+    direct_state_or_constraint_assistance: false
+    predictive_contact_margins_admitted: false
+    f2b_hardware_faithful_repair:
+      embodiment: robotiq_2f85_thick_pad
+      controller_target_bias_m: [0.019, 0.0, 0.0]
+      tendon_target: 96.0
+      actuator_force_limit_n: 0.085
+      visible_pad_half_depth_m: 0.022
+      collision_pad_half_depth_m: 0.0125
+      pad_contact_margin_m: 0.0
+      direct_state_or_constraint_assistance: false
+      nominal_same_seed_dual_rate:
+        600_hz:
+          retained_success: true
+          maximum_object_gripper_penetration_m: 0.0015174946909042829
+          maximum_passive_finger_acceleration_rad_s2: 63.151052305191264
+          mutation_boundary_violations: 0
+        1200_hz:
+          retained_success: true
+          maximum_object_gripper_penetration_m: 0.0019033431239064286
+          maximum_passive_finger_acceleration_rad_s2: 62.37938246131904
+          mutation_boundary_violations: 0
+        absolute_key_event_time_shift_s: 0.0008333333341944416
+        key_event_position_shift_m: 0.0007200100963469311
+        comparison_failures: []
+    fixed_six:
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2b_F2d_F2e_F2f_fixed_six_render_repair_v3.json
+      report_file_sha256: f5b8ef44dbab1fdcf76508cfb1f8e8ff07147f54b61ecd1ef9b992c54ec03882
+      report_payload_sha256: be8ebb66bff231feaf62fcb3d53160864114f03b857d24bac0e88cccdedb4734
+      automated_qc_pass_count_by_leaf: {F2b: 6, F2d: 5, F2e: 6, F2f: 6}
+      canonical_replay_match_count_by_leaf: {F2b: 6, F2d: 6, F2e: 6, F2f: 6}
+      mutation_boundary_violations: 0
+      failed_case_ids: [F2d-review-01]
+    timestep_halving:
+      path: /gpfs/radev/project/sous/zl664/dataset_generation_runs/diagnostics/rigid_breadth_F2b_F2d_F2e_F2f_timestep_halving_render_repair_v3.json
+      report_file_sha256: f844b5b9f5078878ad9ab83923f46ce9ad3ed5d779110f39205c726b79a03f8a
+      report_payload_sha256: adbcdef66104cc7a1b63ad4fb647bd626aead5951cfcc36f1bc6d75613814693
+      decisions:
+        F2b: {reference_profile_admitted: true, cheaper_profile_admitted: true, selected_simulation_hz: 600}
+        F2d: {reference_profile_admitted: false, cheaper_profile_admitted: false, selected_simulation_hz: null}
+        F2e: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
+        F2f: {reference_profile_admitted: true, cheaper_profile_admitted: false, selected_simulation_hz: 1200}
+    f2f_surface_admission:
+      path: configs/physics/f2f_surface_admission_v1.json
+      report_file_sha256: ce334fbf4c7689e6a140f3bedc6a1e02c7b99ffaef421042dc39baa0b58c7f04
+      report_payload_sha256: 478efada63998cd6fba37a9d0ce92699c68f03f87c0a3c5e188f8a3ab2482f11
+      probe_count: 100
+      geometry_admitted_candidates:
+        - plane_mid_285
+        - plane_table_400
+        - barrier_yaw_neg_15
+        - barrier_yaw_neg_25
+      positive_controller_admitted_candidates: [plane_mid_285, plane_table_400]
+      positive_controller_blocked_candidates:
+        - barrier_yaw_neg_15
+        - barrier_yaw_neg_25
+      pilot_ready_candidates: [plane_mid_285, plane_table_400]
+    leaf_decisions:
+      F2b: {execution_state: review, remaining_blockers: [human_review_pending]}
+      F2d:
+        execution_state: blocked
+        remaining_blockers: [robotiq_nominal_reference_rate_no_hardware_faithful_overlap_penetration_retention_acceleration]
+      F2e: {execution_state: review, remaining_blockers: [human_review_pending]}
+      F2f:
+        execution_state: review
+        remaining_blockers: [positive_barrier_dual_embodiment_retained_catch_pending, human_review_pending]
+    fixed_review_artifacts_training_eligible: false
+    admission_claimed: false
+    release_claimed: false
+    formal_human_approval_recorded: false
+
   rigid_breadth_rejected_margin_diagnostics_v1:
     description: >-
       hash-bound numerical reports preserved after independent contact-gap

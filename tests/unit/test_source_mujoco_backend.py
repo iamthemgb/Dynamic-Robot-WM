@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -27,6 +28,7 @@ from dynamic_robot_dataset.backends.source_mujoco.provenance import (
     SourceDependencyError,
     referenced_asset_manifest,
 )
+from dynamic_robot_dataset.backends.source_mujoco.model import _add_secondary_camera
 from dynamic_robot_dataset.backends.source_mujoco.backend import (
     _deflection_evidence,
     _effective_restitution_within_limit,
@@ -74,6 +76,33 @@ def _minimum_projected_sphere_margin_px(result, view: str) -> float:
     return minimum
 
 
+def _secondary_camera_xml(scenario):
+    root = ET.fromstring("<mujoco><worldbody /></mujoco>")
+    _add_secondary_camera(root, scenario, height_offset=0.0)
+    camera = root.find("./worldbody/camera[@name='secondary_camera']")
+    assert camera is not None
+    return camera
+
+
+def _camera_forward(camera: ET.Element) -> tuple[float, float, float]:
+    axes = tuple(float(value) for value in str(camera.get("xyaxes")).split())
+    assert len(axes) == 6
+    x_axis = axes[:3]
+    y_axis = axes[3:]
+    camera_z = (
+        x_axis[1] * y_axis[2] - x_axis[2] * y_axis[1],
+        x_axis[2] * y_axis[0] - x_axis[0] * y_axis[2],
+        x_axis[0] * y_axis[1] - x_axis[1] * y_axis[0],
+    )
+    norm = math.sqrt(sum(value * value for value in camera_z))
+    return tuple(-value / norm for value in camera_z)
+
+
+def _normalized(vector) -> tuple[float, float, float]:
+    norm = math.sqrt(sum(float(value) ** 2 for value in vector))
+    return tuple(float(value) / norm for value in vector)
+
+
 def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
     dependency = resolve_source_dependency()
     assert dependency.manifest_sha256 == PINNED_SOURCE_MANIFEST_SHA256
@@ -92,7 +121,7 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
     assert RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m == 0.045
     assert RIGID_REVIEW_PROFILE.reach_arrival_before_ballistic_s == 0.055
     assert RIGID_REVIEW_PROFILE.minimum_reach_duration_s == 0.18
-    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.18.0-review"
+    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.19.0-review"
     assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v9")
 
     rolling = resolve_rolling_island_dependency()
@@ -510,6 +539,88 @@ def test_wall_rebound_main_camera_stays_on_visible_incoming_side() -> None:
     assert main.pose.position_m == pytest.approx((-0.90, 0.95, 1.79))
     assert main.pose.position_m[0] < spec.initial_state["object_position_m"][0] + 0.1
     assert main.fovy_deg == 64.0
+
+
+@pytest.mark.parametrize("rollout", (2, 3))
+def test_f2f_barrier_secondary_camera_frames_the_complete_miss_envelope(
+    rollout: int,
+) -> None:
+    scenario = compile_review_case(_case("F2f", rollout=rollout))
+    assert scenario.task_variant == "random_barrier_bounce"
+    assert scenario.motion_kind == "arbitrary_surface_rebound_interception"
+    anchor = scenario.physical_target_position_m
+    assert anchor is not None
+
+    camera = _secondary_camera_xml(scenario)
+    position = tuple(float(value) for value in str(camera.get("pos")).split())
+    expected_position = (anchor[0] - 0.10, anchor[1] - 1.60, anchor[2] + 0.60)
+    expected_target = (anchor[0] + 0.05, anchor[1], anchor[2] - 0.14)
+
+    assert position == pytest.approx(expected_position)
+    assert float(str(camera.get("fovy"))) == 62.0
+    assert _camera_forward(camera) == pytest.approx(
+        _normalized(
+            tuple(
+                target_value - position_value
+                for target_value, position_value in zip(
+                    expected_target, expected_position
+                )
+            )
+        )
+    )
+
+
+@pytest.mark.parametrize("rollout", (0, 2))
+def test_f2d_wall_secondary_camera_keeps_its_existing_route(rollout: int) -> None:
+    scenario = compile_review_case(_case("F2d", rollout=rollout))
+    assert scenario.motion_kind == "wall_rebound_interception"
+    anchor = scenario.physical_target_position_m
+    assert anchor is not None
+
+    camera = _secondary_camera_xml(scenario)
+    position = tuple(float(value) for value in str(camera.get("pos")).split())
+    expected_position = (anchor[0] - 0.10, anchor[1] - 1.60, anchor[2] + 0.60)
+    expected_target = (anchor[0] + 0.05, anchor[1], anchor[2] + 0.45)
+
+    assert position == pytest.approx(expected_position)
+    assert float(str(camera.get("fovy"))) == 62.0
+    assert _camera_forward(camera) == pytest.approx(
+        _normalized(
+            tuple(
+                target_value - position_value
+                for target_value, position_value in zip(
+                    expected_target, expected_position
+                )
+            )
+        )
+    )
+
+
+@pytest.mark.parametrize("rollout", (0, 4))
+def test_f2f_plane_secondary_camera_keeps_its_existing_route(rollout: int) -> None:
+    scenario = compile_review_case(_case("F2f", rollout=rollout))
+    assert scenario.task_variant == "random_plane_bounce"
+    assert scenario.motion_kind == "random_plane_bounce_pickup_interception"
+    anchor = scenario.physical_target_position_m
+    assert anchor is not None
+
+    camera = _secondary_camera_xml(scenario)
+    position = tuple(float(value) for value in str(camera.get("pos")).split())
+    expected_position = (anchor[0] + 1.05, anchor[1] - 0.35, anchor[2] + 0.45)
+    expected_target = (anchor[0], anchor[1], anchor[2] + 0.05)
+
+    assert position == pytest.approx(expected_position)
+    assert float(str(camera.get("fovy"))) == 55.0
+    assert _camera_forward(camera) == pytest.approx(
+        _normalized(
+            tuple(
+                target_value - position_value
+                for target_value, position_value in zip(
+                    expected_target, expected_position
+                )
+            )
+        )
+    )
 
 
 def test_p0b_main_camera_has_exact_owned_projectile_serialization() -> None:

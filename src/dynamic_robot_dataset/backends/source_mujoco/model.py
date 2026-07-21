@@ -129,6 +129,15 @@ def _is_floor_rooted_interception(corpus_leaf_id: str) -> bool:
     }
 
 
+def _is_f2e_floor_to_wall(scenario: SourceMujocoCompiledScenario) -> bool:
+    """Return whether the scenario needs the measured F2e lane envelope."""
+
+    return (
+        scenario.corpus_leaf_id == "F2e"
+        and scenario.task_variant == "floor_to_wall"
+    )
+
+
 @contextmanager
 def _temporary_environment(values: Mapping[str, str]) -> Iterator[None]:
     previous = {name: os.environ.get(name) for name in values}
@@ -355,6 +364,19 @@ def _remove_external_visual_work_surfaces(
                 )
             world.remove(marker)
             names = tuple(sorted((*names, "storage_floor_marker")))
+        if _is_f2e_floor_to_wall(scenario):
+            # A controller-timing miss completes the required rebounds, then
+            # rolls through the external scene's collision-disabled cabinet
+            # bulk.  Remove only that intersecting visual volume for every R1
+            # floor-to-wall branch so appearance does not depend on outcome.
+            cabinet_bulk = world.find("./geom[@name='back_counter_base']")
+            if cabinet_bulk is None:
+                raise RuntimeError(
+                    "R1 F2e floor-to-wall scene lacks its classified "
+                    "back-counter bulk"
+                )
+            world.remove(cabinet_bulk)
+            names = tuple(sorted((*names, "back_counter_base")))
         if (
             scenario.corpus_leaf_id == "F2f"
             and scenario.scene_profile == "robocasa_kitchen"
@@ -421,19 +443,23 @@ def _relocate_external_visual_boundaries(
     root: ET.Element,
     scenario: SourceMujocoCompiledScenario,
 ) -> tuple[Mapping[str, Any], ...]:
-    """Move visual-only left room boundaries outside every owned P0 fixture.
+    """Move visual-only left room boundaries outside an owned task envelope.
 
     The external room used x≈-0.95 for both ``left_wall`` and the kitchen
     ``backsplash_left_return`` while owned P0 supports extend as far as
     x=-1.40.  Keeping them in place creates a visible intersection even after
-    contact is disabled.  Relocation preserves task physics and fixed seeds;
-    the exact pre/post transforms are persisted for review.
+    contact is disabled.  The F2e floor-to-wall timing miss also reaches that
+    boundary after its physical rebound sequence.  Relocation preserves task
+    physics and fixed seeds; exact pre/post transforms are persisted for review.
     """
 
+    p0_fixture_scene = bool(
+        scenario.corpus_leaf_id.startswith("P0") and scenario.surfaces
+    )
+    f2e_floor_to_wall = _is_f2e_floor_to_wall(scenario)
     if (
         not scenario.requires_real_robocasa
-        or not scenario.corpus_leaf_id.startswith("P0")
-        or not scenario.surfaces
+        or not (p0_fixture_scene or f2e_floor_to_wall)
     ):
         return ()
     world = root.find("worldbody")
@@ -441,11 +467,17 @@ def _relocate_external_visual_boundaries(
         raise RuntimeError("external scene lacks worldbody")
     left_wall = world.find("./geom[@name='left_wall']")
     if left_wall is None:
-        raise RuntimeError("R1 P0 scene lacks its classified left visual boundary")
+        raise RuntimeError("R1 scene lacks its classified left visual boundary")
     result: list[Mapping[str, Any]] = []
-    # The far face is at most -1.46 m, leaving 6 cm beyond the largest current
-    # owned support bound (-1.40 m).  Keep Y/Z and geometry size unchanged.
-    maximum_x = -1.46
+    # P0 retains its accepted 6 cm clearance outside the largest owned support.
+    # F2e needs only to clear its persisted miss sweep (x >= -0.920 m including
+    # radius); -1.20 m keeps the boundary visible with over 25 cm of clearance.
+    maximum_x = -1.20 if f2e_floor_to_wall else -1.46
+    reason = (
+        "clear_owned_f2e_floor_to_wall_negative_sweep"
+        if f2e_floor_to_wall
+        else "clear_owned_p0_fixture_aabb"
+    )
     for name in ("left_wall", "backsplash_left_return"):
         geom = world.find(f"./geom[@name='{name}']")
         if geom is None:
@@ -462,7 +494,7 @@ def _relocate_external_visual_boundaries(
                 "old_position_m": old,
                 "new_position_m": new,
                 "maximum_x_m": maximum_x,
-                "reason": "clear_owned_p0_fixture_aabb",
+                "reason": reason,
             }
         )
     return tuple(result)
@@ -737,7 +769,59 @@ def _add_secondary_camera(
         "camera",
         name="secondary_camera",
     )
-    if scenario.motion_kind in {
+    if _is_f2e_floor_to_wall(scenario):
+        anchor = scenario.physical_target_position_m
+        if anchor is None:
+            raise RuntimeError("F2e floor-to-wall camera lacks its physical target")
+        if scenario.embodiment == FRANKA_HAND:
+            # Preserve the accepted close Panda event view while the main
+            # camera carries the complete launch/miss envelope.
+            position = (
+                anchor[0] - 1.15,
+                anchor[1] - 1.18,
+                anchor[2] + 0.65,
+            )
+            target = (anchor[0], anchor[1], anchor[2] + 0.17)
+            fovy = 62.0
+        elif scenario.embodiment == ROBOTIQ_2F85_THICK_PAD:
+            # The larger Robotiq jaws hide the retained ball from the Panda
+            # azimuth.  This measured incoming-side view resolves the ball and
+            # both opposed finger bodies without depending on outcome branch.
+            position = (
+                anchor[0] + 0.20,
+                anchor[1] - 1.10,
+                anchor[2] + 0.75,
+            )
+            target = (anchor[0], anchor[1], anchor[2] + 0.02)
+            fovy = 52.0
+        else:  # scenario validation should make this unreachable
+            raise RuntimeError("F2e floor-to-wall camera has an unsupported embodiment")
+        _set_camera_look_at(
+            camera,
+            position_m=position,
+            target_m=target,
+            fovy_deg=fovy,
+        )
+    elif (
+        scenario.corpus_leaf_id == "F2f"
+        and scenario.task_variant == "random_barrier_bounce"
+        and scenario.motion_kind == "arbitrary_surface_rebound_interception"
+    ):
+        anchor = scenario.physical_target_position_m
+        if anchor is None:
+            raise RuntimeError("interception camera lacks its physical target")
+        # Keep the validated -Y flank position and lens, but center the complete
+        # barrier-miss envelope rather than only the nominal interception.  The
+        # former +0.45 m target hid the ball after it reached the room floor in
+        # both fixed negative cases.  This F2f-only target preserves F2d and the
+        # already-passing F2f sampled-plane camera serializations exactly.
+        _set_camera_look_at(
+            camera,
+            position_m=(anchor[0] - 0.10, anchor[1] - 1.60, anchor[2] + 0.60),
+            target_m=(anchor[0] + 0.05, anchor[1], anchor[2] - 0.14),
+            fovy_deg=62.0,
+        )
+    elif scenario.motion_kind in {
         "wall_rebound_interception",
         "arbitrary_surface_rebound_interception",
     }:
@@ -911,6 +995,19 @@ def _repair_task_camera(
     main = root.find(".//camera[@name='main_camera']")
     if main is None:
         raise RuntimeError("external scene lacks main_camera")
+    if _is_f2e_floor_to_wall(scenario):
+        # The floor-to-wall launch starts high at y=-1.54 m and a legitimate
+        # timing miss finishes near x=-0.90 m, y=+1.00 m.  The generic close
+        # interception view cannot contain that complete persisted envelope.
+        # This fixed overview was measured against all four floor-to-wall
+        # fixed cases; the secondary camera retains the detailed event view.
+        _set_camera_look_at(
+            main,
+            position_m=(-1.30, -2.20, 2.60),
+            target_m=(-0.05, -0.20, 0.70),
+            fovy_deg=70.0,
+        )
+        return
     if scenario.motion_kind in {
         "direct_free_contact_interception",
         "rolling_pickup_interception",
@@ -1166,6 +1263,11 @@ def _patch_calibrated_model(
         controller_plan = load_scenario_definition(
             scenario.corpus_leaf_id
         ).module.controller_plan
+        pad_half_depth_m = (
+            controller_plan.robotiq_pad_half_depth_m
+            if controller_plan.robotiq_pad_half_depth_m is not None
+            else RIGID_REVIEW_PROFILE.robotiq_pad_half_depth_m
+        )
         for name in (
             "rq_left_pad_thick_collision_pad",
             "rq_right_pad_thick_collision_pad",
@@ -1176,7 +1278,7 @@ def _patch_calibrated_model(
             pad_size = [float(value) for value in str(pad.get("size") or "").split()]
             if len(pad_size) != 3:
                 raise RuntimeError(f"Robotiq calibrated pad size is malformed: {name}")
-            pad_size[0] = RIGID_REVIEW_PROFILE.robotiq_pad_half_depth_m
+            pad_size[0] = pad_half_depth_m
             pad.set("size", " ".join(f"{value:.9g}" for value in pad_size))
             pad.set("condim", str(RIGID_REVIEW_PROFILE.robotiq_pad_condim))
             pad.set(
@@ -1193,6 +1295,11 @@ def _patch_calibrated_model(
             )
             pad.set("contype", "1")
             pad.set("conaffinity", "1")
+            if controller_plan.robotiq_pad_contact_margin_m is not None:
+                pad.set(
+                    "margin",
+                    f"{controller_plan.robotiq_pad_contact_margin_m:.9g}",
+                )
         actuator = root.find(".//actuator/general[@name='rq_fingers_actuator']")
         if actuator is None:
             raise RuntimeError("Robotiq tendon actuator is unavailable")
