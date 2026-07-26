@@ -1,0 +1,43 @@
+schema_version: dynamic-robot-review-suite/v1
+rollouts_per_leaf: 6
+scene_sequence:
+  - clean_R0
+  - robocasa_lab
+  - robocasa_kitchen
+  - robocasa_workbench
+  - robocasa_storage
+  - robocasa_tabletop
+views: [main, secondary]
+event_strip:
+  pre_event_offset_s: -0.1
+  event_offset_s: 0.0
+  post_event_offsets_s: [0.1, 0.3]
+  include_final: true
+human_checks:
+  - continuity
+  - penetration
+  - grasp_support
+  - rebound_deflection_plausibility
+  - sticking
+  - tunneling
+  - clipping
+  - fixture_support
+  - camera_occlusion
+  - robocasa_intersections
+binding:
+  require_review_plan_sha256: true
+  require_review_case_sha256: true
+  require_review_request_ledger_sha256: true
+  require_review_request_sha256: true
+  require_scenario_spec_sha256: true
+  require_source_manifest_sha256: true
+  require_qc_report_sha256: true
+  require_qc_episode_result_sha256: true
+  require_frame_timestamps_sha256: true
+  require_video_sha256: true
+  require_event_strip_sha256: true
+activation:
+  require_all_automated_qc_passed: true
+  require_all_human_checks_passed: true
+  replacement_seed_forbidden: true
+  increment_profile_version_after_repair: true

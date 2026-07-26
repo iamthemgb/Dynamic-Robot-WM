@@ -1,0 +1,20 @@
+schema_version: dynamic-robot-family/v1
+family: projectile_rebound
+variant: free_contact_counterfactual_v1
+production_disabled: true
+invariants:
+  - camera
+  - geometry
+  - appearance
+  - initial_state
+  - open_loop_action
+sweeps:
+  gravity_scale: [0.50, 0.75, 1.00, 1.25, 1.50]
+  sliding_friction: [0.05, 0.15, 0.30, 0.60, 1.00]
+  target_effective_restitution: [0.05, 0.25, 0.50, 0.75, 0.95]
+metadata_policy:
+  distinguish_target_and_measured_restitution: true
+  do_not_invent_static_dynamic_split: true
+  store_solver_parameters: true
+  store_implementation_mask: true
+

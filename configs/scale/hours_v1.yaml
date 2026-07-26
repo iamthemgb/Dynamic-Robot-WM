@@ -1,0 +1,43 @@
+# Scale-generation campaign targets: unique video hours per corpus leaf.
+# Hours count each logical rollout once (camera streams do not multiply).
+# Episode durations are the canonical per-leaf scenario durations; the
+# finalized per-block statistics are the authoritative check.
+#
+# The campaign output root is intentionally not defaulted here: every driver
+# invocation names it explicitly and the shared path guard admits only the
+# allowlisted output subtree.
+schema_version: dynamic-robot-scale-hours/v1
+episode_seconds:
+  P0a: 0.8
+  P0b: 0.8
+  P0c: 1.3
+  P0d: 2.0
+  F1a: 2.0
+  F1b: 2.0
+  F1c: 2.0
+  F1d: 2.0
+  F2a: 2.0
+  F2c: 2.0
+  F3b: 2.5
+target_hours:
+  P0a: 6.25
+  P0b: 6.25
+  P0c: 6.25
+  P0d: 6.25
+  F1a: 31.25
+  F1b: 31.25
+  F1c: 31.25
+  F1d: 31.25
+  F2a: 35.0
+  F2c: 35.0
+  F3b: 50.0
+# Episodes per immutable block (one plan-run dataset per block).  Passive
+# leaves use larger blocks; actuated leaves keep plans and finalize passes
+# small.
+block_episodes:
+  default: 2048
+  P0a: 4096
+  P0b: 4096
+  P0c: 4096
+  P0d: 4096
+shards_per_block: 16

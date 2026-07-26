@@ -1,0 +1,63 @@
+schema_version: dynamic-robot-free-contact-example-suite/v1
+suite_id: free_contact_real_grippers_v1
+description: >-
+  Development-only examples for the corrected real-gripper path.  Every
+  rollout uses MuJoCo actuators after initialization, leaves the object free,
+  and rejects any controller-time qpos/qvel rewrite.  This is not a release
+  suite and does not satisfy canonical-v2 admission by itself.
+fps: 30
+duration_s: 2.0
+resolution: [832, 480]
+source_root: /gpfs/radev/home/zl664/project/demo_mujoco_arm_gripper
+release_eligible: false
+scenarios:
+  - id: panda_vertical_free_catch
+    embodiment: franka_hand
+    motion: vertical_drop
+    intended_branch: success
+    seed: 7301
+    scene_variant: robocasa_lab
+    initialize_robot: intercept_pose
+    close_control: 150.0
+  - id: panda_projectile_free_catch
+    embodiment: franka_hand
+    motion: lateral_projectile
+    intended_branch: success
+    seed: 7302
+    scene_variant: robocasa_kitchen
+    initialize_robot: intercept_pose
+    close_control: 150.0
+  - id: panda_spatial_near_miss
+    embodiment: franka_hand
+    motion: vertical_drop
+    intended_branch: spatial_near_miss
+    seed: 7303
+    scene_variant: robocasa_workbench
+    initialize_robot: intercept_pose
+    target_offset_m: [0.12, 0.0, 0.0]
+    close_control: 150.0
+  - id: robotiq_vertical_contact_attempt
+    embodiment: robotiq_2f85_thick_pad
+    motion: vertical_drop
+    intended_branch: contact_failure
+    seed: 7401
+    scene_variant: robocasa_lab
+    initialize_robot: home
+    close_control: 105.0
+  - id: robotiq_projectile_near_miss
+    embodiment: robotiq_2f85_thick_pad
+    motion: lateral_projectile
+    intended_branch: spatial_near_miss
+    seed: 7402
+    scene_variant: robocasa_kitchen
+    initialize_robot: home
+    target_offset_m: [0.13, 0.0, 0.0]
+    close_control: 105.0
+  - id: robotiq_no_op
+    embodiment: robotiq_2f85_thick_pad
+    motion: vertical_drop
+    intended_branch: no_op
+    seed: 7403
+    scene_variant: robocasa_workbench
+    initialize_robot: home
+    close_control: 0.0

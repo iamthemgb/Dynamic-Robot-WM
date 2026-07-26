@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynamic-robot-dataset"
+version = "0.1.0"
+description = "Reproducible dynamic-object robotics dataset generation and validation"
+readme = "README.md"
+requires-python = ">=3.10,<3.12"
+license = {text = "Internal research use; external assets retain their own licenses"}
+authors = [{name = "Yale Radev Lab"}]
+dependencies = [
+  "av>=13,<17",
+  "imageio>=2.37,<3",
+  "imageio-ffmpeg>=0.6,<0.7",
+  "jsonschema>=4.23,<5",
+  "numpy>=1.26,<3",
+  "pillow>=10,<13",
+  "pyarrow>=18,<25",
+  "pyyaml>=6,<7",
+]
+
+[project.optional-dependencies]
+mujoco = [
+  "mujoco==3.10.0",
+  "scipy>=1.13,<2",
+]
+deformable = [
+  "mujoco==3.10.0",
+  "scipy>=1.13,<2",
+  "trimesh>=4.4,<5",
+]
+video = []
+test = [
+  "pytest>=8.3,<10",
+  "pytest-cov>=5,<8",
+]
+
+[project.scripts]
+dynamic-robot-dataset = "dynamic_robot_dataset.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+markers = [
+  "integration: small end-to-end tests that may invoke encoders",
+  "gpu: tests that require an EGL-capable GPU",
+]

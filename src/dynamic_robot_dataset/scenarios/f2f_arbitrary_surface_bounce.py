@@ -1,0 +1,402 @@
+"""F2f — deterministic catalog-sampled surface rebound and retained catch."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field, replace
+import json
+import math
+from pathlib import Path
+from typing import Any, Mapping
+
+import numpy as np
+
+from ..common.hashing import sha256_json
+from ._rigid_shared import rigid_module
+
+
+SCENARIO = rigid_module("F2f", "projectile_rebound", "arbitrary_surface_bounce", fixture_policy="physics-RNG sampled admitted surface", controller_kind="catch_after_sampled_rebound", trajectory="jerk_limited_predictive_reach", retention_required=True, hand_orientation="auto", settled_aim_correction=True, robotiq_tendon_profile="f2c", interior_joint_margin_rad=0.01)
+
+
+RIGID_BREADTH_PROFILE_SCHEMA = "dynamic-robot-rigid-breadth-profile/v1"
+RIGID_BREADTH_PROFILE_VERSION = "rigid-breadth-review-2026-07-v1"
+ARBITRARY_SURFACE_CATALOG_VERSION = "rigid-arbitrary-surfaces/v1"
+F2F_ROBOTIQ_PLANE_INTERCEPT_BIAS_X_M = 0.018
+F2F_FRANKA_BARRIER_INTERCEPT_BIAS_M = (0.012, -0.008, 0.008)
+F2F_FRANKA_BARRIER_CANDIDATE_BIAS_M = {
+    "barrier_yaw_neg_25": (0.006, 0.0, -0.006),
+}
+F2F_BARRIER_HIT_Z_M = 1.20
+F2F_BARRIER_CATCH_Z_M = 0.75
+F2F_SURFACE_ADMISSION_EVIDENCE_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "configs/physics/f2f_surface_admission_v1.json"
+)
+
+
+def _finite_vector(value: tuple[float, ...], size: int, label: str) -> None:
+    if len(value) != size or any(not math.isfinite(float(item)) for item in value):
+        raise ValueError(f"{label} must contain {size} finite values")
+
+
+def _normal_from_euler(euler_rad: tuple[float, float, float]) -> tuple[float, float, float]:
+    """Return a box's local +Z face normal for XYZ Euler angles.
+
+    The admitted arbitrary planes currently vary only their pitch and yaw,
+    but the complete expression keeps the persisted normal tied to the exact
+    sampled transform rather than to a task-name convention.
+    """
+
+    roll, pitch, yaw = (float(value) for value in euler_rad)
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    # Rz(yaw) @ Ry(pitch) @ Rx(roll) @ [0, 0, 1].
+    value = np.asarray(
+        (
+            cy * sp * cr + sy * sr,
+            sy * sp * cr - cy * sr,
+            cp * cr,
+        ),
+        dtype=np.float64,
+    )
+    value /= np.linalg.norm(value)
+    return tuple(float(item) for item in value)
+
+
+@dataclass(frozen=True, slots=True)
+class SurfaceAdmission:
+    grounded_supported: bool = False
+    reachability_checked: bool = False
+    swept_volume_clearance_checked: bool = False
+    background_clearance_checked: bool = False
+    calibrated_600_1200: bool = False
+
+    def validate(self) -> None:
+        if any(not isinstance(value, bool) for value in asdict(self).values()):
+            raise ValueError("surface admission fields must be explicit booleans")
+
+    @property
+    def admitted(self) -> bool:
+        self.validate()
+        return all(asdict(self).values())
+
+
+@dataclass(frozen=True, slots=True)
+class ArbitrarySurfaceCandidate:
+    candidate_id: str
+    task_variant: str
+    role: str
+    position_m: tuple[float, float, float]
+    half_size_m: tuple[float, float, float]
+    euler_rad: tuple[float, float, float]
+    contact_profile: str
+    admission: SurfaceAdmission = SurfaceAdmission()
+    admission_evidence_sha256: Mapping[str, str] = field(default_factory=dict)
+
+    def validate(self) -> None:
+        if not self.candidate_id or self.task_variant not in {
+            "random_plane_bounce",
+            "random_barrier_bounce",
+        }:
+            raise ValueError("arbitrary surface candidate identity is invalid")
+        expected_role = "table" if self.task_variant == "random_plane_bounce" else "wall"
+        if self.role != expected_role:
+            raise ValueError("arbitrary surface role differs from its task variant")
+        _finite_vector(self.position_m, 3, "surface position")
+        _finite_vector(self.half_size_m, 3, "surface half-size")
+        _finite_vector(self.euler_rad, 3, "surface Euler transform")
+        if any(value <= 0 for value in self.half_size_m):
+            raise ValueError("surface half-size must be positive")
+        if self.contact_profile not in {"rebound_pad", "rebound_wall"}:
+            raise ValueError("arbitrary surface uses an uncalibrated contact profile")
+        self.admission.validate()
+        admitted_names = {
+            name for name, admitted in asdict(self.admission).items() if admitted
+        }
+        if set(self.admission_evidence_sha256) != admitted_names or any(
+            len(str(digest)) != 64
+            or any(character not in "0123456789abcdef" for character in str(digest))
+            for digest in self.admission_evidence_sha256.values()
+        ):
+            raise ValueError(
+                "surface admission booleans require exact SHA-256 evidence bindings"
+            )
+
+    @property
+    def normal_world_xyz(self) -> tuple[float, float, float]:
+        if self.role == "table":
+            return _normal_from_euler(self.euler_rad)
+        # Barrier recipes approach the local -Y face.  Rz(yaw) @ [0,-1,0].
+        yaw = float(self.euler_rad[2])
+        return (math.sin(yaw), -math.cos(yaw), 0.0)
+
+
+@dataclass(frozen=True, slots=True)
+class SampledSurfaceContract:
+    candidate_id: str
+    task_variant: str
+    role: str
+    contact_profile: str
+    source_seed: int
+    position_m: tuple[float, float, float]
+    euler_rad: tuple[float, float, float]
+    normal_world_xyz: tuple[float, float, float]
+    half_size_m: tuple[float, float, float]
+    admission: Mapping[str, bool]
+    admission_evidence_sha256: Mapping[str, str]
+    catalog_sha256: str
+    catalog_version: str = ARBITRARY_SURFACE_CATALOG_VERSION
+    schema_version: str = "sampled-admitted-surface/v1"
+
+    def validate(self) -> None:
+        if self.schema_version != "sampled-admitted-surface/v1":
+            raise ValueError("unsupported sampled-surface contract")
+        if self.catalog_version != ARBITRARY_SURFACE_CATALOG_VERSION:
+            raise ValueError("sampled surface uses an unknown admitted catalog")
+        if (
+            not self.candidate_id
+            or self.task_variant not in {
+                "random_plane_bounce",
+                "random_barrier_bounce",
+            }
+            or self.role not in {"table", "wall"}
+            or self.contact_profile not in {"rebound_pad", "rebound_wall"}
+            or isinstance(self.source_seed, bool)
+            or not (
+            0 <= int(self.source_seed) < 2**64
+            )
+        ):
+            raise ValueError("sampled surface identity/seed is invalid")
+        if len(self.catalog_sha256) != 64 or any(
+            value not in "0123456789abcdef" for value in self.catalog_sha256
+        ):
+            raise ValueError("sampled surface lacks a catalog content hash")
+        _finite_vector(self.position_m, 3, "sampled surface position")
+        _finite_vector(self.euler_rad, 3, "sampled surface transform")
+        _finite_vector(self.normal_world_xyz, 3, "sampled surface normal")
+        _finite_vector(self.half_size_m, 3, "sampled surface half-size")
+        if abs(np.linalg.norm(self.normal_world_xyz) - 1.0) > 1e-6:
+            raise ValueError("sampled surface normal must be normalized")
+        required = set(asdict(SurfaceAdmission()))
+        if set(self.admission) != required or any(
+            not isinstance(self.admission[name], bool) for name in required
+        ):
+            raise ValueError("sampled surface admission evidence is malformed")
+        admitted_names = {
+            name for name, admitted in self.admission.items() if admitted
+        }
+        if set(self.admission_evidence_sha256) != admitted_names or any(
+            len(str(digest)) != 64
+            or any(character not in "0123456789abcdef" for character in str(digest))
+            for digest in self.admission_evidence_sha256.values()
+        ):
+            raise ValueError(
+                "sampled surface admission is not bound to calibration evidence"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return asdict(self)
+
+
+# These transforms are conservative review candidates derived from the owned
+# bounce-pad and rebound-wall envelopes.  Sampling selects a construction; it
+# never samples until an intended outcome appears.
+_ARBITRARY_SURFACE_CANDIDATES = (
+    ArbitrarySurfaceCandidate(
+        candidate_id="plane_low_170",
+        task_variant="random_plane_bounce",
+        role="table",
+        position_m=(0.58, 0.0, 0.154),
+        half_size_m=(0.12, 0.20, 0.016),
+        euler_rad=(0.0, 0.0, 0.0),
+        contact_profile="rebound_pad",
+    ),
+    ArbitrarySurfaceCandidate(
+        candidate_id="plane_mid_285",
+        task_variant="random_plane_bounce",
+        role="table",
+        position_m=(0.58, 0.0, 0.269),
+        half_size_m=(0.14, 0.18, 0.016),
+        euler_rad=(0.0, 0.0, 0.0),
+        contact_profile="rebound_pad",
+    ),
+    ArbitrarySurfaceCandidate(
+        candidate_id="plane_table_400",
+        task_variant="random_plane_bounce",
+        role="table",
+        position_m=(0.58, 0.0, 0.384),
+        half_size_m=(0.10, 0.22, 0.016),
+        euler_rad=(0.0, 0.0, 0.0),
+        contact_profile="rebound_pad",
+    ),
+    ArbitrarySurfaceCandidate(
+        candidate_id="barrier_straight",
+        task_variant="random_barrier_bounce",
+        role="wall",
+        position_m=(0.42, 0.32, 0.78),
+        half_size_m=(0.20, 0.02, 0.78),
+        euler_rad=(0.0, 0.0, 0.0),
+        contact_profile="rebound_wall",
+    ),
+    ArbitrarySurfaceCandidate(
+        candidate_id="barrier_yaw_neg_15",
+        task_variant="random_barrier_bounce",
+        role="wall",
+        position_m=(0.42, 0.32, 0.78),
+        half_size_m=(0.18, 0.02, 0.78),
+        euler_rad=(0.0, 0.0, math.radians(-15.0)),
+        contact_profile="rebound_wall",
+    ),
+    ArbitrarySurfaceCandidate(
+        candidate_id="barrier_yaw_neg_25",
+        task_variant="random_barrier_bounce",
+        role="wall",
+        position_m=(0.42, 0.32, 0.78),
+        half_size_m=(0.18, 0.02, 0.78),
+        euler_rad=(0.0, 0.0, math.radians(-25.0)),
+        contact_profile="rebound_wall",
+    ),
+)
+
+
+def raw_surface_candidate_catalog() -> tuple[ArbitrarySurfaceCandidate, ...]:
+    """Return the stable raw catalog order without any admission overlay."""
+
+    for candidate in _ARBITRARY_SURFACE_CANDIDATES:
+        candidate.validate()
+    return _ARBITRARY_SURFACE_CANDIDATES
+
+
+def _verified_admission_bindings() -> dict[str, Mapping[str, str]]:
+    """Resolve measured evidence, returning no admission on any mismatch."""
+
+    if not F2F_SURFACE_ADMISSION_EVIDENCE_PATH.is_file():
+        return {}
+    try:
+        from ..common.f2f_surface_admission import (
+            verify_f2f_surface_admission_evidence,
+        )
+
+        raw = json.loads(
+            F2F_SURFACE_ADMISSION_EVIDENCE_PATH.read_text(encoding="utf-8")
+        )
+        summary = verify_f2f_surface_admission_evidence(raw)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        # Stale, incomplete, or tampered evidence must make every candidate
+        # unadmitted while still allowing the calibration tool to regenerate
+        # a fresh report from the stable raw catalog.
+        return {}
+    ready = set(summary["admission_ready_candidates"])
+    section_hashes = summary["verified_section_sha256"]
+    return {
+        candidate_id: dict(section_hashes[candidate_id])
+        for candidate_id in ready
+    }
+
+
+def admitted_surface_catalog() -> tuple[ArbitrarySurfaceCandidate, ...]:
+    """Overlay only hash-verified geometry admissions without reordering."""
+
+    bindings = _verified_admission_bindings()
+    admission = SurfaceAdmission(
+        grounded_supported=True,
+        reachability_checked=True,
+        swept_volume_clearance_checked=True,
+        background_clearance_checked=True,
+        calibrated_600_1200=True,
+    )
+    result = tuple(
+        replace(
+            candidate,
+            admission=admission,
+            admission_evidence_sha256=bindings[candidate.candidate_id],
+        )
+        if candidate.candidate_id in bindings
+        else candidate
+        for candidate in raw_surface_candidate_catalog()
+    )
+    for candidate in result:
+        candidate.validate()
+    return result
+
+
+def sample_surface_candidate(task_variant: str, *, source_seed: int) -> ArbitrarySurfaceCandidate:
+    """Select one review candidate using only the declared physics RNG seed."""
+
+    if isinstance(source_seed, bool) or not 0 <= int(source_seed) < 2**64:
+        raise ValueError("surface sampler source_seed must be a uint64")
+    candidates = tuple(
+        item for item in admitted_surface_catalog() if item.task_variant == task_variant
+    )
+    if not candidates:
+        raise ValueError(f"no admitted arbitrary surfaces for {task_variant!r}")
+    # SeedSequence/PCG64 selection is stable and does not consume any camera,
+    # asset, controller, or scene-construction stream.
+    rng = np.random.Generator(np.random.PCG64(np.uint64(source_seed)))
+    return candidates[int(rng.integers(0, len(candidates), endpoint=False))]
+
+
+def sample_admitted_surface(task_variant: str, *, source_seed: int) -> ArbitrarySurfaceCandidate:
+    """Select an admitted candidate, failing closed while calibration is pending."""
+
+    candidate = sample_surface_candidate(task_variant, source_seed=source_seed)
+    if not candidate.admission.admitted:
+        raise ValueError(
+            f"arbitrary surface {candidate.candidate_id} is not fully admitted"
+        )
+    return candidate
+
+
+def sampled_surface_contract(
+    candidate: ArbitrarySurfaceCandidate,
+    *,
+    source_seed: int,
+) -> SampledSurfaceContract:
+    candidate.validate()
+    contract = SampledSurfaceContract(
+        candidate_id=candidate.candidate_id,
+        task_variant=candidate.task_variant,
+        role=candidate.role,
+        contact_profile=candidate.contact_profile,
+        source_seed=int(source_seed),
+        position_m=candidate.position_m,
+        euler_rad=candidate.euler_rad,
+        normal_world_xyz=candidate.normal_world_xyz,
+        half_size_m=candidate.half_size_m,
+        admission=asdict(candidate.admission),
+        admission_evidence_sha256=dict(candidate.admission_evidence_sha256),
+        catalog_sha256=catalog_sha256(),
+    )
+    contract.validate()
+    return contract
+
+
+def catalog_sha256() -> str:
+    return sha256_json(
+        {
+            "schema_version": RIGID_BREADTH_PROFILE_SCHEMA,
+            "profile_version": RIGID_BREADTH_PROFILE_VERSION,
+            "catalog_version": ARBITRARY_SURFACE_CATALOG_VERSION,
+            "candidates": [asdict(item) for item in admitted_surface_catalog()],
+        }
+    )
+
+
+__all__ = [
+    "ARBITRARY_SURFACE_CATALOG_VERSION",
+    "F2F_ROBOTIQ_PLANE_INTERCEPT_BIAS_X_M",
+    "F2F_SURFACE_ADMISSION_EVIDENCE_PATH",
+    "ArbitrarySurfaceCandidate",
+    "RIGID_BREADTH_PROFILE_SCHEMA",
+    "RIGID_BREADTH_PROFILE_VERSION",
+    "SampledSurfaceContract",
+    "SurfaceAdmission",
+    "SCENARIO",
+    "admitted_surface_catalog",
+    "catalog_sha256",
+    "raw_surface_candidate_catalog",
+    "sample_admitted_surface",
+    "sample_surface_candidate",
+    "sampled_surface_contract",
+]

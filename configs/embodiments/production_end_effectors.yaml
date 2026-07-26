@@ -1,0 +1,33 @@
+schema_version: dynamic-robot-embodiments/v1
+production_policy: real_grippers_only
+allowed_end_effectors:
+  - id: franka_hand
+    robot_model: franka_panda
+    description: MuJoCo Menagerie Panda hand with two actuated fingers
+  - id: robotiq_2f85_thick_pad
+    robot_model: franka_panda_nohand_plus_robotiq_2f85
+    description: MuJoCo Menagerie Robotiq 2F-85 with the source generator's declared fingertip pads
+forbidden_custom_attachments:
+  - native_task_tool
+  - shallow_tray
+  - deep_tray
+  - small_bin
+  - flat_paddle
+  - angled_paddle
+retired_backend: native_mujoco
+canonical_integration_backend: source_mujoco
+source_adapters:
+  - franka_hand_catch
+  - franka_hand_bounce
+  - robotiq_2f85_catch
+  - franka_hand_cloth_preview
+release_policy:
+  source_access_is_not_release_approval: true
+  require_canonical_v2_normalization: true
+  require_independent_objective_recomputation: true
+  require_two_synchronized_views: true
+  require_no_custom_flange_attachment: true
+  cloth_preview_release_eligible: false
+  cloth_assisted_tasks:
+    - lift_corner_release
+    - fold_edge_fixed_line

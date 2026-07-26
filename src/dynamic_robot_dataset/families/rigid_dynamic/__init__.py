@@ -1,0 +1,2 @@
+"""Rigid dynamic manipulation families."""
+

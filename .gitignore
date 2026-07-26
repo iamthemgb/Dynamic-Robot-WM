@@ -1,0 +1,21 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Generated datasets, reports, contact sheets, and logs are reproducible
+# artifacts rather than source. Keep only the navigation note in Git.
+outputs/**
+!outputs/README.md
+
+# Local asset roots and resolved run state are machine-specific.
+configs/assets/asset_roots.local.yaml
+*.resolved.yaml
+*.lock.json

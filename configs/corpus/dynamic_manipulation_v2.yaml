@@ -1,0 +1,299 @@
+schema_version: dynamic-robot-corpus-registry/v1
+contract_version: dynamic-robot-dataset/v2
+registry_id: unified_dynamic_manipulation_20_v1
+leaf_count: 20
+canonical_media:
+  width: 832
+  height: 480
+  video_hz: 30
+  cameras: [main, secondary]
+release_policy:
+  activation_is_per_leaf: true
+  fixed_review_rollouts: 6
+  blocked_leaf_quota: 0
+  legacy_assisted_counts_toward_generated_hours: false
+leaves:
+  - id: P0a
+    slug: freefall
+    title: Freefall (no arm)
+    family: passive_no_franka
+    subfamily: freefall
+    scenario_module: dynamic_robot_dataset.scenarios.p0a_freefall:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [no_robot]
+    task_variants: [nominal_freefall, lateral_freefall]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: passive_freeflight_v1
+    required_metadata: [release_state, object_properties, surfaces, source_hashes]
+    release_state: blocked
+    blockers: [rigid_profile_not_calibrated, six_review_rollouts_pending]
+  - id: P0b
+    slug: projectile
+    title: Projectile (no arm)
+    family: passive_no_franka
+    subfamily: projectile
+    scenario_module: dynamic_robot_dataset.scenarios.p0b_projectile:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [no_robot]
+    task_variants: [ballistic_projectile, angled_projectile]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: passive_projectile_v1
+    required_metadata: [release_state, launch_state, object_properties, surfaces, source_hashes]
+    release_state: blocked
+    blockers: [rigid_profile_not_calibrated, six_review_rollouts_pending]
+  - id: P0c
+    slug: bounce_rebound
+    title: Bounce / rebound (no arm)
+    family: passive_no_franka
+    subfamily: bounce_rebound
+    scenario_module: dynamic_robot_dataset.scenarios.p0c_bounce_rebound:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [no_robot]
+    task_variants: [table_bounce, wall_rebound]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: passive_rebound_v1
+    required_metadata: [release_state, launch_state, surfaces, object_properties, source_hashes]
+    release_state: blocked
+    blockers: [restitution_profile_not_calibrated, six_review_rollouts_pending]
+  - id: P0d
+    slug: rolling
+    title: Rolling (no arm)
+    family: passive_no_franka
+    subfamily: rolling
+    scenario_module: dynamic_robot_dataset.scenarios.p0d_rolling:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [no_robot]
+    task_variants: [straight_roll, slope_roll]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: passive_rolling_v1
+    required_metadata: [release_state, surfaces, object_properties, source_hashes]
+    release_state: blocked
+    blockers: [rolling_friction_profile_not_calibrated, six_review_rollouts_pending]
+
+  - id: F1a
+    slug: nominal_vertical_drop
+    title: Nominal vertical drop
+    family: falling_catch
+    subfamily: centered_vertical_drop
+    scenario_module: dynamic_robot_dataset.scenarios.f1a_centered_vertical_drop:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [catch_retain, catch_transport]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_catch_v2
+    required_metadata: [release_state, object_properties, robot_control, grasp_contacts, source_hashes]
+    release_state: blocked
+    blockers: [six_review_rollouts_pending]
+  - id: F1b
+    slug: off_center_drop
+    title: Off-center vertical drop
+    family: falling_catch
+    subfamily: off_center_drop
+    scenario_module: dynamic_robot_dataset.scenarios.f1b_off_center_drop:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [off_center_catch, off_center_near_miss]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_catch_v2
+    required_metadata: [release_state, object_properties, robot_control, grasp_contacts, source_hashes]
+    release_state: blocked
+    blockers: [six_review_rollouts_pending]
+  - id: F1c
+    slug: freefall_lateral_drift
+    title: Freefall with lateral drift
+    family: falling_catch
+    subfamily: drifted_drop
+    scenario_module: dynamic_robot_dataset.scenarios.f1c_drifted_drop:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [drift_catch, drift_near_miss]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_catch_v2
+    required_metadata: [release_state, object_properties, robot_control, grasp_contacts, source_hashes]
+    release_state: blocked
+    blockers: [six_review_rollouts_pending]
+  - id: F1d
+    slug: mild_projectile
+    title: Mild projectile release
+    family: falling_catch
+    subfamily: mild_projectile
+    scenario_module: dynamic_robot_dataset.scenarios.f1d_mild_projectile:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [mild_projectile_catch, mild_projectile_near_miss]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_catch_v2
+    required_metadata: [launch_state, object_properties, robot_control, grasp_contacts, source_hashes]
+    release_state: blocked
+    blockers: [six_review_rollouts_pending]
+
+  - id: F2a
+    slug: direct_interception
+    title: Direct projectile interception
+    family: projectile_rebound
+    subfamily: direct_interception
+    scenario_module: dynamic_robot_dataset.scenarios.f2a_direct_interception:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [direct_catch, direct_deflection]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_projectile_interception_v2
+    required_metadata: [launch_state, surfaces, object_properties, robot_control, source_hashes]
+    release_state: blocked
+    blockers: [positive_deflection_independent_evaluator_pending, six_review_rollouts_pending]
+  - id: F2b
+    slug: ramp_launched
+    title: Ramp-launched projectile
+    family: projectile_rebound
+    subfamily: ramp_launch
+    scenario_module: dynamic_robot_dataset.scenarios.f2b_ramp_launch:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [ramp_launch_catch, ramp_launch_deflection]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_ramp_launch_v1
+    required_metadata: [launch_state, surfaces, contact_sequence, object_properties, robot_control, source_hashes]
+    release_state: blocked
+    blockers: [human_review_pending]
+  - id: F2c
+    slug: table_floor_bounce
+    title: Table/floor bounce interception
+    family: projectile_rebound
+    subfamily: table_floor_bounce
+    scenario_module: dynamic_robot_dataset.scenarios.f2c_table_floor_bounce:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [table_bounce, floor_bounce]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_rebound_v2
+    required_metadata: [launch_state, surfaces, rebound_measurement, object_properties, robot_control, source_hashes]
+    release_state: blocked
+    blockers: [six_review_rollouts_pending]
+  - id: F2d
+    slug: wall_barrier_rebound
+    title: Wall/barrier rebound interception
+    family: projectile_rebound
+    subfamily: wall_barrier_rebound
+    scenario_module: dynamic_robot_dataset.scenarios.f2d_wall_barrier_rebound:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [wall_rebound, angled_barrier_rebound]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_rebound_v2
+    required_metadata: [launch_state, surfaces, rebound_measurement, object_properties, robot_control, source_hashes]
+    release_state: blocked
+    blockers: [robotiq_nominal_reference_rate_no_hardware_faithful_overlap_penetration_retention_acceleration]
+  - id: F2e
+    slug: multi_surface_rebound
+    title: Multi-surface rebound
+    family: projectile_rebound
+    subfamily: multi_surface_rebound
+    scenario_module: dynamic_robot_dataset.scenarios.f2e_multi_surface_rebound:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [floor_to_wall, flight_to_table_bounce]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_multi_rebound_v1
+    required_metadata: [launch_state, surfaces, contact_sequence, rebound_measurement, object_properties, robot_control, source_hashes]
+    release_state: blocked
+    blockers: [human_review_pending]
+  - id: F2f
+    slug: arbitrary_surface_bounce
+    title: Arbitrary surface bounce
+    family: projectile_rebound
+    subfamily: arbitrary_surface_bounce
+    scenario_module: dynamic_robot_dataset.scenarios.f2f_arbitrary_surface_bounce:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [random_plane_bounce, random_barrier_bounce]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_arbitrary_rebound_v1
+    required_metadata: [launch_state, surfaces, contact_normals, rebound_measurement, object_properties, robot_control, source_hashes]
+    release_state: blocked
+    blockers: [positive_barrier_dual_embodiment_retained_catch_pending, human_review_pending]
+
+  - id: F3a
+    slug: oscillating_platform_handoff
+    title: Receiver + donor oscillating-platform handoff
+    family: dynamic_handoff
+    subfamily: oscillating_platform_handoff
+    scenario_module: dynamic_robot_dataset.scenarios.f3a_oscillating_platform_handoff:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [platform_receive, platform_handoff]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_dynamic_handoff_v1
+    required_metadata: [platform_oscillation, object_properties, release_state, surfaces, robot_control, source_hashes]
+    release_state: blocked
+    blockers: [net_new_scene_pending, evaluator_pending, six_review_rollouts_pending]
+  - id: F3b
+    slug: rolling_pickup
+    title: Ball rolling on table, arm picks it up
+    family: dynamic_handoff
+    subfamily: rolling_pickup
+    scenario_module: dynamic_robot_dataset.scenarios.f3b_rolling_pickup:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [rolling_pickup, rolling_pickup_transport]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_rolling_pickup_v1
+    required_metadata: [release_state, surfaces, object_properties, robot_control, grasp_contacts, source_hashes]
+    release_state: blocked
+    blockers: [six_review_rollouts_pending]
+  - id: F3c
+    slug: water_current_pickup
+    title: Ball on water current, arm picks it up
+    family: dynamic_handoff
+    subfamily: water_current_pickup
+    scenario_module: dynamic_robot_dataset.scenarios.f3c_water_current_pickup:SCENARIO
+    backend: source_genesis_fluid
+    supported_embodiments: [franka_hand]
+    task_variants: [cross_current_pickup, downstream_pickup]
+    rates: {simulation_hz: [2000], control_hz: 100, video_hz: 30}
+    evaluator: genesis_current_pickup_v1
+    required_metadata: [fluid_properties, particle_conservation, measured_current_field, object_drag_buoyancy, robot_control, source_hashes]
+    release_state: blocked
+    blockers: [current_scene_not_implemented, pouring_emitter_forbidden, visual_particle_fallback_forbidden, six_review_rollouts_pending]
+  - id: F3d
+    slug: moving_base_catch
+    title: Moving base + launched projectile catch
+    family: dynamic_handoff
+    subfamily: moving_base_catch
+    scenario_module: dynamic_robot_dataset.scenarios.f3d_moving_base_catch:SCENARIO
+    backend: source_mujoco
+    supported_embodiments: [franka_hand, robotiq_2f85_thick_pad]
+    task_variants: [linear_base_catch, oscillating_base_catch]
+    rates: {simulation_hz: [600, 1200], control_hz: 60, video_hz: 30}
+    evaluator: rigid_moving_base_catch_v1
+    required_metadata: [base_motion, launch_state, object_properties, robot_control, grasp_contacts, source_hashes]
+    release_state: blocked
+    blockers: [net_new_scene_pending, moving_base_evaluator_pending, six_review_rollouts_pending]
+
+  - id: D1
+    slug: cloth
+    title: Cloth manipulation
+    family: deformable
+    subfamily: cloth
+    scenario_module: dynamic_robot_dataset.scenarios.d1_cloth:SCENARIO
+    backend: source_mujoco_deformable
+    supported_embodiments: [franka_hand]
+    task_variants: [poke_cloth, lift_corner_release, fold_edge_fixed_line]
+    rates: {simulation_hz: [2000], control_hz: 100, video_hz: 30}
+    evaluator: deformable_cloth_v2
+    required_metadata: [object_properties, robot_control, strain, self_contact, grasp_slip, source_hashes]
+    release_state: blocked
+    blockers: [equality_connect_grasp_forbidden, frictional_grasp_not_implemented, six_review_rollouts_pending]
+  - id: D2
+    slug: rope
+    title: Rope/cable manipulation
+    family: deformable
+    subfamily: rope
+    scenario_module: dynamic_robot_dataset.scenarios.d2_rope:SCENARIO
+    backend: source_mujoco_deformable
+    supported_embodiments: [franka_hand]
+    task_variants: [drag_endpoint, tug, lift_and_drape, wrap_around_post, thread_through_ring]
+    rates: {simulation_hz: [2000], control_hz: 100, video_hz: 30}
+    evaluator: deformable_rope_v2
+    required_metadata: [object_properties, robot_control, segment_length, self_intersection, grasp_slip, source_hashes]
+    release_state: blocked
+    blockers: [equality_connect_endpoint_forbidden, frictional_grasp_not_implemented, six_review_rollouts_pending]

@@ -1,0 +1,465 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from dynamic_robot_dataset.common.cameras import (
+    CameraCalibration,
+    invert_rigid_transform,
+    pose_to_matrix,
+    quaternion_xyzw_to_wxyz,
+)
+from dynamic_robot_dataset.common.contacts import AssistanceSample, AssistanceSummary
+from dynamic_robot_dataset.common.episode_writer import (
+    EpisodeWriter,
+    _canonical_frame_table,
+    write_parquet_atomic,
+)
+from dynamic_robot_dataset.common.paths import (
+    ExistingOutputError,
+    ResumeGuard,
+    ResumeMismatchError,
+    ensure_not_source_path,
+    portable_relative_path,
+)
+from dynamic_robot_dataset.common.provenance import environment_hash
+from dynamic_robot_dataset.common.qc import exact_duplicate_split_leakage
+from dynamic_robot_dataset.common.schema import (
+    DynamicsMode,
+    EpisodeRecord,
+    LabelStatus,
+    ReleaseTier,
+    SchemaValidationError,
+    Split,
+)
+from dynamic_robot_dataset.common.splits import SplitAssigner, validate_no_split_leakage
+from dynamic_robot_dataset.common.synchronization import (
+    SynchronizationError,
+    exact_frame_timestamps,
+    fixed_duration_frame_timestamps,
+    synchronize_previous,
+    validate_persisted_render_schedule,
+    validate_synchronized_streams,
+)
+
+
+def _episode(index: int, **updates: object) -> EpisodeRecord:
+    values: dict[str, object] = {
+        "episode_uuid": f"00000000-0000-4000-8000-{index:012d}",
+        "episode_index": index,
+        "counterfactual_bundle_id": f"bundle-{index}",
+        "physics_counterfactual_family_id": f"physics-{index}",
+        "split_group_id": f"group-{index}",
+        "scene_seed": index,
+        "branch_seed": index + 100,
+        "family": "falling_catch",
+        "subfamily": "centered_vertical_drop",
+        "intended_branch": "success_seeking",
+        "actual_outcome": "success",
+        "task_success": True,
+        "failure_mode": "none",
+        "source_generator": "test",
+        "source_generator_version": "1",
+        "config_hash": "a" * 64,
+        "simulator_name": "test",
+        "simulator_version": "1",
+        "renderer": "test",
+    }
+    values.update(updates)
+    return EpisodeRecord(**values)  # type: ignore[arg-type]
+
+
+def test_environment_hash_does_not_require_pip_and_tracks_lockfile(tmp_path: Path) -> None:
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    first = environment_hash(lockfiles=[lockfile])
+    assert len(first) == 64
+    assert first != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+    lockfile.write_text("version = 2\n", encoding="utf-8")
+    assert environment_hash(lockfiles=[lockfile]) != first
+
+
+def test_failed_outcome_needs_concrete_failure_code() -> None:
+    record = _episode(0, task_success=False, actual_outcome="miss", failure_mode="none")
+    with pytest.raises(SchemaValidationError, match="concrete failure_mode"):
+        record.validate()
+
+
+def test_failed_outcome_rejects_unknown_failure_code() -> None:
+    record = _episode(
+        0,
+        task_success=False,
+        actual_outcome="miss",
+        failure_mode="totally_made_up_typo",
+    )
+    with pytest.raises(SchemaValidationError, match="Unknown failure_mode"):
+        record.validate()
+
+
+def test_branch_intent_does_not_control_measured_label() -> None:
+    record = _episode(
+        0,
+        intended_branch="success_seeking",
+        actual_outcome="near_miss",
+        task_success=False,
+        failure_mode="receptacle_near_miss",
+    )
+    record.validate()
+    assert record.intended_branch != record.actual_outcome
+    assert not record.task_success
+
+
+def test_unverified_and_assisted_records_are_not_default_release() -> None:
+    unverified = _episode(0, label_status=LabelStatus.UNVERIFIED, release_tier=ReleaseTier.UNVERIFIED)
+    assisted = _episode(
+        1,
+        dynamics_mode=DynamicsMode.ASSISTED_CONTACT,
+        release_tier=ReleaseTier.ASSISTED_CONTACT,
+        assistance={
+            "assisted_grasp": False,
+            "assisted_retention": True,
+            "equality_constraint_active": False,
+            "latch_active": True,
+            "constraint_activation_time": 0.1,
+            "constraint_deactivation_time": 0.4,
+            "mechanisms": [
+                {
+                    "mechanism_id": "retention-latch",
+                    "mechanism_type": "latch",
+                    "source": "simulator_observed",
+                    "constraint_ids": ["latch0"],
+                    "target_body_ids": ["object"],
+                    "target_element_ids": [],
+                    "activation_intervals": [
+                        {"start_time_s": 0.1, "end_time_s": 0.4}
+                    ],
+                }
+            ],
+        },
+    )
+    unverified.validate()
+    assisted.validate()
+    assert not unverified.release_eligible
+    assert not assisted.release_eligible
+
+
+def test_portable_paths_and_source_write_protection(tmp_path: Path) -> None:
+    assert portable_relative_path("videos/main/chunk-000/file-000.mp4") == "videos/main/chunk-000/file-000.mp4"
+    for invalid in ("/absolute/file.mp4", "../escape", "a/../escape", "a\\b"):
+        with pytest.raises(ValueError):
+            portable_relative_path(invalid)
+    assert ensure_not_source_path(tmp_path / "dataset") == (tmp_path / "dataset").resolve()
+    with pytest.raises(PermissionError):
+        ensure_not_source_path("/gpfs/radev/scratch/sous/mzl7/do-not-write")
+    with pytest.raises(PermissionError):
+        ensure_not_source_path("/gpfs/radev/project/sous/zss8/dataset-generation/do-not-write")
+    with pytest.raises(PermissionError):
+        ensure_not_source_path(
+            "/gpfs/radev/home/zl664/project/demo_mujoco_deformable/do-not-write"
+        )
+    with pytest.raises(PermissionError):
+        ensure_not_source_path("/gpfs/radev/project/sous/zl664/wan_scripts/checkpoints/do-not-write")
+    repository_root = Path(__file__).resolve().parents[2]
+    with pytest.raises(PermissionError):
+        ensure_not_source_path(repository_root / "legacy_sources" / "mzl7" / "do-not-write")
+
+
+def test_scale_output_allowlist_admits_only_declared_subtree() -> None:
+    allowed_root = Path("/gpfs/radev/scratch/sous/mzl7/dynamic_rollouts")
+    assert ensure_not_source_path(allowed_root) == allowed_root
+    assert (
+        ensure_not_source_path(allowed_root / "F1a" / "block-0001" / "data")
+        == allowed_root / "F1a" / "block-0001" / "data"
+    )
+    # Sibling paths under the scratch root remain write-protected.
+    with pytest.raises(PermissionError):
+        ensure_not_source_path("/gpfs/radev/scratch/sous/mzl7/do-not-write")
+    with pytest.raises(PermissionError):
+        ensure_not_source_path("/gpfs/radev/scratch/sous/mzl7/dynamic_rollouts_sibling")
+    with pytest.raises(PermissionError):
+        ensure_not_source_path("/gpfs/radev/scratch/sous/mzl7")
+    # An empty allowlist restores the strict guard for the subtree itself.
+    with pytest.raises(PermissionError):
+        ensure_not_source_path(allowed_root / "dataset", allowlist=())
+
+
+def test_resume_requires_identical_resolved_configuration(tmp_path: Path) -> None:
+    output = tmp_path / "run"
+    ResumeGuard(output, {"seed": 7}).initialize()
+    assert ResumeGuard(output, {"seed": 7}, resume=True).initialize()
+    with pytest.raises(ResumeMismatchError):
+        ResumeGuard(output, {"seed": 8}, resume=True).initialize()
+    with pytest.raises(ExistingOutputError):
+        ResumeGuard(output, {"seed": 7}, resume=False).initialize()
+
+
+def test_episode_uuid_cannot_escape_writer_staging_root(tmp_path: Path) -> None:
+    writer = EpisodeWriter(tmp_path / "run", {"seed": 9})
+    sentinel = writer.root / "sentinel"
+    sentinel.write_text("must survive", encoding="utf-8")
+    malicious = _episode(0, episode_uuid="..")
+    with pytest.raises(SchemaValidationError, match="canonical UUID"):
+        writer.write_episode(malicious, frame_rows=(), videos={})
+    assert sentinel.read_text(encoding="utf-8") == "must survive"
+    with pytest.raises(ValueError, match="canonical UUID"):
+        writer._transaction_dir("..")
+
+
+def test_frame_mechanism_ids_keep_list_string_schema_when_all_empty(
+    tmp_path: Path,
+) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    empty_table = _canonical_frame_table(
+        [
+            {"timestamp": 0.0, "assistance.mechanism_ids": []},
+            {"timestamp": 0.1, "assistance.mechanism_ids": []},
+        ]
+    )
+    assisted_table = _canonical_frame_table(
+        [
+            {"timestamp": 0.0, "assistance.mechanism_ids": []},
+            {"timestamp": 0.1, "assistance.mechanism_ids": ["retention-latch"]},
+        ]
+    )
+
+    expected_type = pa.list_(pa.string())
+    assert empty_table.schema.field("assistance.mechanism_ids").type == expected_type
+    assert assisted_table.schema.field("assistance.mechanism_ids").type == expected_type
+
+    empty_path = write_parquet_atomic(tmp_path / "empty.parquet", empty_table)
+    assisted_path = write_parquet_atomic(tmp_path / "assisted.parquet", assisted_table)
+    assert (
+        pq.ParquetFile(empty_path).schema_arrow.field("assistance.mechanism_ids").type
+        == expected_type
+    )
+    assert (
+        pq.ParquetFile(assisted_path).schema_arrow.field("assistance.mechanism_ids").type
+        == expected_type
+    )
+
+
+def test_parquet_roundtrip_preserves_fields_first_seen_in_later_rows(
+    tmp_path: Path,
+) -> None:
+    pq = pytest.importorskip("pyarrow.parquet")
+    path = write_parquet_atomic(
+        tmp_path / "heterogeneous.parquet",
+        [
+            {
+                "timestamp": 0.04,
+                "event_type": "motion_mode_transition",
+                "from": "rolling",
+                "to": "free_flight",
+            },
+            {
+                "timestamp": 0.07,
+                "event_type": "surface_release_boundary_crossing",
+                "from": "pre_release_region",
+                "to": "post_release_region",
+                "surface": "ramp_surface",
+                "release_x_m": -0.21,
+                "direction": 1,
+                "object_position_m": [-0.20, 0.0, 0.15],
+                "measured_effective_restitution": 0.63,
+            },
+        ],
+    )
+
+    rows = pq.read_table(path).to_pylist()
+    assert rows[0]["surface"] is None
+    assert rows[1]["surface"] == "ramp_surface"
+    assert rows[1]["release_x_m"] == pytest.approx(-0.21)
+    assert rows[1]["direction"] == 1
+    assert rows[1]["object_position_m"] == pytest.approx([-0.20, 0.0, 0.15])
+    assert rows[1]["measured_effective_restitution"] == pytest.approx(0.63)
+
+
+def test_exact_timestamps_and_causal_controller_alignment() -> None:
+    frames = exact_frame_timestamps(4, 30)
+    assert frames == [0.0, 1 / 30, 2 / 30, 0.1]
+    validate_synchronized_streams({"main": frames, "secondary": list(frames)})
+    aligned = synchronize_previous(frames, [0.0, 0.05, 0.1], ["a", "b", "c"])
+    assert [sample.value for sample in aligned] == ["a", "a", "b", "c"]
+
+
+def test_fixed_duration_render_schedule_records_actual_simulation_time() -> None:
+    timestamps = fixed_duration_frame_timestamps(0.1, 30)
+    assert timestamps == [0.0, 1 / 30, 2 / 30]
+    rows = [
+        {
+            "timestamp": timestamp,
+            "simulation_timestamp": timestamp + (0.0005 if index else 0.0),
+            "synchronization_error_s": 0.0005 if index else 0.0,
+        }
+        for index, timestamp in enumerate(timestamps)
+    ]
+    validate_persisted_render_schedule(
+        rows,
+        duration_s=0.1,
+        maximum_sample_error_s=1.0 / 600.0,
+    )
+    rows[1]["synchronization_error_s"] = 0.0
+    with pytest.raises(SynchronizationError, match="does not match"):
+        validate_persisted_render_schedule(rows, duration_s=0.1)
+
+
+def test_camera_roundtrip_and_quaternion_conversion() -> None:
+    camera_to_world = pose_to_matrix((0.1, -0.2, 1.0), quaternion_xyzw_to_wxyz((0, 0, 0, 1)))
+    calibration = CameraCalibration(
+        camera_name="observation.images.main",
+        intrinsic_matrix=(500, 0, 416, 0, 500, 240, 0, 0, 1),
+        world_to_camera=invert_rigid_transform(camera_to_world),
+        camera_to_world=camera_to_world,
+    )
+    calibration.validate()
+    assert CameraCalibration.from_dict(calibration.to_dict()) == calibration
+    assert quaternion_xyzw_to_wxyz((0, 0, 0, 1)) == (1.0, 0.0, 0.0, 0.0)
+    invalid = replace(calibration, intrinsic_matrix=(0.0,) * 9)
+    with pytest.raises(SchemaValidationError, match="focal lengths"):
+        invalid.validate()
+
+
+def test_event_time_must_lie_inside_episode() -> None:
+    record = _episode(0, duration_s=1.0, event_time_s=-0.1)
+    with pytest.raises(SchemaValidationError, match="event_time_s"):
+        record.validate()
+    record.event_time_s = 1.1
+    with pytest.raises(SchemaValidationError, match="outside"):
+        record.validate()
+
+
+def test_assistance_masks_derive_episode_mode_and_times() -> None:
+    summary = AssistanceSummary.from_samples(
+        [
+            AssistanceSample(0.0),
+            AssistanceSample(0.1, assisted_retention=True, latch_active=True),
+            AssistanceSample(0.2, assisted_retention=True, latch_active=True),
+            AssistanceSample(0.3),
+        ]
+    )
+    assert summary.dynamics_mode == DynamicsMode.ASSISTED_CONTACT
+    assert summary.constraint_activation_time == 0.1
+    assert summary.constraint_deactivation_time == 0.2
+
+
+def test_counterfactual_relations_stay_in_one_split() -> None:
+    records = [
+        _episode(0, counterfactual_bundle_id="action-family", split_group_id="scene-family"),
+        _episode(1, counterfactual_bundle_id="action-family", split_group_id="scene-family"),
+        _episode(2, physics_counterfactual_family_id="physics-family", split_group_id="scene-family"),
+    ]
+    assignments = SplitAssigner(seed=11).assign(records)
+    assert len({assignment.split for assignment in assignments}) == 1
+    assert {assignment.split_group_id for assignment in assignments} == {"scene-family"}
+    assert validate_no_split_leakage(records, assignments) == []
+
+
+def test_ood_partition_forces_the_entire_connected_family_to_test() -> None:
+    records = [
+        _episode(
+            index,
+            counterfactual_bundle_id="action-family",
+            physics_counterfactual_family_id="physics-family",
+            split_group_id="scene-family",
+            scene_seed=7,
+        )
+        for index in range(3)
+    ]
+    for record, partition in zip(records, ("train_id", "test_ood", "train_id")):
+        record.physics.parameter_range_provenance["partition"] = partition
+
+    assignments = SplitAssigner(seed=11).assign(records)
+
+    assert {assignment.split for assignment in assignments} == {"test"}
+    assert validate_no_split_leakage(records, assignments) == []
+    tampered = [
+        {
+            "episode_uuid": assignment.episode_uuid,
+            "split": "train",
+        }
+        for assignment in assignments
+    ]
+    problems = validate_no_split_leakage(records, tampered)
+    assert any("physics partition test_ood must be assigned to test" in value for value in problems)
+
+
+def test_identical_state_trajectories_stay_in_one_split() -> None:
+    records = [
+        _episode(
+            0,
+            counterfactual_bundle_id="bundle-a",
+            physics_counterfactual_family_id="physics-a",
+            split_group_id="scene-a",
+            extras={"trajectory_hash": "same-physical-trajectory"},
+        ),
+        _episode(
+            1,
+            counterfactual_bundle_id="bundle-b",
+            physics_counterfactual_family_id="physics-b",
+            split_group_id="scene-b",
+            scene_seed=999,
+            extras={"trajectory_hash": "same-physical-trajectory"},
+        ),
+    ]
+    assignments = SplitAssigner(seed=17).assign(records)
+    assert {assignment.split_group_id for assignment in assignments} == {"scene-a", "scene-b"}
+    assert len({assignment.split for assignment in assignments}) == 1
+
+
+def test_exact_video_duplicates_crossing_splits_are_leakage() -> None:
+    group = [[
+        "00000000-0000-4000-8000-000000000000:observation.images.main",
+        "00000000-0000-4000-8000-000000000001:observation.images.main",
+    ]]
+    split_by_uuid = {
+        "00000000-0000-4000-8000-000000000000": "train",
+        "00000000-0000-4000-8000-000000000001": "test",
+    }
+    problems = exact_duplicate_split_leakage(group, split_by_uuid)
+    assert len(problems) == 1
+    assert "exact duplicate video group crosses splits" in problems[0]
+
+
+def test_finite_split_assignment_rebalances_whole_groups() -> None:
+    records = []
+    index = 0
+    for group_index, group_size in enumerate((18, 16, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3, 3, 3, 3, 1, 1)):
+        for _ in range(group_size):
+            records.append(
+                _episode(
+                    index,
+                    counterfactual_bundle_id=f"bundle-{group_index}",
+                    physics_counterfactual_family_id=f"physics-{group_index}",
+                    split_group_id=f"group-{group_index}",
+                    scene_seed=group_index,
+                )
+            )
+            index += 1
+    assignments = SplitAssigner(seed=0).assign(records)
+    counts = {
+        split: sum(assignment.split == split for assignment in assignments)
+        for split in ("train", "validation", "test")
+    }
+    assert sum(counts.values()) == len(records)
+    assert abs(counts["train"] - 0.80 * len(records)) <= 5
+    assert abs(counts["validation"] - 0.10 * len(records)) <= 5
+    assert abs(counts["test"] - 0.10 * len(records)) <= 5
+
+
+def test_split_validator_catches_scene_and_parent_leakage() -> None:
+    parent = _episode(0, split=Split.TRAIN)
+    sibling = _episode(
+        1,
+        counterfactual_bundle_id="other-bundle",
+        physics_counterfactual_family_id="other-physics",
+        split_group_id="other-declared-group",
+        scene_seed=parent.scene_seed,
+        parent_episode_uuid=parent.episode_uuid,
+        split=Split.TEST,
+    )
+    problems = validate_no_split_leakage([parent, sibling])
+    assert problems and "connected leakage group" in problems[0]

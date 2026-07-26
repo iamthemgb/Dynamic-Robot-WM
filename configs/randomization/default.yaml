@@ -1,0 +1,70 @@
+schema_version: dynamic-robot-randomization/v3
+background_mix:
+  clean_franka_lab: 0.20
+  robocasa_lab: 0.15
+  robocasa_kitchen: 0.20
+  robocasa_workbench: 0.15
+  robocasa_storage: 0.15
+  robocasa_tabletop: 0.15
+bundle_invariants:
+  - background_style
+  - scene_asset
+  - lighting
+  - texture
+  - object_color
+  - object_asset
+  - camera_pose
+  - robot_start
+  - control_latency
+  - camera_latency
+  - controller_profile
+  - rng_subseeds
+rules:
+  independent_of_intended_branch: true
+  independent_of_actual_outcome: true
+  physics_family_visuals_fixed: true
+  action_bundle_physics_fixed: true
+  color_background_camera_independent_of_branch: true
+  outcome_conditioned_resampling_forbidden: true
+levels:
+  R0:
+    description: deterministic calibration scene
+    vary: []
+  R1:
+    description: moderate in-distribution production randomization
+    vary: [scene_asset, background_style, lighting, texture, object_color]
+  R2:
+    description: broad validated in-distribution randomization
+    vary: [scene_asset, background_style, lighting, texture, object_color, object_asset, camera_pose, robot_start, control_latency, camera_latency, controller_profile]
+  OOD:
+    description: separately manifested held-out evaluation values
+    vary: [scene_asset, background_style, lighting, texture, object_color, object_asset, camera_pose, robot_start, control_latency, camera_latency, controller_profile]
+    training_eligible: false
+physics_axes:
+  persistent: [gravity, density, mass, size, friction, effective_restitution]
+  transient_state: [initial_position, initial_velocity, initial_spin]
+  controller: [initial_joint_configuration, maximum_velocity, maximum_acceleration, control_delay, action_noise, tool_mount_error]
+  observation: [camera_delay, camera_pose, exposure]
+correlation_policy:
+  derive_mass_from_geometry_and_density: true
+  never_sample_mass_size_density_inconsistently: true
+  vary_one_declared_field_per_physics_counterfactual: true
+asset_admission:
+  require_scale_validation: true
+  require_collision_validation: true
+  require_render_validation: true
+  require_license_notice: true
+  require_content_hash_manifest: true
+  background_collision_enabled: false
+  require_task_swept_volume_clearance: true
+  require_fixture_intersection_clearance: true
+  require_rendered_occlusion_validation: true
+validation:
+  r2_requires_r1_acceptance: true
+  counterfactual_sibling_invariance_required: true
+  independent_rng_streams: [physics, initial_state, camera, assets, controller, scene_construction]
+resampling:
+  construction_failures_only: true
+  preserve_runtime_physics_failures: true
+  preserve_outcome_mismatches: true
+  record_attempt_seed: true

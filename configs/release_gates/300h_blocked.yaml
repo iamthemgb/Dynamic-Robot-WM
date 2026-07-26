@@ -1,0 +1,15 @@
+schema_version: dynamic-robot-readiness-gate/v1
+gate_id: native_300h_blocked_v1
+minimum_unique_release_hours: 300.0
+hard_blocked: true
+blocked_reason: A positive 10h-to-100h scaling curve has not been demonstrated.
+require_native_mujoco: true
+free_contact_only: true
+require_no_sparse_strata: true
+acceptance_suite:
+  suite_name: real_gripper_acceptance_160_v2
+  branch_count: 160
+  require_full_native: true
+  require_passed_execution: true
+  required_end_effectors: [franka_hand, robotiq_2f85_thick_pad]
+  forbid_custom_flange_attachments: true

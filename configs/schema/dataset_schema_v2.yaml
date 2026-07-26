@@ -1,0 +1,45 @@
+schema_version: dynamic-robot-dataset/v2
+read_compatibility: [dynamic-robot-dataset/v1, dynamic-robot-dataset/v2]
+coordinate_convention:
+  units: SI
+  handedness: right
+  up_axis: +Z
+  quaternion_order: WXYZ
+identity_required:
+  - episode_uuid
+  - episode_index
+  - split_group_id
+  - counterfactual_bundle_id
+  - physics_counterfactual_family_id
+  - actual_outcome_class
+  - primary_failure_code
+  - failure_tags
+  - failure_taxonomy_version
+objective_required:
+  - objective_evaluator_id
+  - objective_evaluator_version
+  - objective_threshold_set_hash
+  - objective_evidence
+  - key_event_name
+  - key_event_time_s
+frame_semantics:
+  required: [task_phase, motion_mode, active_surface, contact_role]
+cameras:
+  required_streams: [observation.images.main, observation.images.secondary]
+  stream_calibration_mapping_required: true
+assistance:
+  mechanism_id_required: true
+  simulator_observed_intervals_required: true
+  target_body_or_element_required: true
+counterfactuals:
+  table_version: dynamic-robot-counterfactual-families/v1
+  relations: [action, physics]
+  expected_membership_declared_before_simulation: true
+release_policy:
+  default_requires:
+    label_status: verified_objective
+    independent_objective_recompute: true
+    calibrated_parameter_range: true
+    physics_qc_pass: true
+    release_tier: free_contact
+    dynamics_mode: free_contact

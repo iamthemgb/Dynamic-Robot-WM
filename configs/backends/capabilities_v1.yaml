@@ -1,0 +1,200 @@
+schema_version: dynamic-robot-backend-capabilities/v2
+registry_id: unified_source_backends_v1
+backends:
+  - name: source_mujoco
+    simulator: mujoco
+    integrated_rendering: true
+    evaluator_interface: persisted_state_event/v1
+    release_state: blocked
+    source_hashes:
+      external_dependency_manifest: 823463e7095fac9a0819cae2688d75df80a7a38ce6c93b1e72e1323fe469ae99
+      rolling_island_dependency_manifest: 138c74962dfa7fc3272100e643d0b995c1c8b6e6e053af9caf8523ae770738a6
+      rolling_island_robocasa_assets_py: 5c14d63d5f7ae4ab5717f36aff63828bddde9b6800c223dcaf38e51aafb8c5f3
+      rolling_island_scene_builder_py: 61887be9dc7ee1b80076b9c2bf60ebf56474baf3db031ac57ccdca20be6ec5c7
+      rolling_island_utils_py: 618720ecfe64e354311500e9c6e19852c3debf5eec8850ec6eeb0fc4b91a45c8
+      rolling_island_variants_py: fce9fbaf623668f4532a48f30b67106ee1014b7bceffee7ee7d7d77e30246d40
+      rolling_island_yaml_scene_py: cfee5a192e9c2b7ee991a57e6dafcbb2181b7c66c71d52a514ae4fb7d708e9c8
+      scene_builder_py: f0fba618860ddc19754d4803c9c06d96a08a2874ea17831d846d47d8a9ec943d
+      variants_py: 01f39393cc34d346934cbc876d959e5ce5c2c61776cc027a855338bf543312f5
+      robocasa_importer_py: ca716f680e15bea10494977841e01f7878eb6cda661c848886be03d230a4f874
+      panda_xml: 96ad67da03710f17f798c9478fd9e9efdf24a3bf8359f05e456dd9fb158ea273
+      panda_nohand_xml: e7090a5e2384b18a223ef532d98bf914f7f9a6b74dc8bc9f74c8291201074071
+      robotiq_2f85_xml: d48aca5f9151798ffd38111ce4e8b2081f3ec2d4f525161b33643451580010de
+    blockers:
+      - rigid_profile_acceptance_pending
+      - fixed_review_human_acceptance_pending
+    support:
+      - leaf: P0a
+        family: passive_no_franka
+        subfamily: freefall
+        embodiments: [no_robot]
+        implemented_task_variants: [nominal_freefall, lateral_freefall]
+        execution_state: review
+        blockers: []
+      - leaf: P0b
+        family: passive_no_franka
+        subfamily: projectile
+        embodiments: [no_robot]
+        implemented_task_variants: [ballistic_projectile, angled_projectile]
+        execution_state: review
+        blockers: []
+      - leaf: P0c
+        family: passive_no_franka
+        subfamily: bounce_rebound
+        embodiments: [no_robot]
+        implemented_task_variants: [table_bounce, wall_rebound]
+        execution_state: review
+        blockers: []
+      - leaf: P0d
+        family: passive_no_franka
+        subfamily: rolling
+        embodiments: [no_robot]
+        implemented_task_variants: [straight_roll, slope_roll]
+        execution_state: review
+        blockers: []
+      - leaf: F1a
+        family: falling_catch
+        subfamily: centered_vertical_drop
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [catch_retain, catch_transport]
+        execution_state: review
+        blockers: []
+      - leaf: F1b
+        family: falling_catch
+        subfamily: off_center_drop
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [off_center_catch, off_center_near_miss]
+        execution_state: review
+        blockers: []
+      - leaf: F1c
+        family: falling_catch
+        subfamily: drifted_drop
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [drift_catch, drift_near_miss]
+        execution_state: review
+        blockers: []
+      - leaf: F1d
+        family: falling_catch
+        subfamily: mild_projectile
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [mild_projectile_catch, mild_projectile_near_miss]
+        execution_state: review
+        blockers: []
+      - leaf: F2a
+        family: projectile_rebound
+        subfamily: direct_interception
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [direct_catch, direct_deflection]
+        execution_state: review
+        blockers: []
+      - leaf: F2b
+        family: projectile_rebound
+        subfamily: ramp_launch
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [ramp_launch_catch, ramp_launch_deflection]
+        execution_state: review
+        blockers: []
+      - leaf: F2c
+        family: projectile_rebound
+        subfamily: table_floor_bounce
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [table_bounce, floor_bounce]
+        execution_state: review
+        blockers: []
+      - leaf: F2d
+        family: projectile_rebound
+        subfamily: wall_barrier_rebound
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [wall_rebound, angled_barrier_rebound]
+        execution_state: blocked
+        blockers: [robotiq_nominal_reference_rate_no_hardware_faithful_overlap_penetration_retention_acceleration]
+      - leaf: F2e
+        family: projectile_rebound
+        subfamily: multi_surface_rebound
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [floor_to_wall, flight_to_table_bounce]
+        execution_state: review
+        blockers: []
+      - leaf: F2f
+        family: projectile_rebound
+        subfamily: arbitrary_surface_bounce
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [random_plane_bounce, random_barrier_bounce]
+        execution_state: review
+        blockers: []
+      - leaf: F3a
+        family: dynamic_handoff
+        subfamily: oscillating_platform_handoff
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: []
+        execution_state: blocked
+        blockers: [oscillating_platform_handoff_not_implemented]
+      - leaf: F3b
+        family: dynamic_handoff
+        subfamily: rolling_pickup
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: [rolling_pickup, rolling_pickup_transport]
+        execution_state: review
+        blockers: []
+      - leaf: F3d
+        family: dynamic_handoff
+        subfamily: moving_base_catch
+        embodiments: [franka_hand, robotiq_2f85_thick_pad]
+        implemented_task_variants: []
+        execution_state: blocked
+        blockers: [moving_base_catch_variants_not_implemented]
+  - name: source_genesis_fluid
+    simulator: genesis_sph
+    integrated_rendering: true
+    evaluator_interface: persisted_state_event_fluid/v1
+    release_state: blocked
+    source_hashes:
+      external_dependency_manifest: 12f37fec8b2df8d7b09ec5421fe34607572149c8508291d3af26f09f0102b9a7
+    blockers:
+      - current_and_pickup_scene_not_implemented
+      - fluid_conservation_acceptance_pending
+    support:
+      - leaf: F3c
+        family: dynamic_handoff
+        subfamily: water_current_pickup
+        embodiments: [franka_hand]
+        implemented_task_variants: []
+        execution_state: blocked
+        blockers: [genesis_current_and_pickup_scene_not_implemented]
+  - name: source_mujoco_deformable
+    simulator: mujoco_flex
+    integrated_rendering: true
+    evaluator_interface: persisted_state_event_deformable/v1
+    release_state: blocked
+    source_hashes:
+      external_dependency_manifest: 8f8d0190615b0fb9577ff7f4d2ce22f7418d1d2de39c86bbc5537918c34c39fd
+    blockers:
+      - equality_connect_grasps_not_replaced
+      - deformable_replay_acceptance_pending
+    support:
+      - leaf: D1
+        family: deformable
+        subfamily: cloth
+        embodiments: [franka_hand]
+        implemented_task_variants: []
+        execution_state: blocked
+        blockers: [frictional_cloth_grasp_not_implemented]
+      - leaf: D2
+        family: deformable
+        subfamily: rope
+        embodiments: [franka_hand]
+        implemented_task_variants: []
+        execution_state: blocked
+        blockers: [frictional_rope_grasp_not_implemented]
+  - name: native_mujoco
+    simulator: mujoco
+    integrated_rendering: true
+    evaluator_interface: diagnostic_only/v1
+    release_state: permanently_blocked
+    source_hashes:
+      dataset_generation_baseline: git:fc655036218803156461d9818b9abb0473bee718
+    blockers:
+      - retired_custom_flange_attachments
+      - synthetic_task_tool_misrepresents_real_gripper
+      - quarantine_regression_use_only
+    support: []

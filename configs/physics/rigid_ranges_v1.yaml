@@ -1,0 +1,68 @@
+schema_version: dynamic-robot-physics-ranges/v1
+catalog_id: franka_rigid_provisional_v1
+calibration_status: provisional
+release_eligible: false
+policy:
+  ordinary_sampling: sample_geometry_and_material_then_derive_mass
+  counterfactual_sampling: vary_only_declared_intervention
+  train_id_fraction_of_validated_support: 0.80
+  uncalibrated_values_are_development_only: true
+  solver_parameters_are_not_physical_restitution: true
+strict_acceptance_thresholds:
+  maximum_object_gripper_penetration_m: 0.002
+  maximum_object_task_surface_penetration_m: 0.003
+  maximum_measured_effective_restitution: 1.05
+  maximum_free_flight_energy_drift_fraction: 0.05
+  timestep_halving_maximum_event_shift_s: 0.03333333333333333
+  timestep_halving_maximum_key_position_shift_m: 0.01
+  require_no_solver_warnings: true
+  require_no_nonfinite_state: true
+  require_no_tunneling: true
+  require_no_unexplained_velocity_discontinuity: true
+  require_no_mutation_boundary_violation: true
+fields:
+  radius_m:
+    unit: m
+    nominal: 0.04
+    candidate: {minimum: 0.025, maximum: 0.055, distribution: log_uniform}
+    source: migrated_rigid_generators
+  density_kg_m3:
+    unit: kg/m^3
+    nominal: 1100.0
+    candidate: {minimum: 500.0, maximum: 2500.0, distribution: log_uniform}
+    source: material_model
+  dynamic_friction:
+    unit: '1'
+    nominal: 0.35
+    candidate: {minimum: 0.10, maximum: 0.80, distribution: uniform}
+    interpretation: calibrated_effective
+  effective_restitution:
+    unit: '1'
+    nominal: 0.35
+    candidate: {minimum: 0.05, maximum: 0.75, distribution: uniform}
+    interpretation: measured_effective
+  initial_speed_m_s:
+    unit: m/s
+    nominal: 0.75
+    candidate: {minimum: 0.25, maximum: 2.60, distribution: task_conditioned}
+    state_not_physics: true
+  initial_spin_rad_s:
+    unit: rad/s
+    nominal: 0.0
+    candidate: {minimum: -30.0, maximum: 30.0, distribution: symmetric}
+    state_not_physics: true
+  table_slope_deg:
+    unit: degree
+    nominal: 0.0
+    candidate: {minimum: -10.0, maximum: 10.0, train_id_minimum: -5.0, train_id_maximum: 5.0}
+  controller_delay_s:
+    unit: s
+    nominal: 0.0
+    candidate: {minimum: 0.0, maximum: 0.16, train_id_maximum: 0.08}
+    controller_not_physics: true
+calibration:
+  required_oracles: [free_fall, bounce, sliding_deceleration, rolling_slip, contact_stability]
+  required_admitted_support: [radius_m, density_kg_m3, dynamic_friction, effective_restitution, table_slope_deg]
+  candidate_trials_per_value: 20
+  reject_on_state_reset: true
+  record_requested_and_measured_effective_values: true

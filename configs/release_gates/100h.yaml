@@ -1,0 +1,45 @@
+schema_version: dynamic-robot-readiness-gate/v1
+gate_id: native_100h_v1
+minimum_unique_release_hours: 100.0
+require_native_mujoco: true
+free_contact_only: true
+require_no_sparse_strata: true
+acceptance_suite:
+  suite_name: real_gripper_acceptance_160_v2
+  branch_count: 160
+  require_full_native: true
+  require_passed_execution: true
+  required_end_effectors: [franka_hand, robotiq_2f85_thick_pad]
+  forbid_custom_flange_attachments: true
+prerequisite_gate:
+  gate_id: native_10h_v1
+  passed: true
+allocations:
+  - id: rolling_sliding
+    selector: {families: [rolling_interception], release_tiers: [free_contact]}
+    minimum_unique_hours: 35.0
+  - id: falling_retention
+    selector: {families: [falling_catch], release_tiers: [free_contact]}
+    minimum_unique_hours: 25.0
+  - id: projectile_rebound
+    selector: {families: [projectile_rebound], release_tiers: [free_contact]}
+    minimum_unique_hours: 25.0
+  - id: deformable
+    selector: {families: [soft_body, cloth, rope], release_tiers: [free_contact]}
+    minimum_unique_hours: 10.0
+  - id: handoff_recovery
+    selector: {families: [dynamic_handoff], release_tiers: [free_contact]}
+    minimum_unique_hours: 5.0
+coverage:
+  minimum_background_styles: 3
+  minimum_actual_outcome_classes_per_rigid_family: 2
+  rigid_families: [falling_catch, rolling_interception, projectile_rebound]
+  families_in_every_split: [falling_catch, rolling_interception, projectile_rebound, soft_body]
+  required_splits: [train, validation, test]
+model_evaluation:
+  required: true
+  trajectory_rmse_improvement_fraction: {minimum: 0.10}
+  contact_f1_improvement_fraction: {minimum: 0.10}
+  action_ranking_improved: {equals: true}
+  heldout_physics_improved: {equals: true}
+  material_visual_quality_regression: {equals: false}

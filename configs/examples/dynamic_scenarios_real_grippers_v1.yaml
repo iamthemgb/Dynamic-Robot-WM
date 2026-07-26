@@ -1,0 +1,23 @@
+schema_version: dynamic-robot-scenario-example-suite/v1
+suite_id: dynamic_scenarios_real_grippers_v1
+description: >-
+  Development-only real-gripper examples for the major rigid scenario
+  categories other than basic freefall catch. Robot/object state is initialized
+  once; all later robot motion is actuator commanded and all later object motion
+  comes from native MuJoCo dynamics.
+source_root: /gpfs/radev/home/zl664/project/demo_mujoco_arm_gripper
+release_eligible: false
+fps: 30
+duration_s: 2.5
+resolution: [832, 480]
+scenarios:
+  - {id: panda_catch_smooth_transport, type: catch_smooth_transport, category: catch_and_retain, seed: 8102, scene_variant: robocasa_lab}
+  - {id: panda_catch_abrupt_brake, type: catch_abrupt_brake, category: catch_and_retain, seed: 8102, scene_variant: robocasa_kitchen}
+  - {id: panda_rolling_interception, type: rolling_interception, category: rolling_and_sliding, seed: 8201, scene_variant: robocasa_workbench}
+  - {id: panda_sliding_redirect, type: sliding_redirect, category: rolling_and_sliding, seed: 8202, scene_variant: robocasa_lab}
+  - {id: panda_table_rebound, type: table_rebound, category: projectile_and_rebound, seed: 8301, scene_variant: robocasa_kitchen}
+  - {id: panda_wall_rebound, type: wall_rebound, category: projectile_and_rebound, seed: 8302, scene_variant: robocasa_workbench}
+  - {id: panda_roll_off_edge, type: roll_off_edge, category: mode_transition, seed: 8401, scene_variant: robocasa_lab}
+  - {id: panda_ramp_to_flight, type: ramp_to_flight, category: mode_transition, seed: 8402, scene_variant: robocasa_kitchen}
+  - {id: panda_hand_deflect_left, type: hand_deflect_left, category: robot_induced_deflection, seed: 8501, scene_variant: robocasa_workbench}
+  - {id: panda_hand_deflect_right, type: hand_deflect_right, category: robot_induced_deflection, seed: 8502, scene_variant: robocasa_lab}

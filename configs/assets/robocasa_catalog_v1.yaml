@@ -1,0 +1,137 @@
+schema_version: dynamic-robot-robocasa-catalog/v1
+catalog_version: robocasa-backgrounds/v1
+source_root: /gpfs/radev/project/sous/mzl7/robocasa
+asset_root: robocasa/models/assets
+license_notice: LICENSE
+read_only: true
+copy_external_assets: false
+profiles: [lab, kitchen, workbench, storage, tabletop]
+review_candidate_policy:
+  require_descriptor_mesh_texture_hashes: true
+  require_license_hash: true
+  require_scale_to_meters: true
+  visual_only: true
+  collision_enabled: false
+  allowed_pending_validations:
+    - scene_specific_clearance
+    - fixture_intersection_clearance
+    - rendered_occlusion_review
+release_admission_policy:
+  require_world_aabb_and_transform: true
+  require_task_swept_volume_clearance: true
+  require_fixture_intersection_clearance: true
+  require_rendered_occlusion_validation: true
+  require_admitted: true
+# These rows are read-only, content-bound review candidates. They permit the
+# five fixed R1 profiles to enter compiled/rendered preflight, but they do not
+# claim scene-specific clearance or occlusion admission. Runtime manifests must
+# bind the exact assets actually sampled by a fixed episode seed.
+assets:
+  - asset_id: lab-scale-review-candidate-v1
+    profiles: [lab]
+    descriptor_path: robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/model.xml
+    descriptor_sha256: ec1c3c9e9d92e56009232790e04717505da33df57c28ec9e03cff7280a773d83
+    referenced_file_sha256:
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_0.obj: cec266c2f7960cbf4f59b66ed1c056b24a2a0fe2473ca581f018e19bdfac40ad
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_1.obj: 0aa31b4f39170028cd19be48427cedb963ed9da10d8e144b5250958bde956366
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_10.obj: 049cd2ebf72970e741f0cf5e48e042200375a3323801e06a55f2ee52ccc5d463
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_11.obj: 3be55a97e3b18e5943b3cf808403002b65b30068a812e990d01b93de3b27fe3d
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_12.obj: 3011f9771bf04db82a55425459510917aba7d687bd613cc1d62e58fa67e9fab4
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_13.obj: 758110a8326a56631eddae9d6138e0bcd3a62c19e55c8addde7df71648f70c48
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_14.obj: e6ef14d0c341a61a1bd44989cbed67ab4eef12db6cd43f5f9b3f425fa08095f7
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_15.obj: 1776f6b9742b7fe6952605a75f94fd0a81eb3f74112d8ad2b7bb4c7094c09936
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_2.obj: 08aab7f32c4140343a75f9d16afcf2ff7999259d1d34d06bc886748c27d65a4f
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_3.obj: 2a59f1bee70fd8f452fa000304c6fb58073ae8b35cba74758246b83b151e4193
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_4.obj: 0a792a232ccd6eca239e4c5633dc7ff3e4834f31e5813e638bd44da56dcad5cc
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_5.obj: aa0501a71712d8c152c1cf640fb3a721a627e80ff5b133ed624eb696bc2134ac
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_6.obj: 40f48f1704c3acd3a34e14165da7a66959407e578af6738f42e04423be482329
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_7.obj: 79512116a184229a70cca761f6796e257d782aa6b93af0c2ed2fcf43f1df3321
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_8.obj: 8c635c33c4590576381cd32bb603773cf58dcc23b298d164d44337f87013f081
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/collision/collision_mesh_collision_9.obj: af1d1a5b4070a042a771b06dbeb439e11c812f08ef4450f0f176e8c4e4ce78f5
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/model.xml: ec1c3c9e9d92e56009232790e04717505da33df57c28ec9e03cff7280a773d83
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/visual/DigitalScale001.obj: 3c574c51540b9a5e7917d2f8d5313cc825f905887678e591e5ac5c518c8393cd
+      robocasa/models/assets/objects/lightwheel/digital_scale/DigitalScale001/visual/T_BC001.png: 58db14789493cb49578fd28c0e9b9a025d85df763f6dacee900862a9a7d41fe3
+    manifest_sha256: f35611939af111b59763b47e5722e4d527a341b21440dd5daa6448b1317fd988
+    license_notice_sha256: 5da18670b3f00c59847b1ded9c28dee59940d963b1e03b528b0108d9c5a09885
+    scale_to_meters: 1.0
+    visual_only: true
+    collision_enabled: false
+    scene_clearance_validated: false
+    fixture_intersection_validated: false
+    occlusion_validated: false
+    admitted: false
+    blockers: [fixture_intersection_clearance_pending, rendered_occlusion_review_pending, scene_specific_clearance_pending]
+  - asset_id: kitchen-toaster-review-candidate-v1
+    profiles: [kitchen]
+    descriptor_path: robocasa/models/assets/fixtures/toasters/Toaster001/model.xml
+    descriptor_sha256: 35a4010d168f2eaa1fe6462ed307f8e596f0efdb213ef20cb7cb77f2ba9ec5dd
+    referenced_file_sha256:
+      robocasa/models/assets/fixtures/toasters/Toaster001/model.xml: 35a4010d168f2eaa1fe6462ed307f8e596f0efdb213ef20cb7cb77f2ba9ec5dd
+      robocasa/models/assets/fixtures/toasters/Toaster001/visuals/Body001.obj: ba34f312cb367cfc0556d84f4138901f3faf7cb4191a070911768c7a6606f37c
+      robocasa/models/assets/fixtures/toasters/Toaster001/visuals/T_BC001.png: 9f861eba51116a08003d41b8289ba349a3b9c9b8cf8029547f0edbee1b32230e
+      robocasa/models/assets/fixtures/toasters/Toaster001/visuals/button_cancel.obj: a035f3be7c03b2dd88a87bfc32b5ec16ec22095e1de4e8dc45c3bcc1f698a4c8
+      robocasa/models/assets/fixtures/toasters/Toaster001/visuals/knob_doneness.obj: 54e9ac5e0d0b39d88fab0a9894d90a6ee238d1bdb1c517674ecd1315a167db42
+      robocasa/models/assets/fixtures/toasters/Toaster001/visuals/lever.obj: 78060f3bc19226bc2f8dd7989f978f53524a5eb78b3fc66f0d0c74317d0a6022
+    manifest_sha256: b9ad91834b6b7ed0a99ea7aa17390afc2ddec0cf26dad7a7507294b683b4119b
+    license_notice_sha256: 5da18670b3f00c59847b1ded9c28dee59940d963b1e03b528b0108d9c5a09885
+    scale_to_meters: 1.0
+    visual_only: true
+    collision_enabled: false
+    scene_clearance_validated: false
+    fixture_intersection_validated: false
+    occlusion_validated: false
+    admitted: false
+    blockers: [fixture_intersection_clearance_pending, rendered_occlusion_review_pending, scene_specific_clearance_pending]
+  - asset_id: workbench-knife-block-review-candidate-v1
+    profiles: [workbench]
+    descriptor_path: robocasa/models/assets/objects/lightwheel/knife_block/KnifeBlock004/model.xml
+    descriptor_sha256: dfb1d279fc48f7f3f0678a09bed366b1ff334056c9c1f7b2f77e16d50ea15ca8
+    referenced_file_sha256:
+      robocasa/models/assets/objects/lightwheel/knife_block/KnifeBlock004/collision/collision_mesh_collision_0.obj: 0727e53f387190379cbcf1ab58455979ebba28a2691d1074029895ab1651947a
+      robocasa/models/assets/objects/lightwheel/knife_block/KnifeBlock004/collision/collision_mesh_collision_1.obj: 00bc3d5b4b8b40f1c516046ead440088599111f7f08ab6197331f88e6db0f331
+      robocasa/models/assets/objects/lightwheel/knife_block/KnifeBlock004/collision/collision_mesh_collision_2.obj: 2b45570aa8c3043cbf46883f83a1395db8ae518b4172b42c279585461585b51e
+      robocasa/models/assets/objects/lightwheel/knife_block/KnifeBlock004/collision/collision_mesh_collision_3.obj: 8b5b5e62525822cb9f14f77815af2f1b6e96b121327d5ebdc8c5b24c694f8e4e
+      robocasa/models/assets/objects/lightwheel/knife_block/KnifeBlock004/collision/collision_mesh_collision_4.obj: 61d5d00ab50048cc94ca2e92c8cd0579e818d67bb702c7193c22ad930cbd1e6f
+      robocasa/models/assets/objects/lightwheel/knife_block/KnifeBlock004/model.xml: dfb1d279fc48f7f3f0678a09bed366b1ff334056c9c1f7b2f77e16d50ea15ca8
+      robocasa/models/assets/objects/lightwheel/knife_block/KnifeBlock004/visual/KnifeBlock004.obj: a62f6aaae5720c669b499fc3424c03df28e91a761d41da96a9ac152b2bacb272
+      robocasa/models/assets/objects/lightwheel/knife_block/KnifeBlock004/visual/Prop.obj: 08e9a0d5dec76be404ef79f4d3fe067ff12b3a1ec55b2c54e5667191c3c207b5
+      robocasa/models/assets/objects/lightwheel/knife_block/KnifeBlock004/visual/T_BC001.png: b0d4a97f3952c40a7d8ba71e59db5f215442b6bc0dbc2351220f7c560ad19e90
+    manifest_sha256: 1b2a5754bcd16aebb1dbb227ea17a8177ddfcd179df585e8ca5e0b5af3c152ac
+    license_notice_sha256: 5da18670b3f00c59847b1ded9c28dee59940d963b1e03b528b0108d9c5a09885
+    scale_to_meters: 1.0
+    visual_only: true
+    collision_enabled: false
+    scene_clearance_validated: false
+    fixture_intersection_validated: false
+    occlusion_validated: false
+    admitted: false
+    blockers: [fixture_intersection_clearance_pending, rendered_occlusion_review_pending, scene_specific_clearance_pending]
+  - asset_id: storage-tabletop-container-review-candidate-v1
+    profiles: [storage, tabletop]
+    descriptor_path: robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/model.xml
+    descriptor_sha256: e12d7cedd675864b9242ce6a9f248c30fb639fdb227820b7ee9169bd186fa1ea
+    referenced_file_sha256:
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/collision/collision_mesh_collision_0.obj: f3297cf4b98cdff7bba8f9d0b0738f9c678d279def20d4d211e21b0485100a61
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/collision/collision_mesh_collision_1.obj: 94d3e6f045093394a8663594b09c4fc5c45c3a29f9849b89eac4760e7dc41ea8
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/collision/collision_mesh_collision_2.obj: 6ea7ea9fd793ae38e108ddfe1c8acf353bcf09c5533335ca122611b989a77a01
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/collision/collision_mesh_collision_3.obj: ea26d4c916f3f63127bc27df9d8be66572b42f702dd5d8a8e5fc7529448061b6
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/collision/collision_mesh_collision_4.obj: e8015e342658482fcfdc62fd3d2daf33c181b4ae8a6414964964a717efb9ab68
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/collision/collision_mesh_collision_5.obj: 0c592a306ae371cd9102174857695ec9ac69eaf03ccffe812d88c44d05358ea5
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/collision/collision_mesh_collision_6.obj: fc68ed74c5dde900ae159f888c2f7e188f397da772d6310ef4a7946e2e731213
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/collision/collision_mesh_collision_7.obj: f14cce3126a4add2636e6a8d7cac2347043a2fb8c31c968badc841c394a88885
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/collision/collision_mesh_collision_8.obj: b05ffc616cec04c0b3920e8a3f905a1a898b89457ea831d949df304a6c7a2b8e
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/collision/collision_mesh_collision_9.obj: 7733ff3180716007ba0ca9d56a9487b188f34b4e53cc52fdaac4cfbc5360ea12
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/model.xml: e12d7cedd675864b9242ce6a9f248c30fb639fdb227820b7ee9169bd186fa1ea
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/visual/T_BC001.png: 9468259345deebd0ad8c32faa2424b2316d05e3cc9f30058c55c7d5cce188929
+      robocasa/models/assets/objects/lightwheel/tupperware/Tupperware040/visual/Tupperware040.obj: f8b2b6f1b58c676003ad9b619679fdda65b31f79b071fdd36e2b74fe54fec8c5
+    manifest_sha256: b457a339de03b2a52e1bca68b867ccdc45d5e0fdb09e16f8b70dff6b09bcfcd3
+    license_notice_sha256: 5da18670b3f00c59847b1ded9c28dee59940d963b1e03b528b0108d9c5a09885
+    scale_to_meters: 1.0
+    visual_only: true
+    collision_enabled: false
+    scene_clearance_validated: false
+    fixture_intersection_validated: false
+    occlusion_validated: false
+    admitted: false
+    blockers: [fixture_intersection_clearance_pending, rendered_occlusion_review_pending, scene_specific_clearance_pending]
+release_status: blocked_pending_compiled_scene_clearance_and_rendered_occlusion

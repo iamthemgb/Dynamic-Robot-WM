@@ -1,0 +1,18 @@
+schema_version: dynamic-robot-generation/v1
+family: falling_catch
+subfamily: centered_vertical_drop
+variant: clean_v1
+robot_model: abstract_receptacle
+tool_type: catch_tray
+num_bundles: 2
+branches:
+  - success_seeking
+  - near_miss
+  - contact_failure
+  - bad_action
+views: [main, secondary]
+seed: 0
+randomization_level: R1
+scene_style: clean_franka_lab
+output: outputs/example
+resume: false
