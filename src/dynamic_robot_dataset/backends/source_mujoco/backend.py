@@ -580,13 +580,17 @@ def _controller_for_scenario(
             aim_target[1],
             aim_target[2] + ready_raise_z,
         )
-    elif scenario.initial_state_mode == "sampled_preview":
-        # A projectile preview must visibly intercept rather than initialize
+    elif scenario.initial_state_mode in {"sampled_preview", "sampled_scale"} and any(
+        value != 0.0
+        for value in controller_plan.sampled_projectile_ready_offset_m
+    ):
+        # A sampled projectile must visibly intercept rather than initialize
         # in the waiting pose used to calibrate the immutable fixed reviews.
         # This offset is declared by the leaf module and solved through the
         # same rejected-on-failure IK and bounded minimum-jerk controller.
         # It changes no fixed-review source bytes and performs no state write
-        # after initialization.
+        # after initialization.  Sampled leaves without a declared offset use
+        # the ordinary hover-above-intercept ready pose below.
         ready_offset = controller_plan.sampled_projectile_ready_offset_m
         ready_target = tuple(
             float(aim_target[index] + ready_offset[index]) for index in range(3)

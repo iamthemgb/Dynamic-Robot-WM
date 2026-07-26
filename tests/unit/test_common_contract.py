@@ -167,6 +167,25 @@ def test_portable_paths_and_source_write_protection(tmp_path: Path) -> None:
         ensure_not_source_path(repository_root / "legacy_sources" / "mzl7" / "do-not-write")
 
 
+def test_scale_output_allowlist_admits_only_declared_subtree() -> None:
+    allowed_root = Path("/gpfs/radev/scratch/sous/mzl7/dynamic_rollouts")
+    assert ensure_not_source_path(allowed_root) == allowed_root
+    assert (
+        ensure_not_source_path(allowed_root / "F1a" / "block-0001" / "data")
+        == allowed_root / "F1a" / "block-0001" / "data"
+    )
+    # Sibling paths under the scratch root remain write-protected.
+    with pytest.raises(PermissionError):
+        ensure_not_source_path("/gpfs/radev/scratch/sous/mzl7/do-not-write")
+    with pytest.raises(PermissionError):
+        ensure_not_source_path("/gpfs/radev/scratch/sous/mzl7/dynamic_rollouts_sibling")
+    with pytest.raises(PermissionError):
+        ensure_not_source_path("/gpfs/radev/scratch/sous/mzl7")
+    # An empty allowlist restores the strict guard for the subtree itself.
+    with pytest.raises(PermissionError):
+        ensure_not_source_path(allowed_root / "dataset", allowlist=())
+
+
 def test_resume_requires_identical_resolved_configuration(tmp_path: Path) -> None:
     output = tmp_path / "run"
     ResumeGuard(output, {"seed": 7}).initialize()

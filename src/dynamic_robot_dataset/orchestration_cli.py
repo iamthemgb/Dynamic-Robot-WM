@@ -85,7 +85,25 @@ def _owned_shard_executor(dataset_root: str | Path) -> Callable[..., Any]:
         str(entry.declaration.get("backend") or "").strip().lower().replace("-", "_")
         for entry in plan.episodes
     }
+    declaration_schemas = {
+        str(entry.declaration.get("schema_version") or "")
+        for entry in plan.episodes
+    }
     if backend == "source_mujoco" and declaration_backends == {"source_mujoco"}:
+        from .common.scale_execution import SCALE_EXECUTION_BRIDGE_SCHEMA
+        from .common.source_execution import SOURCE_EXECUTION_BRIDGE_SCHEMA
+
+        if declaration_schemas == {SCALE_EXECUTION_BRIDGE_SCHEMA}:
+            from .common.scale_execution import (
+                execute_source_mujoco_scale_episode,
+            )
+
+            return execute_source_mujoco_scale_episode
+        if declaration_schemas != {SOURCE_EXECUTION_BRIDGE_SCHEMA}:
+            raise ValueError(
+                "run plan mixes or lacks owned declaration schemas: "
+                f"{sorted(declaration_schemas)!r}"
+            )
         from .common.source_execution import execute_source_mujoco_episode
 
         return execute_source_mujoco_episode

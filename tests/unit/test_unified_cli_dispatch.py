@@ -97,16 +97,50 @@ def test_owned_executor_is_bound_to_source_backend_and_plan_declarations(
         json.dumps({"resolved_config": {"backend": "source_mujoco"}}),
         encoding="utf-8",
     )
-    plan = SimpleNamespace(
-        episodes=(SimpleNamespace(declaration={"backend": "source_mujoco"}),)
+    from dynamic_robot_dataset.common.scale_execution import (
+        SCALE_EXECUTION_BRIDGE_SCHEMA,
+        execute_source_mujoco_scale_episode,
     )
-    monkeypatch.setattr(orchestration_cli, "load_run_plan", lambda _root: plan)
-
     from dynamic_robot_dataset.common.source_execution import (
+        SOURCE_EXECUTION_BRIDGE_SCHEMA,
         execute_source_mujoco_episode,
     )
 
+    plan = SimpleNamespace(
+        episodes=(
+            SimpleNamespace(
+                declaration={
+                    "backend": "source_mujoco",
+                    "schema_version": SOURCE_EXECUTION_BRIDGE_SCHEMA,
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr(orchestration_cli, "load_run_plan", lambda _root: plan)
+
     assert orchestration_cli._owned_shard_executor(root) is execute_source_mujoco_episode
+
+    plan = SimpleNamespace(
+        episodes=(
+            SimpleNamespace(
+                declaration={
+                    "backend": "source_mujoco",
+                    "schema_version": SCALE_EXECUTION_BRIDGE_SCHEMA,
+                }
+            ),
+        )
+    )
+    assert (
+        orchestration_cli._owned_shard_executor(root)
+        is execute_source_mujoco_scale_episode
+    )
+
+    # A declaration without an owned bridge schema cannot select an executor.
+    plan = SimpleNamespace(
+        episodes=(SimpleNamespace(declaration={"backend": "source_mujoco"}),)
+    )
+    with pytest.raises(ValueError, match="owned declaration schemas"):
+        orchestration_cli._owned_shard_executor(root)
 
     (root / ".generation.json").write_text(
         json.dumps({"resolved_config": {"backend": "diagnostic"}}),

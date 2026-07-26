@@ -40,6 +40,15 @@ DEFAULT_READ_ONLY_SOURCE_ROOTS = (
 )
 
 
+# Fork-local exception: exactly one dedicated scale-generation output subtree
+# beneath the otherwise read-only mzl7 scratch root is writable.  The allowlist
+# is consulted before the read-only rejection and admits only this subtree;
+# every sibling path under the scratch root remains write-protected.
+SCALE_OUTPUT_ALLOWLIST = (
+    Path("/gpfs/radev/scratch/sous/mzl7/dynamic_rollouts"),
+)
+
+
 class ExistingOutputError(FileExistsError):
     """Raised when an operation would silently overwrite an existing artifact."""
 
@@ -92,10 +101,20 @@ def as_dataset_relative(path: str | Path, root: str | Path) -> str:
 def ensure_not_source_path(
     path: str | Path,
     source_roots: Iterable[str | Path] = DEFAULT_READ_ONLY_SOURCE_ROOTS,
+    allowlist: Iterable[str | Path] = SCALE_OUTPUT_ALLOWLIST,
 ) -> Path:
-    """Reject a write target located inside any immutable source root."""
+    """Reject a write target located inside any immutable source root.
+
+    A candidate inside an explicitly allowlisted output subtree is admitted
+    before the read-only rejection; the allowlist never widens beyond the
+    declared subtrees.
+    """
 
     candidate = Path(path).resolve()
+    for raw_allowed in allowlist:
+        allowed = Path(raw_allowed).resolve()
+        if candidate == allowed or allowed in candidate.parents:
+            return candidate
     for raw_root in source_roots:
         root = Path(raw_root).resolve()
         if candidate == root or root in candidate.parents:

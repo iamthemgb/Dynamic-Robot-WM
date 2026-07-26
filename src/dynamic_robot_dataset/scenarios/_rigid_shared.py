@@ -68,6 +68,194 @@ def projectile_randomization_contract(leaf_id: str) -> dict[str, Any]:
     }
 
 
+SCALE_INITIAL_STATE_SAMPLER_VERSION = "dynamic-robot-scale-initial-state/v3"
+
+# Per-leaf sampler revisions.  Shard execution re-prepares every declaration
+# with current code and requires the fresh spec to match the immutable plan
+# bit for bit, so a version change may only reach leaves whose envelopes
+# actually changed; every other leaf must keep minting exactly what its
+# planned blocks contain.  v4 (2026-07-22, from the block-9000 calibration
+# round): F1c narrows drift arrivals to the measured passive-finger-safe
+# envelope, and F1d/F2a replace their preview-envelope targets with the
+# IK-feasible sub-boxes measured by tools/probe_scale_ik_feasibility.py.
+_SCALE_SAMPLER_LEAF_VERSIONS: dict[str, str] = {
+    "F1c": "dynamic-robot-scale-initial-state/v4",
+    "F1d": "dynamic-robot-scale-initial-state/v4",
+    "F2a": "dynamic-robot-scale-initial-state/v4",
+}
+
+# Every sampler version whose minted contracts remain executable.  Planned
+# blocks are immutable: mid-campaign sampler revisions must keep validating
+# declarations minted under earlier versions, so validators check membership
+# here instead of pinning one minting version.
+SCALE_ACCEPTED_SAMPLER_VERSIONS: tuple[str, ...] = (
+    "dynamic-robot-scale-initial-state/v3",
+    "dynamic-robot-scale-initial-state/v4",
+)
+
+
+def scale_sampler_version(leaf_id: str) -> str:
+    """Return the sampler version this leaf currently mints under."""
+
+    return _SCALE_SAMPLER_LEAF_VERSIONS.get(
+        leaf_id, SCALE_INITIAL_STATE_SAMPLER_VERSION
+    )
+
+# Bounded diagnostic scale envelopes.  Every range is anchored to a proven
+# fixed-review or passive-variation operating point; scale sampling widens the
+# initial-state distribution without leaving the measured physics envelope.
+# All ``sampled_scale`` cases compile at the calibrated 1200 Hz reference rate.
+_SCALE_BALLISTIC_RANGES: dict[str, dict[str, tuple[float, float]]] = {
+    # Near-vertical drops around the strict palm-up IK envelope proven by the
+    # fixed F1 reviews (target 0.47/±y, event 0.44 s, ballistic construction).
+    # v3 envelope, measured on F1a calibration blocks 9000/9001 (200 episodes):
+    # the calibrated grasp contact is proven at exactly one descending impact
+    # speed (4.32 m/s; the fixed-review 0.44 s free drop).  Sampled arrivals
+    # both above (v1: 4.0-4.97) and below (v2: 3.4-4.0) that point produced
+    # measured penetration/replay failures, dominantly on the Robotiq, so v3
+    # pins the impact speed at the proven value.  By ballistics this also
+    # pins the launch height at the proven ~1.50 m, inside every jittered
+    # camera framing; diversity comes from target position, approach azimuth,
+    # lateral drift, event timing, and spin.
+    "F1a": {
+        "target_x_m": (0.465, 0.475),
+        "target_y_m": (-0.012, 0.012),
+        "incoming_azimuth_deg": (-180.0, 180.0),
+        "horizontal_distance_m": (0.0, 0.03),
+        "flight_time_s": (0.40, 0.45),
+        "impact_speed_m_s": (4.32, 4.32),
+        "initial_spin_z_rad_s": (-2.0, 2.0),
+    },
+    # Off-center drop keeps the fixed +Y offset character (nominal 0.035 m).
+    "F1b": {
+        "target_x_m": (0.465, 0.475),
+        "target_y_m": (0.025, 0.045),
+        "incoming_azimuth_deg": (-180.0, 180.0),
+        "horizontal_distance_m": (0.0, 0.03),
+        "flight_time_s": (0.40, 0.45),
+        "impact_speed_m_s": (4.32, 4.32),
+        "initial_spin_z_rad_s": (-2.0, 2.0),
+    },
+    # Drifted drop samples around the fixed (-0.09, +0.05) start offset
+    # (offset direction atan2(0.05, -0.09) is about 151 degrees).  v4 trims
+    # the drift tail: calibration block 9000 measured every passive-finger
+    # acceleration violation (97-119 rad/s^2 vs the 80 limit) and the one
+    # 2.1 mm gripper penetration at horizontal drift >= 0.09 m arriving at
+    # 0.21-0.29 m/s, so the sampled drift keeps the proven lower band and
+    # the spin envelope returns to the F1a/F1b-proven +/-2 rad/s.
+    "F1c": {
+        "target_x_m": (0.465, 0.475),
+        "target_y_m": (-0.012, 0.012),
+        "incoming_azimuth_deg": (125.0, 175.0),
+        "horizontal_distance_m": (0.08, 0.115),
+        "flight_time_s": (0.40, 0.45),
+        "impact_speed_m_s": (4.32, 4.32),
+        "initial_spin_z_rad_s": (-2.0, 2.0),
+    },
+    # F1d/F2a keep their preview projectile diversity (azimuth, distance,
+    # flight time, launch, spin) but bound the intercept target to the
+    # IK-feasible sub-box measured on CPU with
+    # tools/probe_scale_ik_feasibility.py: the lateral-catch hand pose
+    # leaves 3.5-6.2 mm grasp-center residuals (tolerance 3 mm) over much
+    # of the preview target boxes, and the residual depends only on the
+    # sampled target position (pinning any other dimension leaves the
+    # error bit-identical).
+    "F1d": {
+        **_PROJECTILE_INITIAL_STATE_RANGES["F1d"],
+        # Feasible across the full +/-15 mm y band at x <= 0.4675; residuals
+        # of 3.8-6.2 mm appear from x = 0.470 outward.
+        "target_x_m": (0.465, 0.4675),
+        "target_y_m": (-0.012, 0.012),
+    },
+    "F2a": {
+        **_PROJECTILE_INITIAL_STATE_RANGES["F2a"],
+        # The preview box (x 0.41-0.53, y +/-0.08) is a patchwork of 3-12 mm
+        # residual ridges; this corner probed clean on a 5x5 fine grid.
+        "target_x_m": (0.41, 0.44),
+        "target_y_m": (0.03, 0.08),
+    },
+}
+
+# Per-leaf/per-variant parameter envelopes for the non-ballistic scale
+# samplers.  P0c reuses the proven ±20% passive-variation speed envelope.
+_SCALE_PARAMETER_RANGES: dict[tuple[str, str | None], dict[str, tuple[float, float]]] = {
+    ("P0a", "nominal_freefall"): {
+        "drop_height_offset_m": (-0.05, 0.05),
+        "lateral_speed_m_s": (0.0, 0.06),
+    },
+    ("P0a", "lateral_freefall"): {
+        "drop_height_offset_m": (-0.05, 0.05),
+        "lateral_speed_m_s": (0.22, 0.32),
+    },
+    ("P0b", "ballistic_projectile"): {
+        "launch_speed_x_m_s": (1.00, 1.30),
+        "launch_speed_y_m_s": (-0.06, 0.06),
+        "launch_speed_z_m_s": (3.20, 3.80),
+    },
+    ("P0b", "angled_projectile"): {
+        "launch_speed_x_m_s": (1.00, 1.30),
+        "launch_speed_y_m_s": (0.26, 0.40),
+        "launch_speed_z_m_s": (3.20, 3.80),
+    },
+    ("P0c", None): {"speed_factor": (0.80, 1.20)},
+    ("P0d", None): {"speed_factor": (0.85, 1.15)},
+    ("F2c", None): {
+        "lane_speed_factor": (0.85, 1.15),
+        "lane_y_m": (-0.02, 0.02),
+    },
+    ("F3b", None): {
+        "speed_factor": (0.85, 1.15),
+        "lane_y_m": (-0.03, 0.03),
+    },
+}
+
+SCALE_SAMPLED_LEAVES = (
+    "P0a",
+    "P0b",
+    "P0c",
+    "P0d",
+    "F1a",
+    "F1b",
+    "F1c",
+    "F1d",
+    "F2a",
+    "F2c",
+    "F3b",
+)
+
+
+def scale_parameter_ranges(
+    leaf_id: str, task_variant: str | None = None
+) -> dict[str, tuple[float, float]]:
+    """Return the public scale envelope for one non-ballistic leaf/variant."""
+
+    for key in ((leaf_id, task_variant), (leaf_id, None)):
+        ranges = _SCALE_PARAMETER_RANGES.get(key)
+        if ranges is not None:
+            return dict(ranges)
+    raise ValueError(f"{leaf_id}/{task_variant} has no scale parameter policy")
+
+
+def scale_randomization_contract(
+    leaf_id: str, task_variant: str | None = None
+) -> dict[str, Any]:
+    """Return the versioned scale sampling envelope for one leaf."""
+
+    if leaf_id in _SCALE_BALLISTIC_RANGES:
+        ranges = _SCALE_BALLISTIC_RANGES[leaf_id]
+        sampling = "continuous_uniform_with_ballistic_solve"
+    else:
+        ranges = scale_parameter_ranges(leaf_id, task_variant)
+        sampling = "continuous_uniform_around_fixed_review_recipe"
+    return {
+        "schema_version": scale_sampler_version(leaf_id),
+        "rng_stream": "initial_state",
+        "sampling": sampling,
+        "outcome_conditioned_resampling": False,
+        "ranges": {name: list(bounds) for name, bounds in ranges.items()},
+    }
+
+
 def _projectile_rng(seed: int) -> np.random.Generator:
     """Namespace the projectile sampler without depending on draw order elsewhere."""
 
@@ -79,12 +267,37 @@ def _projectile_rng(seed: int) -> np.random.Generator:
     return np.random.default_rng(sequence)
 
 
+def _scale_rng(seed: int) -> np.random.Generator:
+    """Namespace the non-ballistic scale sampler independently of other draws."""
+
+    if seed < 0 or seed >= 2**64:
+        raise ValueError("scale initial-state seed must be an unsigned 64-bit value")
+    sequence = np.random.SeedSequence(
+        [seed & 0xFFFFFFFF, seed >> 32, 0x5343414C, 1]
+    )
+    return np.random.default_rng(sequence)
+
+
+def _scale_contract(
+    leaf_id: str,
+    task_variant: str,
+    *,
+    seed: int,
+    sampled: dict[str, Any],
+) -> dict[str, Any]:
+    contract = scale_randomization_contract(leaf_id, task_variant)
+    contract.update({"source_seed": int(seed), **sampled})
+    return contract
+
+
 def _sample_projectile_initial_state(
     leaf_id: str,
     *,
     seed: int,
     target_z_m: float,
     gravity_z_m_s2: float,
+    ranges: dict[str, tuple[float, float]] | None = None,
+    contract_base: dict[str, Any] | None = None,
 ) -> tuple[
     np.ndarray,
     np.ndarray,
@@ -95,7 +308,7 @@ def _sample_projectile_initial_state(
 ]:
     """Sample a reachable ballistic arc without looking at branch/outcome labels."""
 
-    ranges = _PROJECTILE_INITIAL_STATE_RANGES[leaf_id]
+    ranges = _PROJECTILE_INITIAL_STATE_RANGES[leaf_id] if ranges is None else ranges
     rng = _projectile_rng(seed)
 
     def sample(name: str) -> float:
@@ -113,7 +326,17 @@ def _sample_projectile_initial_state(
     )
     horizontal_distance = sample("horizontal_distance_m")
     flight_time = sample("flight_time_s")
-    initial_vertical_velocity = sample("initial_vertical_velocity_m_s")
+    if "impact_speed_m_s" in ranges:
+        # The calibrated grasp contact admits one proven descending impact
+        # speed; derive the launch vertical velocity from it instead of
+        # sampling the launch velocity directly.
+        impact_speed = sample("impact_speed_m_s")
+        initial_vertical_velocity = (
+            abs(gravity_z_m_s2) * flight_time - impact_speed
+        )
+    else:
+        impact_speed = None
+        initial_vertical_velocity = sample("initial_vertical_velocity_m_s")
     launch_height = (
         target[2]
         - initial_vertical_velocity * flight_time
@@ -142,7 +365,11 @@ def _sample_projectile_initial_state(
     final_vertical_velocity = velocity[2] + gravity_z_m_s2 * flight_time
     if final_vertical_velocity >= 0.0:
         raise RuntimeError("projectile must reach the gripper on its descending arc")
-    contract = projectile_randomization_contract(leaf_id)
+    contract = (
+        projectile_randomization_contract(leaf_id)
+        if contract_base is None
+        else dict(contract_base)
+    )
     contract.update(
         {
             "source_seed": int(seed),
@@ -155,6 +382,7 @@ def _sample_projectile_initial_state(
             "sampled_flight_time_s": flight_time,
             "sampled_launch_height_m": launch_height,
             "sampled_initial_vertical_velocity_m_s": initial_vertical_velocity,
+            "sampled_pinned_impact_speed_m_s": impact_speed,
             "sampled_arrival_vertical_velocity_m_s": float(
                 final_vertical_velocity
             ),
@@ -242,13 +470,37 @@ def _recipe_payload(
             else (1.4, 1.4)
         )
         lateral = 0.28 if task_variant == "lateral_freefall" else 0.0
+        drop_height = 0.47
+        key_event = 0.3
+        sampling_contract = None
+        if initial_state_mode == "sampled_scale":
+            ranges = scale_parameter_ranges(leaf_id, task_variant)
+            scale_rng = _scale_rng(seed)
+            height_offset = float(scale_rng.uniform(*ranges["drop_height_offset_m"]))
+            lateral = float(scale_rng.uniform(*ranges["lateral_speed_m_s"]))
+            drop_height += height_offset
+            key_event = math.sqrt(
+                2.0 * (drop_height - radius) / abs(gravity[2])
+            )
+            sampling_contract = _scale_contract(
+                leaf_id,
+                task_variant,
+                seed=seed,
+                sampled={
+                    "sampled_drop_height_offset_m": height_offset,
+                    "sampled_drop_height_m": drop_height,
+                    "sampled_lateral_speed_m_s": lateral,
+                    "recomputed_key_event_time_s": key_event,
+                },
+            )
         base.update(
             duration_s=0.8,
-            key_event_time_s=0.3,
+            key_event_time_s=key_event,
             motion_kind="passive_freefall",
-            object_initial_position_m=(-0.15, -0.10, tabletop_height_m + 0.47),
+            object_initial_position_m=(-0.15, -0.10, tabletop_height_m + drop_height),
             object_initial_linear_velocity_m_s=(lateral, 0.0, 0.0),
             surfaces=(_surface("supported_floor", "floor", (0, 0, r1_support_center_z), (*support_xy, r1_support_half_height)),),
+            initial_state_sampling_contract=sampling_contract,
         )
     elif leaf_id == "P0b":
         support_xy = (
@@ -256,14 +508,36 @@ def _recipe_payload(
             if tabletop_height_m > 0.0
             else (1.4, 1.4)
         )
+        vx = 1.15
         vy = 0.34 if task_variant == "angled_projectile" else 0.0
+        vz = 3.50
+        key_event = 0.4
+        sampling_contract = None
+        if initial_state_mode == "sampled_scale":
+            ranges = scale_parameter_ranges(leaf_id, task_variant)
+            scale_rng = _scale_rng(seed)
+            vx = float(scale_rng.uniform(*ranges["launch_speed_x_m_s"]))
+            vy = float(scale_rng.uniform(*ranges["launch_speed_y_m_s"]))
+            vz = float(scale_rng.uniform(*ranges["launch_speed_z_m_s"]))
+            # The key event is the ballistic apex of the sampled launch.
+            key_event = vz / abs(gravity[2])
+            sampling_contract = _scale_contract(
+                leaf_id,
+                task_variant,
+                seed=seed,
+                sampled={
+                    "sampled_launch_velocity_m_s": [vx, vy, vz],
+                    "recomputed_key_event_time_s": key_event,
+                },
+            )
         base.update(
             duration_s=0.8,
-            key_event_time_s=0.4,
+            key_event_time_s=key_event,
             motion_kind="passive_projectile",
             object_initial_position_m=(-0.70, -0.15, tabletop_height_m + 0.50),
-            object_initial_linear_velocity_m_s=(1.15, vy, 3.50),
+            object_initial_linear_velocity_m_s=(vx, vy, vz),
             surfaces=(_surface("supported_floor", "floor", (0, 0, r1_support_center_z), (*support_xy, r1_support_half_height)),),
+            initial_state_sampling_contract=sampling_contract,
         )
     elif leaf_id == "P0c" and task_variant == "table_bounce":
         support_xy = (
@@ -271,12 +545,39 @@ def _recipe_payload(
             if tabletop_height_m > 0.0
             else (1.2, 0.8)
         )
+        bounce_vx = 0.55
+        bounce_vz = -0.85
+        key_event = 0.31
+        sampling_contract = None
+        if initial_state_mode == "sampled_scale":
+            ranges = scale_parameter_ranges(leaf_id, task_variant)
+            scale_rng = _scale_rng(seed)
+            factor = float(scale_rng.uniform(*ranges["speed_factor"]))
+            bounce_vx *= factor
+            bounce_vz *= factor
+            # Same closed form as the fixed passive speed variation: first
+            # table contact of the scaled launch from the fixed drop height.
+            height = 0.75 - radius
+            gravity_mag = abs(gravity[2])
+            key_event = (
+                bounce_vz + math.sqrt(bounce_vz**2 + 2.0 * gravity_mag * height)
+            ) / gravity_mag
+            sampling_contract = _scale_contract(
+                leaf_id,
+                task_variant,
+                seed=seed,
+                sampled={
+                    "sampled_speed_factor": factor,
+                    "sampled_launch_velocity_m_s": [bounce_vx, 0.0, bounce_vz],
+                    "recomputed_key_event_time_s": key_event,
+                },
+            )
         base.update(
             duration_s=1.3,
-            key_event_time_s=0.31,
+            key_event_time_s=key_event,
             motion_kind="passive_table_bounce",
             object_initial_position_m=(-0.30, 0.0, tabletop_height_m + 0.75),
-            object_initial_linear_velocity_m_s=(0.55, 0.0, -0.85),
+            object_initial_linear_velocity_m_s=(bounce_vx, 0.0, bounce_vz),
             surfaces=(
                 _surface(
                     "supported_bounce_table",
@@ -286,6 +587,7 @@ def _recipe_payload(
                     table_rebound=True,
                 ),
             ),
+            initial_state_sampling_contract=sampling_contract,
         )
     elif leaf_id == "P0c" and task_variant == "wall_rebound":
         support_xy = (
@@ -298,25 +600,64 @@ def _recipe_payload(
         # launch struck the support floor after 0.35 s and merely rolled toward
         # the wall, so its nominal "wall rebound" never occurred.  The wall
         # face/contact-center geometry gives the deterministic 0.6868 s event.
-        wall_event_time = (0.35 - 0.02 - radius + 0.45) / 1.10
+        wall_speed = 1.10
+        sampling_contract = None
+        if initial_state_mode == "sampled_scale":
+            ranges = scale_parameter_ranges(leaf_id, task_variant)
+            scale_rng = _scale_rng(seed)
+            factor = float(scale_rng.uniform(*ranges["speed_factor"]))
+            wall_speed *= factor
+        wall_event_time = (0.35 - 0.02 - radius + 0.45) / wall_speed
+        wall_launch_vz = 0.5 * abs(gravity[2]) * wall_event_time
+        if initial_state_mode == "sampled_scale":
+            sampling_contract = _scale_contract(
+                leaf_id,
+                task_variant,
+                seed=seed,
+                sampled={
+                    "sampled_speed_factor": factor,
+                    "sampled_launch_velocity_m_s": [
+                        wall_speed,
+                        0.0,
+                        wall_launch_vz,
+                    ],
+                    "recomputed_key_event_time_s": wall_event_time,
+                },
+            )
         base.update(
             duration_s=1.3,
             key_event_time_s=wall_event_time,
             motion_kind="passive_wall_rebound",
             object_initial_position_m=(-0.45, 0.0, tabletop_height_m + 0.62),
             object_initial_linear_velocity_m_s=(
-                1.10,
+                wall_speed,
                 0.0,
-                0.5 * abs(gravity[2]) * wall_event_time,
+                wall_launch_vz,
             ),
             surfaces=(
                 _surface("supported_floor", "floor", (0, 0, r1_support_center_z), (*support_xy, r1_support_half_height)),
                 _surface("supported_wall", "wall", (0.35, 0.0, tabletop_height_m + 0.62), (0.02, wall_half_y, 0.62)),
             ),
+            initial_state_sampling_contract=sampling_contract,
         )
     elif leaf_id == "P0d":
         slope = 0.10 if task_variant == "slope_roll" else 0.0
         speed = 0.72
+        sampling_contract = None
+        if initial_state_mode == "sampled_scale":
+            ranges = scale_parameter_ranges(leaf_id, task_variant)
+            scale_rng = _scale_rng(seed)
+            factor = float(scale_rng.uniform(*ranges["speed_factor"]))
+            speed *= factor
+            sampling_contract = _scale_contract(
+                leaf_id,
+                task_variant,
+                seed=seed,
+                sampled={
+                    "sampled_speed_factor": factor,
+                    "sampled_rolling_speed_m_s": speed,
+                },
+            )
         base.update(
             key_event_time_s=0.5,
             motion_kind="passive_slope_roll" if slope else "passive_straight_roll",
@@ -332,6 +673,7 @@ def _recipe_payload(
                     euler=(0.0, -slope, 0.0),
                 ),
             ),
+            initial_state_sampling_contract=sampling_contract,
         )
     elif leaf_id.startswith("F1") or leaf_id == "F2a":
         event_time = 0.44
@@ -343,7 +685,28 @@ def _recipe_payload(
         start_xy = target[:2].copy()
         initial_spin = (0.0, 0.0, 0.0)
         sampling_contract = None
-        if leaf_id == "F1b":
+        if initial_state_mode == "sampled_scale":
+            if leaf_id not in _SCALE_BALLISTIC_RANGES:
+                raise ValueError(
+                    f"{leaf_id} has no scale ballistic initial-state policy"
+                )
+            (
+                target,
+                sampled_start,
+                sampled_velocity,
+                event_time,
+                initial_spin,
+                sampling_contract,
+            ) = _sample_projectile_initial_state(
+                leaf_id,
+                seed=seed,
+                target_z_m=close_z,
+                gravity_z_m_s2=gravity[2],
+                ranges=_SCALE_BALLISTIC_RANGES[leaf_id],
+                contract_base=scale_randomization_contract(leaf_id, task_variant),
+            )
+            start_xy = sampled_start[:2].copy()
+        elif leaf_id == "F1b":
             target[1] = 0.035
             start_xy = target[:2].copy()
         elif leaf_id == "F1c":
@@ -375,7 +738,7 @@ def _recipe_payload(
         # turned every intended initial-state failure into a success.
         velocity_xy = (
             sampled_velocity[:2].copy()
-            if leaf_id in {"F1d", "F2a"} and sampling_contract is not None
+            if sampling_contract is not None
             else (target[:2] - start_xy) / event_time
         )
         controller_target = target.copy()
@@ -394,12 +757,12 @@ def _recipe_payload(
                 controller_target[0] -= 0.10
         start_z = (
             float(sampled_start[2])
-            if leaf_id in {"F1d", "F2a"} and sampling_contract is not None
+            if sampling_contract is not None
             else float(target[2]) + 0.5 * 9.81 * event_time**2
         )
         velocity_z = (
             float(sampled_velocity[2])
-            if leaf_id in {"F1d", "F2a"} and sampling_contract is not None
+            if sampling_contract is not None
             else 0.0
         )
         transport = (
@@ -587,6 +950,24 @@ def _recipe_payload(
         base["duration_s"] = 2.5
         event_time = RIGID_REVIEW_PROFILE.rolling_pickup_event_time_s
         speed = RIGID_REVIEW_PROFILE.rolling_pickup_speed_m_s
+        lane_y = 0.0
+        sampling_contract = None
+        if initial_state_mode == "sampled_scale":
+            ranges = scale_parameter_ranges(leaf_id, task_variant)
+            scale_rng = _scale_rng(seed)
+            speed_factor = float(scale_rng.uniform(*ranges["speed_factor"]))
+            lane_y = float(scale_rng.uniform(*ranges["lane_y_m"]))
+            speed *= speed_factor
+            sampling_contract = _scale_contract(
+                leaf_id,
+                task_variant,
+                seed=seed,
+                sampled={
+                    "sampled_speed_factor": speed_factor,
+                    "sampled_rolling_speed_m_s": speed,
+                    "sampled_lane_y_m": lane_y,
+                },
+            )
         if rolling_island_scene is None:
             # R0 uses one neutral, full table.  It deliberately has neither
             # the former blue miniature runway nor its artificial backstop.
@@ -602,8 +983,8 @@ def _recipe_payload(
         # The intercept lies on the actual counter surface.  The object is
         # initialized rolling without slip; all subsequent robot motion is
         # produced through actuators and all ball motion through contact.
-        target = np.array((0.47, 0.0, table_top_z + radius), dtype=np.float64)
-        start_xy = np.array((float(target[0]) + speed * event_time, 0.0))
+        target = np.array((0.47, lane_y, table_top_z + radius), dtype=np.float64)
+        start_xy = np.array((float(target[0]) + speed * event_time, lane_y))
         controller_target = target.copy()
         if embodiment == ROBOTIQ_2F85_THICK_PAD:
             # The 2f85 finger structure extends below the thick-pad midpoint;
@@ -667,6 +1048,7 @@ def _recipe_payload(
                     euler=(0.0, 0.0, table_yaw),
                 ),
             ),
+            initial_state_sampling_contract=sampling_contract,
         )
     elif leaf_id == "F2c":
         # Both variants share one measured launch: the ball strikes the
@@ -680,6 +1062,26 @@ def _recipe_payload(
         impact = RIGID_REVIEW_PROFILE.bounce_impact_speed_m_s
         launch_vz = RIGID_REVIEW_PROFILE.bounce_launch_vz_m_s
         lane_vx = RIGID_REVIEW_PROFILE.bounce_lane_speed_m_s
+        lane_y = 0.0
+        sampling_contract = None
+        if initial_state_mode == "sampled_scale":
+            # The calibrated pad impact speed is never varied; only the
+            # horizontal lane speed and its lateral offset are sampled.
+            ranges = scale_parameter_ranges(leaf_id, task_variant)
+            scale_rng = _scale_rng(seed)
+            lane_factor = float(scale_rng.uniform(*ranges["lane_speed_factor"]))
+            lane_y = float(scale_rng.uniform(*ranges["lane_y_m"]))
+            lane_vx *= lane_factor
+            sampling_contract = _scale_contract(
+                leaf_id,
+                task_variant,
+                seed=seed,
+                sampled={
+                    "sampled_lane_speed_factor": lane_factor,
+                    "sampled_lane_speed_m_s": lane_vx,
+                    "sampled_lane_y_m": lane_y,
+                },
+            )
         fall_time = (impact + launch_vz) / gravity_mag
         drop = (impact**2 - launch_vz**2) / (2.0 * gravity_mag)
         vout = impact * RIGID_REVIEW_PROFILE.bounce_pad_effective_restitution
@@ -706,7 +1108,7 @@ def _recipe_payload(
             else RIGID_REVIEW_PROFILE.table_bounce_pad_top_z_m
         )
         contact_z = pad_top + radius
-        target = np.array((0.47, 0.0, contact_z + rise), dtype=np.float64)
+        target = np.array((0.47, lane_y, contact_z + rise), dtype=np.float64)
         event_time = fall_time + rise_time
         bounce_x = float(target[0]) + lane_out * rise_time
         pad_half = (0.10, 0.18, pad_half_z)
@@ -717,7 +1119,7 @@ def _recipe_payload(
             else "table_bounce_apex_pickup_interception"
         )
         start_xy = np.array(
-            (bounce_x + lane_vx * fall_time, 0.0),
+            (bounce_x + lane_vx * fall_time, lane_y),
             dtype=np.float64,
         )
         controller_target = target.copy()
@@ -802,6 +1204,7 @@ def _recipe_payload(
                 float(value) for value in controller_target
             ),
             surfaces=(pad, *supports),
+            initial_state_sampling_contract=sampling_contract,
         )
     elif leaf_id == "F2d":
         # The carom reuses the P0c-calibrated wall contact pair at its
@@ -1357,6 +1760,41 @@ def _recipe_payload(
         raise SourceMujocoUnsupported(
             f"no physical source_mujoco recipe for {leaf_id}/{task_variant}"
         )
+    contract = base.get("initial_state_sampling_contract")
+    if contract is not None and "applied_initial_position_m" not in contract:
+        # Bind the sampled contract to the exact compiled state, recorded
+        # after any declared negative-branch intervention.  The projectile
+        # block fills these fields itself; every other sampler shares this
+        # single applied-state binding.
+        intervention = "none"
+        if negative:
+            intervention = (
+                "initial_state_lateral_shift"
+                if "initial_state" in branch_role
+                else "controller_target_offset"
+                if "controller" in branch_role
+                else "task_geometry_target_offset"
+            )
+        contract.update(
+            {
+                "applied_initial_position_m": list(
+                    base["object_initial_position_m"]
+                ),
+                "applied_initial_linear_velocity_m_s": list(
+                    base["object_initial_linear_velocity_m_s"]
+                ),
+                "applied_initial_angular_velocity_rad_s": list(
+                    base["object_initial_angular_velocity_rad_s"]
+                ),
+                "applied_physical_target_position_m": list(
+                    base["physical_target_position_m"] or ()
+                ),
+                "applied_controller_target_position_m": list(
+                    base["controller_target_position_m"] or ()
+                ),
+                "declared_intervention": intervention,
+            }
+        )
     return base
 
 
@@ -1465,8 +1903,14 @@ def blocked_module(
 
 __all__ = [
     "PROJECTILE_INITIAL_STATE_SAMPLER_VERSION",
+    "SCALE_ACCEPTED_SAMPLER_VERSIONS",
+    "SCALE_INITIAL_STATE_SAMPLER_VERSION",
+    "SCALE_SAMPLED_LEAVES",
+    "scale_sampler_version",
     "blocked_module",
     "build_source_mujoco_recipe",
     "projectile_randomization_contract",
     "rigid_module",
+    "scale_parameter_ranges",
+    "scale_randomization_contract",
 ]

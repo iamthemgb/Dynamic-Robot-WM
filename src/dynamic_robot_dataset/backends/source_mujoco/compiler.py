@@ -18,6 +18,10 @@ from ...scenarios import (
     implemented_review_variants,
     load_scenario_definition,
 )
+from ...scenarios._rigid_shared import (
+    SCALE_ACCEPTED_SAMPLER_VERSIONS,
+    SCALE_SAMPLED_LEAVES,
+)
 from .profiles import RIGID_REVIEW_PROFILE
 from .provenance import (
     RoboCasaDependency,
@@ -36,7 +40,7 @@ from ...scenarios.f2f_arbitrary_surface_bounce import SampledSurfaceContract
 
 
 SOURCE_MUJOCO_COMPILED_SCHEMA = "dynamic-robot-source-mujoco-compiled/v9"
-SOURCE_MUJOCO_BACKEND_VERSION = "0.20.0-review"
+SOURCE_MUJOCO_BACKEND_VERSION = "0.21.0-scale"
 
 
 class SourceMujocoUnsupported(ValueError):
@@ -525,7 +529,11 @@ class SourceMujocoCompiledScenario:
         values = [int(self.rng_subseeds[name]) for name in sorted(required_rng)]
         if len(set(values)) != len(values) or any(value < 0 or value >= 2**64 for value in values):
             raise SourceMujocoUnsupported("review RNG sub-seeds are invalid or coupled")
-        if self.initial_state_mode not in {"fixed_review", "sampled_preview"}:
+        if self.initial_state_mode not in {
+            "fixed_review",
+            "sampled_preview",
+            "sampled_scale",
+        }:
             raise SourceMujocoUnsupported("unknown initial-state sampling mode")
         if self.initial_state_mode == "sampled_preview":
             if self.corpus_leaf_id not in {"F1d", "F2a"}:
@@ -563,9 +571,56 @@ class SourceMujocoCompiledScenario:
                 raise SourceMujocoUnsupported(
                     "projectile initial-state contract differs from compiled state"
                 )
+        elif self.initial_state_mode == "sampled_scale":
+            if self.corpus_leaf_id not in SCALE_SAMPLED_LEAVES:
+                raise SourceMujocoUnsupported(
+                    f"{self.corpus_leaf_id} has no scale initial-state sampler"
+                )
+            if (
+                self.corpus_leaf_id.startswith("P0")
+                and self.passive_variation_profile != "nominal"
+            ):
+                raise SourceMujocoUnsupported(
+                    "sampled scale passive cases cannot compose fixed variation profiles"
+                )
+            contract = self.initial_state_sampling_contract
+            if not isinstance(contract, Mapping):
+                raise SourceMujocoUnsupported(
+                    f"{self.corpus_leaf_id} lacks its scale initial-state contract"
+                )
+            if contract.get("schema_version") not in SCALE_ACCEPTED_SAMPLER_VERSIONS:
+                raise SourceMujocoUnsupported(
+                    "scale initial-state contract uses an unsupported sampler version"
+                )
+            if contract.get("source_seed") != int(self.rng_subseeds["initial_state"]):
+                raise SourceMujocoUnsupported(
+                    "scale initial-state contract uses the wrong RNG stream"
+                )
+            bound = {
+                "applied_initial_position_m": self.object_initial_position_m,
+                "applied_initial_linear_velocity_m_s": (
+                    self.object_initial_linear_velocity_m_s
+                ),
+                "applied_initial_angular_velocity_rad_s": (
+                    self.object_initial_angular_velocity_rad_s
+                ),
+                "applied_physical_target_position_m": (
+                    self.physical_target_position_m
+                ),
+                "applied_controller_target_position_m": (
+                    self.controller_target_position_m
+                ),
+            }
+            if any(
+                tuple(contract.get(name) or ()) != tuple(expected or ())
+                for name, expected in bound.items()
+            ):
+                raise SourceMujocoUnsupported(
+                    "scale initial-state contract differs from compiled state"
+                )
         elif self.initial_state_sampling_contract is not None:
             raise SourceMujocoUnsupported(
-                "projectile initial-state contracts are restricted to F1d/F2a"
+                "initial-state sampling contracts require a sampled mode"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1090,7 +1145,12 @@ def compile_review_case(
     # those measured exception classes directly at the calibrated reference
     # rate instead of weakening QC.
     requires_reference_rate = (
-        (
+        # Every sampled-scale case compiles at the calibrated 1200 Hz
+        # reference rate: the 600 Hz candidate was admitted only for the
+        # exact fixed-review states, and a sampled state has no per-case
+        # timestep-halving evidence.
+        initial_state_mode == "sampled_scale"
+        or (
             leaf_id == "P0c"
             and passive_variation_profile == "lower_initial_speed"
         )

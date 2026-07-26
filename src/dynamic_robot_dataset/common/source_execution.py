@@ -887,6 +887,25 @@ def materialize_source_mujoco_result(
     """Normalize one verified source rollout into the canonical writer contract."""
 
     case, spec = _planned_inputs(entry)
+    return _materialize_verified(entry, result, case, spec)
+
+
+def _materialize_verified(
+    entry: RunPlanEpisode,
+    result: SourceMujocoRunResult,
+    case: Any,
+    spec: SourceScenarioSpec,
+    *,
+    case_payload_key: str = "review_case",
+) -> EpisodeMaterialization:
+    """Shared normalization for one planned case its own bridge already verified.
+
+    ``case`` is a ``ReviewSuiteCase`` on the fixed-review path and a
+    ``ScaleSuiteCase`` on the diagnostic scale path; both carry the identical
+    attribute surface this normalization consumes.  Behavior for review
+    callers is byte-identical to the pre-split implementation.
+    """
+
     _verify_runtime_identity(entry, spec, result)
     frames, high_rate, events, transitions, objects = _normalize_rows(
         entry, spec, result
@@ -952,6 +971,12 @@ def materialize_source_mujoco_result(
         raise SourceExecutionBindingError(
             "runtime background clearance differs from provenance/audit hash"
         )
+    case_hash_key = case_payload_key + "_sha256"
+    suite_index_key = (
+        "review_suite_episode_index"
+        if case_payload_key == "review_case"
+        else "scale_suite_episode_index"
+    )
     record = EpisodeRecord(
         episode_uuid=entry.episode_uuid,
         episode_index=entry.episode_index,
@@ -1059,10 +1084,10 @@ def materialize_source_mujoco_result(
         ),
         quality_flags=sorted(quality_flags),
         extras={
-            "bridge_schema_version": SOURCE_EXECUTION_BRIDGE_SCHEMA,
-            "review_case": case.to_dict(),
-            "review_case_sha256": case.case_sha256,
-            "review_suite_episode_index": case.episode_index,
+            "bridge_schema_version": str(entry.declaration["schema_version"]),
+            case_payload_key: case.to_dict(),
+            case_hash_key: case.case_sha256,
+            suite_index_key: case.episode_index,
             "metadata_seed_projection": {
                 "method": "uint64_bitmask_to_nonnegative_int64/v1",
                 "scene_construction_uint64": spec.rng_subseeds.scene_construction,

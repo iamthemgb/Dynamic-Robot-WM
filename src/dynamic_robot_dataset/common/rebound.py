@@ -164,6 +164,7 @@ def measure_rebound_kinematics(
         "separation_duration_sufficient": False,
         "no_unexplained_contact_energy_gain": False,
         "rebound_acceptance_pass": False,
+        "rebound_window_truncated": False,
     }
     surface = [
         row for row in event_rows if row.get("contact_category") == "task_surface"
@@ -234,6 +235,22 @@ def measure_rebound_kinematics(
         if settled:
             base["effective_restitution"] = 0.0
             base["no_unexplained_contact_energy_gain"] = True
+        elif (
+            not outgoing_candidates
+            and states
+            and (
+                event_time + thresholds.minimum_separation_duration_s
+                > states[-1][0]
+            )
+        ):
+            # The persisted horizon ends mid-contact before the required
+            # post-contact separation window could complete: the rebound is
+            # structurally unmeasurable rather than physically invalid (P0b
+            # calibration block 9000: first pad impact at 0.79-0.80 s of a
+            # 0.8 s episode).  A bounce with observed post-contact free
+            # flight keeps its full measurement and can still be rejected.
+            base["rebound_window_truncated"] = True
+            base["applicable"] = False
         return base
 
     incoming_time, incoming = incoming_candidates[-1]

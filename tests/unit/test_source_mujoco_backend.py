@@ -121,7 +121,7 @@ def test_calibrated_source_manifest_and_rigid_profile_are_exact() -> None:
     assert RIGID_REVIEW_PROFILE.ready_hover_above_intercept_m == 0.045
     assert RIGID_REVIEW_PROFILE.reach_arrival_before_ballistic_s == 0.055
     assert RIGID_REVIEW_PROFILE.minimum_reach_duration_s == 0.18
-    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.20.0-review"
+    assert SOURCE_MUJOCO_BACKEND_VERSION == "0.21.0-scale"
     assert SOURCE_MUJOCO_COMPILED_SCHEMA.endswith("/v9")
 
     rolling = resolve_rolling_island_dependency()

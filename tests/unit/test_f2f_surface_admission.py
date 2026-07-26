@@ -283,14 +283,14 @@ def test_raw_catalog_identity_preserves_order_and_remains_unadmitted() -> None:
     assert identity["candidate_ids"] == [item.candidate_id for item in catalog]
     assert all(item.admission.admitted is False for item in catalog)
     assert [item.candidate_id for item in overlay] == identity["candidate_ids"]
+    # Scale fork: the recorded admission evidence is content-bound to the
+    # upstream compiler/_rigid_shared bytes.  This fork intentionally changed
+    # those files (sampled_scale support), so the overlay honestly revokes
+    # every previously admitted candidate until new evidence is recorded.
+    # F2f is excluded from scale generation, so no fork run consumes it.
     assert {
         item.candidate_id for item in overlay if item.admission.admitted
-    } == {
-        "plane_mid_285",
-        "plane_table_400",
-        "barrier_yaw_neg_15",
-        "barrier_yaw_neg_25",
-    }
+    } == set()
     actual_hashes = f2f_admission_source_hashes()
     assert actual_hashes
     assert all(len(digest) == 64 for digest in actual_hashes.values())
