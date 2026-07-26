@@ -1,0 +1,119 @@
+# Controlled metadata registry (plan: Module A + appendix fragment).
+# Property keys, canonical semantic scopes, and unit descriptors form closed
+# vocabularies; raw simulator entity IDs (body_17, geom_3, ...) must never
+# appear here or in episode records.
+version: 1
+
+scopes:
+  - global
+  - robot
+  - robot_link
+  - primary_object
+  - secondary_object
+  - support_surface
+  - joint
+  - material
+  - primary_object--support_surface
+  - primary_object--secondary_object
+
+units:
+  - m_per_s2
+  - kg
+  - dimensionless
+  - newton
+  - canonical_sim_unit
+  - m
+  - m_per_s
+  - s
+
+properties:
+  gravity_z:
+    transform: identity
+    unit: m_per_s2
+    allowed_scopes: [global]
+  mass:
+    transform: log
+    unit: kg
+    allowed_scopes: [primary_object, secondary_object, robot_link]
+  restitution:
+    transform: logit_clipped
+    unit: dimensionless
+    allowed_scopes: [primary_object--support_surface,
+                     primary_object--secondary_object]
+  dynamic_friction:
+    transform: log
+    unit: dimensionless
+    allowed_scopes: [primary_object--support_surface]
+  static_friction:
+    transform: log
+    unit: dimensionless
+    allowed_scopes: [primary_object--support_surface]
+  actuator_scale:
+    transform: log
+    unit: dimensionless
+    allowed_scopes: [robot]
+  bending_stiffness:
+    transform: log
+    unit: canonical_sim_unit
+    allowed_scopes: [material, primary_object]
+
+  # -- projectile ball-catch dataset (wan_projectile_smoke_cache) ---------
+  # Cached values are already field-transformed (log10 mass/speed etc.), so
+  # every key uses the identity transform; whitening reuses the cache's
+  # norm_stats.json mean/std, keeping codes bit-identical to prior runs.
+  log10_ball_mass:
+    transform: identity
+    unit: canonical_sim_unit
+    allowed_scopes: [primary_object]
+  ball_radius:
+    transform: identity
+    unit: m
+    allowed_scopes: [primary_object]
+  p0_cam_x:
+    transform: identity
+    unit: m
+    allowed_scopes: [primary_object]
+  p0_cam_y:
+    transform: identity
+    unit: m
+    allowed_scopes: [primary_object]
+  p0_cam_z:
+    transform: identity
+    unit: m
+    allowed_scopes: [primary_object]
+  v0_cam_x:
+    transform: identity
+    unit: m_per_s
+    allowed_scopes: [primary_object]
+  v0_cam_y:
+    transform: identity
+    unit: m_per_s
+    allowed_scopes: [primary_object]
+  v0_cam_z:
+    transform: identity
+    unit: m_per_s
+    allowed_scopes: [primary_object]
+  log10_speed:
+    transform: identity
+    unit: canonical_sim_unit
+    allowed_scopes: [primary_object]
+  icpt_cam_x:
+    transform: identity
+    unit: m
+    allowed_scopes: [global]
+  icpt_cam_y:
+    transform: identity
+    unit: m
+    allowed_scopes: [global]
+  icpt_cam_z:
+    transform: identity
+    unit: m
+    allowed_scopes: [global]
+  ballistic_intercept_time_s:
+    transform: identity
+    unit: s
+    allowed_scopes: [global]
+  gripper_close_time:
+    transform: identity
+    unit: s
+    allowed_scopes: [robot]
