@@ -1,0 +1,61 @@
+# Projectile smoke run, comparison arm: encoder-only, fully frozen DiT.
+# Run second, if time allows; its flow curve is expected to move much less
+# (cloth showed frozen-DiT train L_fm can stay flat while the embedding
+# trains). kill_rule is deliberately disabled here: a flat L_fm with a rising
+# gate is this arm's EXPECTED outcome, not a failure to abort on.
+out_dir: /gpfs/radev/scratch/sous/mzl7/wan_projectile_smoke_runs/smoke_frozen
+cache_dir: /gpfs/radev/scratch/sous/mzl7/wan_projectile_smoke_cache
+model_dir: /gpfs/radev/scratch/sous/mzl7/wan_models/Wan2.1-T2V-1.3B
+
+num_tokens: 8
+fourier_freqs: 8
+shift: 5.0
+aux_weight: 0.1          # physics-recon anti-collapse aux (plan section 1)
+
+# optional third embedding loss - in the config but OFF by default: recon aux
+# is sufficient for the smoke goal, fewer moving parts = readable curves
+infonce:
+  enabled: false
+  weight: 0.05
+  batch: 16
+  noise_std: 0.02
+  temperature: 0.1
+
+batch_size: 1
+grad_accum: 8            # effective 8: halves gradient noise vs 4, ~2x wall
+encoder_lr: 1.0e-4
+weight_decay: 0.01
+grad_clip: 1.0
+max_steps: 2000
+warmup_steps: 100
+lr_schedule: constant    # NOT cosine: decay would fake a late-run decrease.
+                         # set to "cosine" for the follow-on full run.
+seed: 0
+
+lora:                    # frozen DiT + small LoRA so curves visibly move
+  enabled: false
+  rank: 8
+  alpha: 8
+  cross_attn_only: true  # q,k,v,o in all 30 blocks
+  lr: 5.0e-5
+
+log_interval: 10         # jsonl; train_log.csv logs EVERY step incl. gate
+eval_interval: 250
+ckpt_interval: 125       # 10 s/step measured on H200 (SDPA, no flash-attn):
+                         # cap preemption loss at ~21 min
+
+kill_rule:               # cloth train_2103110 failure signature
+  enabled: false
+  ref_step: 100
+  at_step: 500
+  min_fm_improve: 0.01   # EMA must be >=1% below its step-100 value...
+  min_gate_rise: 0.005   # ...whenever the gate is opening, else stop
+
+eval:                    # paired shuffle-gap design (statistical power)
+  batch_size: 8
+  u_grid: [0.25, 0.5, 0.75, 0.9]   # fixed sigma grid (pre shift-warp)
+  noise_seed: 1234                 # frozen per-episode noise fixture
+  bootstrap_iters: 2000
+  max_episodes: null               # cap for debugging only
+  subset_stride: 3                 # intermediate evals: fixed 100-ep subset;
+                                   # full 300 at step 0 and the final step
