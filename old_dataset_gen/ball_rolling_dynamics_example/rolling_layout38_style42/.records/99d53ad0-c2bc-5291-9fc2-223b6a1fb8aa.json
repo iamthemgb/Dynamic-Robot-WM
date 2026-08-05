@@ -1,0 +1,339 @@
+{
+  "config_hash": "931267d76715fb30fdff0d735ab1964570093e15a3cb970e058e5691eebb0232",
+  "episode": {
+    "action_mode": "passive_no_actuation",
+    "actual_outcome": "success",
+    "actual_outcome_class": "success",
+    "asset_hashes": {},
+    "asset_ids": [
+      "robocasa_layout38_style42"
+    ],
+    "assistance": {
+      "assisted_grasp": false,
+      "assisted_retention": false,
+      "constraint_activation_time": null,
+      "constraint_deactivation_time": null,
+      "equality_constraint_active": false,
+      "latch_active": false
+    },
+    "branch_seed": 2389007167,
+    "camera_ids": [
+      "observation.images.main",
+      "observation.images.secondary"
+    ],
+    "camera_stream_calibration_ids": {
+      "observation.images.main": "observation.images.main",
+      "observation.images.secondary": "observation.images.secondary"
+    },
+    "config_hash": "931267d76715fb30fdff0d735ab1964570093e15a3cb970e058e5691eebb0232",
+    "content_hashes": {
+      "data/chunk-000/file-000000.parquet": "98da884534e81715cd4dbf3ebc38501dd3286809a809585d1da8c2d8ce55d492",
+      "events/chunk-000/file-000000.parquet": "61296ffe0c60826a25b7950fc4bd74a13a247c0d6e7e9b7cb60280a9fd01e78b",
+      "high_rate/chunk-000/file-000000.parquet": "0da49e2a7b0d84a52eaee1bfa1b900c0f3040fc597f0a7e26bcbbcae69d14171",
+      "object_states/chunk-000/file-000000.parquet": "caee285dc1a1ccb5e4016f2fb1a27cdaffa12c2eee2ba8189e5e9c7cb260b1bc",
+      "transitions/chunk-000/file-000000.parquet": "e2a872db9966f4b92826e2d9582b3a551e1b0b1e15e0705029e69ece567a3efa",
+      "videos/observation.images.main/chunk-000/file-000000.mp4": "9795cd8d0f453cf314f5a1f8b60cebe2a0726cfa15fe23f998df78ebcdcfaf80",
+      "videos/observation.images.secondary/chunk-000/file-000000.mp4": "20ea691d94d7d8277a392803f09aea83f6eb1c5d70c101a62ead54bab3db98d8"
+    },
+    "controller_profile": {
+      "camera_latency_s": null,
+      "control_latency_s": null,
+      "profile_id": "passive_no_controller",
+      "profile_version": "v1"
+    },
+    "counterfactual_bundle_id": "rolling_layout38_style42_000000",
+    "creation_timestamp": "2026-08-01T01:49:07.489764+00:00",
+    "duration_s": 2.5,
+    "dynamics_mode": "free_contact",
+    "episode_index": 0,
+    "episode_uuid": "99d53ad0-c2bc-5291-9fc2-223b6a1fb8aa",
+    "event_time_s": null,
+    "events_path": "events/chunk-000/file-000000.parquet",
+    "extras": {
+      "camera_poses": {
+        "closeup_camera": {
+          "fovy": 48.0,
+          "lookat": [
+            2.8779995385633748,
+            -4.129587245843392,
+            0.9500000000000001
+          ],
+          "pos": [
+            2.99800005681982,
+            -3.030499802427521,
+            1.24
+          ]
+        },
+        "main_camera": {
+          "camera_variant": "island_rolling_view",
+          "fovy": 55.0,
+          "lookat": [
+            2.8779995385633748,
+            -4.129587245843392,
+            0.9700000000000001
+          ],
+          "pos": [
+            3.7639058578537417,
+            -4.129587663577805,
+            1.5217450110864745
+          ],
+          "room_bounds": [
+            -6.149,
+            8.266,
+            -8.59,
+            0.9500000000000001
+          ],
+          "scene_resolution_backend": "robocasa_native",
+          "scene_resolution_warning": null
+        },
+        "side_camera": {
+          "camera_variant": "opposite_counter_side",
+          "fovy": 55.0,
+          "lookat": [
+            2.8779986662678554,
+            -5.979499745843186,
+            1.1600000000000001
+          ],
+          "pos": [
+            3.6531999999999996,
+            -6.2836,
+            3.86225
+          ],
+          "room_bounds": [
+            -6.149,
+            8.266,
+            -8.59,
+            0.9500000000000001
+          ],
+          "scene_resolution_backend": "robocasa_native",
+          "scene_resolution_warning": null
+        }
+      },
+      "camera_streams": {
+        "closeup_camera": "observation.images.secondary",
+        "main_camera": "observation.images.main"
+      },
+      "elapsed_wall_time_s": 0.6718318462371826,
+      "frame_counts": {
+        "closeup_camera": 75,
+        "main_camera": 75
+      },
+      "roll_metrics": {
+        "contact_event_count": 596,
+        "fell_off_counter": false,
+        "fell_off_time_s": null,
+        "final_position_m": [
+          3.011261304370698,
+          -5.262105361148489,
+          0.9598856610509559
+        ],
+        "final_speed_mps": 0.7720493014657003,
+        "initial_speed_mps": 0.7789349308171424,
+        "max_penetration_depth_m": 0.0010513009539581744,
+        "travel_distance_m": 1.936197007248733
+      },
+      "scene_resolution_backend": "robocasa_native",
+      "scene_resolution_warning": null,
+      "visual_settings": {
+        "camera_side_dir_xy": [
+          0.9999999999998889,
+          -4.715333938864855e-07
+        ],
+        "camera_variant": "island_rolling_view",
+        "catch_position_xyz": [
+          2.8779986662678554,
+          -5.979499745843186,
+          0.9600000000000001
+        ],
+        "counter_center_xy": [
+          2.8779993073175043,
+          -4.619999745843337
+        ],
+        "counter_half_size_xy": [
+          1.4695,
+          0.5395
+        ],
+        "counter_yaw": -1.5707967983282904,
+        "demo_mode": "ball_rolling_dynamics",
+        "kitchen_env_count": 2500,
+        "kitchen_env_index": 542,
+        "kitchen_layout_id": 38,
+        "kitchen_style_id": 42,
+        "launch_position_xy": [
+          2.8779999153598155,
+          -3.3304997458434804
+        ],
+        "robot_base_position": [
+          2.5184993404427436,
+          -4.54974962159414,
+          0.92
+        ],
+        "robot_base_yaw": -4.7153339388650295e-07,
+        "robot_counter_edge": "-y",
+        "robot_counter_name": "island_island_group_1",
+        "robot_stool_edge": "+y",
+        "robot_stool_names": [
+          "stool_2_room",
+          "stool_3_room",
+          "stool_4_room",
+          "stool_1_room"
+        ],
+        "robot_tabletop_height": 0.92,
+        "rolling_direction_xy": [
+          0.0684795902846071,
+          -0.9976525175202298
+        ],
+        "rolling_frame_end_xy": [
+          2.877998766195212,
+          -5.767579745843209
+        ],
+        "rolling_heading_offset_rad": 0.06853369706397267,
+        "rolling_path_end_xy": [
+          2.8779986662678554,
+          -5.979499745843186
+        ],
+        "rolling_path_start_xy": [
+          2.8779999153598155,
+          -3.3304997458434804
+        ],
+        "rolling_runway_m": 2.65523319915359,
+        "rolling_speed_cap_mps": 0.9771258172885211,
+        "rolling_speed_mps": 0.7789349308171424,
+        "rolling_start_distance_m": 2.649,
+        "rolling_start_local_xy": [
+          -1.2895,
+          0.0
+        ],
+        "room_bounds": [
+          -6.149,
+          8.266,
+          -8.59,
+          0.9500000000000001
+        ],
+        "scene_resolution_backend": "robocasa_native",
+        "scene_resolution_warning": null
+      }
+    },
+    "failure_mode": "none",
+    "failure_tags": [],
+    "failure_taxonomy_version": "dynamic-robot-failure-codes/v2",
+    "family": "rolling_layout38_style42",
+    "frame_count": 75,
+    "frame_data_path": "data/chunk-000/file-000000.parquet",
+    "generator_git_commit": "unknown",
+    "high_rate_path": "high_rate/chunk-000/file-000000.parquet",
+    "intended_branch": "free_roll",
+    "key_event_name": null,
+    "key_event_time_s": null,
+    "label_confidence": null,
+    "label_status": "verified_objective",
+    "object_states_path": "object_states/chunk-000/file-000000.parquet",
+    "objective_evaluator_id": "legacy_embedded",
+    "objective_evaluator_version": "unversioned",
+    "objective_evidence": {
+      "independently_recomputed": false,
+      "source": "legacy_embedded_metrics",
+      "stored_objective_success": true
+    },
+    "objective_metrics": {
+      "contact_event_count": 596,
+      "fell_off_counter": false,
+      "fell_off_time_s": null,
+      "final_position_m": [
+        3.011261304370698,
+        -5.262105361148489,
+        0.9598856610509559
+      ],
+      "final_speed_mps": 0.7720493014657003,
+      "initial_speed_mps": 0.7789349308171424,
+      "max_penetration_depth_m": 0.0010513009539581744,
+      "task_success": true,
+      "travel_distance_m": 1.936197007248733
+    },
+    "objective_threshold_set_hash": "8fe0c6866779336b0704d073316e48983eb4ba9bf57e08bc428aeab4cd3bbd7d",
+    "parent_episode_uuid": null,
+    "partial_success_score": null,
+    "physics": {
+      "ball_friction": [
+        5.0,
+        0.01,
+        0.001
+      ],
+      "ball_initial_angular_velocity_rad_s": [
+        19.427659867854203,
+        1.333528623018167,
+        0.0
+      ],
+      "ball_initial_position_m": [
+        2.8779999153598155,
+        -3.3304997458434804,
+        0.9640000000000001
+      ],
+      "ball_initial_velocity_m_s": [
+        0.05334114492072668,
+        -0.7771063947141681,
+        0.0
+      ],
+      "ball_mass_kg": 0.01125946807046582,
+      "ball_radius_m": 0.04,
+      "ball_solimp": [
+        0.95,
+        0.99,
+        0.001
+      ],
+      "ball_solref": [
+        0.004,
+        1.0
+      ],
+      "dynamics": "passive_free_contact_no_robot",
+      "gravity_m_s2": [
+        0.0,
+        0.0,
+        -9.81
+      ],
+      "simulation_hz": 240.0,
+      "timestep_s": 0.004166666666666667
+    },
+    "physics_counterfactual_family_id": null,
+    "physics_qc_pass": true,
+    "primary_failure_code": "none",
+    "quality_flags": [],
+    "randomization": {
+      "randomized_fields": [
+        "ball_initial_velocity"
+      ],
+      "rolling_direction_xy": [
+        0.0684795902846071,
+        -0.9976525175202298
+      ],
+      "rolling_heading_offset_rad": 0.06853369706397267,
+      "rolling_runway_m": 2.65523319915359,
+      "rolling_speed_cap_mps": 0.9771258172885211,
+      "rolling_speed_mps": 0.7789349308171424
+    },
+    "release_eligible": false,
+    "release_tier": "free_contact",
+    "renderer": "mujoco_offscreen_egl",
+    "robot_model": "none",
+    "robot_start_provenance": {},
+    "scene_seed": 38042,
+    "schema_version": "dynamic-robot-dataset/v2",
+    "simulator_name": "mujoco",
+    "simulator_version": "3.3.1",
+    "source_generator": "ball_rolling_dynamics_scripts",
+    "source_generator_version": "v1",
+    "split": "unassigned",
+    "split_group_id": "rolling_layout38_style42_000000",
+    "subfamily": "rolling_layout38_style42",
+    "task_index": 0,
+    "task_success": true,
+    "tool_calibration_provenance": {},
+    "tool_type": "none",
+    "transition_events_path": "transitions/chunk-000/file-000000.parquet",
+    "variant": "robocasa_kitchen",
+    "video_paths": {
+      "observation.images.main": "videos/observation.images.main/chunk-000/file-000000.mp4",
+      "observation.images.secondary": "videos/observation.images.secondary/chunk-000/file-000000.mp4"
+    }
+  }
+}

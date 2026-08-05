@@ -1,0 +1,11 @@
+{
+  "phase": "rolling_p1_full",
+  "schema": "v1_velocity_groups",
+  "siblings_per_group": 4,
+  "groups_per_family": 333,
+  "velocity": {
+    "stratified_speeds": true,
+    "min_speed_separation_mps": 0.04
+  },
+  "split_percent": {"train": 90, "val": 5, "test": 5}
+}

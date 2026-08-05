@@ -1,0 +1,55 @@
+{
+  "phase": "p0_pilot",
+  "schema": "v3_state_groups",
+  "siblings_per_group": 4,
+  "groups_per_family": 10,
+  "branch_mix": {
+    "success": 0.5,
+    "spatial_near_miss": 0.2,
+    "contact_failure": 0.2,
+    "wrong_action": 0.1
+  },
+  "ic_ranges": {
+    "launch_xy_jitter_m": [
+      0.13,
+      0.09
+    ],
+    "launch_z_jitter_m": [
+      -0.015,
+      0.03
+    ],
+    "catch_xy_jitter_m": [
+      0.025,
+      0.025
+    ],
+    "catch_z_jitter_m": [
+      -0.015,
+      0.02
+    ],
+    "launch_angle_deg": [
+      55.0,
+      72.0
+    ],
+    "speed_scale": [
+      1.0,
+      1.04
+    ],
+    "release_time_s": [
+      0.15,
+      0.4
+    ],
+    "close_lead_time_offset_s": [
+      -0.003,
+      0.004
+    ],
+    "reach_lead_time_offset_s": [
+      -0.01,
+      0.01
+    ]
+  },
+  "split_percent": {
+    "train": 90,
+    "val": 5,
+    "test": 5
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "_comment": "Third-party trees vendored in the runnable bundle but NOT committed to git. Each entry was diffed byte-for-byte against the pinned upstream commit on 2026-08-05: zero local modifications in all three.",
+  "robosuite": {
+    "url": "https://github.com/ARISE-Initiative/robosuite.git",
+    "commit": "85abee228d1c43ab1939bce33028099945d453b4",
+    "version": "1.5.2 (master snapshot, 2026-05-27)",
+    "vendored_at": "robosuite/",
+    "pruned": ["docs/", "tests/"],
+    "generated": ["robosuite/macros_private.py (auto-created by robosuite on first import; not upstream)"]
+  },
+  "robocasa": {
+    "url": "https://github.com/robocasa/robocasa.git",
+    "commit": "be22d659b02db8f6d7f3a3c3edc742934fdcbaae",
+    "version": "1.0.1 (main snapshot, 2026-05-21)",
+    "vendored_at": "robocasa_full/",
+    "pruned": ["docs/", "tests/", "robocasa/models/assets/groot_dataset_assets/"],
+    "downloaded_assets": "robocasa/models/assets/** kitchen fixtures/textures/objects (~3.1G), fetched by robocasa/scripts/download_kitchen_assets.py — not in upstream git"
+  },
+  "mujoco_menagerie": {
+    "url": "https://github.com/google-deepmind/mujoco_menagerie.git",
+    "commit": "accb6df40a9a1d1e49eff88157f6818b63a49335",
+    "subdir": "franka_emika_panda/",
+    "vendored_at": "demo_mujoco_arm_gripper/third_party/mujoco_menagerie/franka_emika_panda/"
+  }
+}

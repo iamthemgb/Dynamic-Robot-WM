@@ -1,2 +1,9 @@
 __pycache__/
 *.pyc
+
+# cluster-local data/env dirs, not part of the repo
+.claude/
+Dynamic-Robot-WM-main/
+assets/
+datasets/
+envs/

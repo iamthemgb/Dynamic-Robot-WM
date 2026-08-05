@@ -1,0 +1,19 @@
+{
+  "codec": "H.264 MP4",
+  "episode_count": 1,
+  "family": "style020_seed0",
+  "fps": 30,
+  "metadata_parquet": "/scratch/zl664_yale/world_model_robotics/Dynamic-Robot-WM-main/old_dataset_gen/projectile_ball_catch_export/example_dataset/style020_seed0/metadata.parquet",
+  "resolution": [
+    832,
+    480
+  ],
+  "state_control_frequency_hz": [
+    60,
+    120
+  ],
+  "views": [
+    "main_camera",
+    "side_camera"
+  ]
+}
