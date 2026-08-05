@@ -1,13 +1,19 @@
-"""Phase 1: metadata teacher + oracle Wan conditioning (plan eqs. 16-19).
+"""Phase 1: metadata teacher + oracle Wan conditioning.
 
 Trains the teacher, query decoder, shared projector, four physics adapters,
 and the DiT LoRA matrices on paired counterfactual groups. The base DiT and
 VAE stay frozen (LoRA is the only trainable Wan-side capacity besides the
 adapters).
 
-L_T = L_FM(correct) + w_rank * hinge(m + L_FM(correct) - L_FM(wrong))
-      + w_meta * L_meta,
-with correct and wrong codes from the SAME group sharing (tau, eps).
+L_T = w_fm * L_FM(conditioned) + w_meta * L_meta.
+
+The plan's shuffled-code rank hinge (eqs. 16-19) is deliberately NOT part
+of the optimized objective any more: pushing L_FM(correct) below
+L_FM(wrong) during training is circular with the correct/wrong gap used to
+certify that the physics code has been learned. The gap is now measurement
+only — ``evaluate`` computes the held-out correct/wrong/null separation
+under shared (tau, eps) and the phase gate reads ``gap_wrong``/``gap_null``
+from there. ``cfg.train.w_rank``/``rank_margin`` are ignored.
 Corruption: p_null batches use the learned null code, p_noise batches add
 small Gaussian noise to the teacher belief — preparing the adapters for
 imperfect student codes.
@@ -60,23 +66,17 @@ def run(cfg, cache=None, registry=None, normalizer=None):
     for step in range(cfg.phase1_steps):
         batch = batcher.paired_batch(tr.batch_size)
         b_t = teacher.forward_batch(batch["rec"])
-        b_w = teacher.forward_batch(batch["rec_wrong"])
         u = rng.random()
         if u < tr.p_null:
             tokens = projector.null_tokens(tr.batch_size)
-            l_fm, tau, eps = common.fm_loss(dit, batch, tokens, prefix)
-            l_rank = torch.zeros(())
         else:
             b_in = b_t
             if u < tr.p_null + tr.p_noise:
                 b_in = b_t + tr.noise_scale * torch.randn_like(b_t)
-            l_fm, tau, eps = common.fm_loss(dit, batch, projector(b_in),
-                                            prefix)
-            l_w, _, _ = common.fm_loss(dit, batch, projector(b_w), prefix,
-                                       tau=tau, eps=eps)
-            l_rank = torch.relu(tr.rank_margin + l_fm - l_w)
+            tokens = projector(b_in)
+        l_fm, tau, eps = common.fm_loss(dit, batch, tokens, prefix)
         l_meta = decoder.loss(b_t, batch["rec"])
-        loss = tr.w_fm * l_fm + tr.w_rank * l_rank + tr.w_meta * l_meta
+        loss = tr.w_fm * l_fm + tr.w_meta * l_meta
         opt.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(

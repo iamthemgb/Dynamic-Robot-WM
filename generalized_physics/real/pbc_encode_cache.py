@@ -1,0 +1,193 @@
+"""Build a latent cache from pbc_state_groups (v3). Two passes, mirroring
+``encode_cache.py`` so ``cache_io.load_cache`` consumes the result untouched.
+
+  Pass A (CPU, one task)   -- index all siblings, derive records, fit the
+                              normalizer on the train split, read planned
+                              joint trajectories, and write index.parquet /
+                              records.jsonl / norm_stats.json /
+                              actions.f32.npy / manifest.json.
+  Pass B (GPU, array task) -- decode main.mp4 -> VAE.encode -> fp16 into this
+                              shard's slice of a preallocated memmap.
+
+Differences from the f1_10h builder, all deliberate:
+  * no eligibility override -- the dataset is gated upstream by
+    ``validate_group_dataset.py`` (hard gates exit 1);
+  * no stratified sampling -- P1 is already the intended 4,000 episodes and
+    splits are group-atomic by construction;
+  * 73 frames -> Tz = 19 (episodes render 76; the VAE drops a ragged tail).
+
+  python -m generalized_physics.real.pbc_encode_cache index \
+         --dataset-root .../pbc_state_groups_p1
+  python -m generalized_physics.real.pbc_encode_cache encode --vae wan21 \
+         --shard-id $SLURM_ARRAY_TASK_ID --n-shards 2
+"""
+
+import argparse
+import json
+import time
+from pathlib import Path
+
+import numpy as np
+
+from ..models.metadata_records import MetadataRegistry
+from . import pbc_episode as PE
+from . import pbc_records as PR
+from .f1_records import fit_normalizer
+from .paths import ARMS, OUT_ROOT
+
+LATENT_SHAPE = {"wan21": (16, 19, 60, 104), "wan22": (48, 19, 30, 52)}
+
+
+# -------------------------------------------------------------- pass A ----
+
+def run_index(args):
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+
+    idx = PE.build_index(args.dataset_root)
+    groups = idx["group_id"].nunique()
+    print(f"index: {len(idx)} episodes in {groups} groups | splits "
+          f"{idx['split'].value_counts().to_dict()}", flush=True)
+
+    registry = MetadataRegistry()
+    records, actions, impacts = [], [], []
+    for i, ref in enumerate(PE.refs_from_index(idx)):
+        meta = ref.metadata()
+        recs = PR.build_records(meta, ref.branch)
+        registry.validate(recs)
+        records.append(recs)
+        actions.append(PE.read_actions(meta))
+        impacts.append(PE.impact_frame(meta))
+        if (i + 1) % 250 == 0:
+            print(f"  records {i+1}/{len(idx)}  ({time.time()-t0:.0f}s)",
+                  flush=True)
+
+    idx = idx.reset_index(drop=True)
+    idx["impact_frame"] = [(-1 if v is None else v) for v in impacts]
+    idx["prompt_id"] = _prompt_ids(idx)
+
+    train = [rs for rs, s in zip(records, idx["split"]) if s == "train"]
+    norm, dropped = fit_normalizer(registry, train or records)
+    unseen = ({r.key for rs in records for r in rs} - set(norm.stats)
+              - set(dropped))
+    if unseen:
+        raise RuntimeError(f"keys present but not fitted on train: {unseen}")
+    norm.save(out / "norm_stats.json")
+    print(f"normalizer: {len(norm.stats)} keys, dropped constant {dropped}",
+          flush=True)
+
+    A = np.stack(actions).astype(np.float32)          # [N, 72, 9]
+    tr = idx["split"].values == "train"
+    mean = A[tr].reshape(-1, A.shape[-1]).mean(0)
+    std = A[tr].reshape(-1, A.shape[-1]).std(0) + 1e-6
+    np.save(out / "actions.f32.npy", ((A - mean) / std).astype(np.float32))
+
+    with open(out / "records.jsonl", "w") as f:
+        for rs in records:
+            f.write(json.dumps([{"key": r.key, "scope": r.scope,
+                                 "unit": r.unit, "value": r.value}
+                                for r in rs]) + "\n")
+    idx.to_parquet(out / "index.parquet")
+
+    manifest = {
+        "dataset": "pbc_state_groups_v3",
+        "n_episodes": int(len(idx)), "n_groups": int(groups),
+        "n_frames": PE.N_FRAMES, "n_control": PE.N_CONTROL,
+        "temporal_stride": 4, "fps": PE.FPS,
+        "dataset_root": str(args.dataset_root),
+        "action_mean": mean.tolist(), "action_std": std.tolist(),
+        "keys_dropped_constant": dropped,
+        "registry_version": 3,
+        "conditioning": "state_context bundle (v3); physics constant "
+                        "dataset-wide; outcomes excluded from records",
+    }
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    print(f"pass A done in {time.time()-t0:.0f}s -> {out}", flush=True)
+
+
+def _prompt_ids(idx):
+    from .prompts import bucket_key
+    keys = [bucket_key(r) for r in idx.itertuples()]
+    order = {k: i for i, k in enumerate(sorted(set(keys)))}
+    return [order[k] for k in keys]
+
+
+# -------------------------------------------------------------- pass B ----
+
+def run_encode(args):
+    import pandas as pd
+    import torch
+
+    from . import wan_loader as W
+
+    out = Path(args.out)
+    idx = pd.read_parquet(out / "index.parquet")
+    n = len(idx)
+    shape = (n,) + LATENT_SHAPE[args.vae]
+    path = out / "latents.f16.npy"
+
+    if args.shard_id == 0 and not path.exists():
+        np.lib.format.open_memmap(path, mode="w+", dtype=np.float16,
+                                  shape=shape)
+        print(f"allocated {path} {shape} "
+              f"({np.prod(shape)*2/1e9:.1f} GB)", flush=True)
+    for _ in range(600):
+        if path.exists():
+            break
+        time.sleep(1)
+    z = np.lib.format.open_memmap(path, mode="r+")
+    assert z.shape == shape, (z.shape, shape)
+
+    arm = next(a for a in ARMS.values() if a.vae_kind == args.vae)
+    vae = W.load_wan_vae(args.vae, arm.vae_path, device="cuda")
+    mine = np.arange(n)[args.shard_id::args.n_shards]
+    print(f"shard {args.shard_id}/{args.n_shards}: {len(mine)} episodes",
+          flush=True)
+
+    t0 = time.time()
+    for c, i in enumerate(mine):
+        r = idx.iloc[int(i)]
+        x = PE.read_frames(Path(r.root) / "main.mp4", PE.N_FRAMES)
+        with torch.no_grad():
+            lat = vae.encode([x.cuda()])[0]
+        assert tuple(lat.shape) == LATENT_SHAPE[args.vae], lat.shape
+        z[int(i)] = lat.to(torch.float16).cpu().numpy()
+        if (c + 1) % 100 == 0:
+            rate = (c + 1) / (time.time() - t0)
+            print(f"  {c+1}/{len(mine)}  {rate:.2f} ep/s  "
+                  f"eta {(len(mine)-c-1)/rate/60:.1f} min", flush=True)
+    z.flush()
+
+    done = out / "qc" / f"shard_{args.shard_id:02d}.done"
+    done.parent.mkdir(parents=True, exist_ok=True)
+    done.write_text(json.dumps({
+        "shard": args.shard_id, "n": len(mine),
+        "seconds": round(time.time() - t0, 1),
+        "vae_checkpoint_hash": W.sha256_head(arm.vae_path),
+        "latent_shape": list(LATENT_SHAPE[args.vae])}))
+    print(f"shard {args.shard_id} done in {time.time()-t0:.0f}s", flush=True)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    a = sub.add_parser("index")
+    a.add_argument("--dataset-root", required=True)
+    a.add_argument("--out", default=str(OUT_ROOT / "cache" / "pbc_wan21_vae"))
+    a.set_defaults(fn=run_index)
+
+    b = sub.add_parser("encode")
+    b.add_argument("--out", default=str(OUT_ROOT / "cache" / "pbc_wan21_vae"))
+    b.add_argument("--vae", choices=["wan21", "wan22"], default="wan21")
+    b.add_argument("--shard-id", type=int, default=0)
+    b.add_argument("--n-shards", type=int, default=1)
+    b.set_defaults(fn=run_encode)
+
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

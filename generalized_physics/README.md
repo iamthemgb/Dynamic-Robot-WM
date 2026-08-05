@@ -38,6 +38,19 @@ training/phase3_student_substitution.py    # 40/40/10/10 mixture, student FM at 
 training/phase4_sliding_adaptation.py      # change points, sliding-window recomputation
 ```
 
+## Real corpora (`real/`)
+
+The `training/` phases above run against the CPU mock. `real/` runs the same
+phase chain against real Wan 2.1 on three corpora, distinguished by filename
+prefix — `f1_10h` manipulation (un-prefixed modules, the first campaign),
+projectile-ball-catch (`pbc_*`), and passive ball-rolling (`roll_*`) — over a
+shared corpus-agnostic core (`backend`, `flow_match`, `phase{1,2,3}_real`,
+`cache_io`, `wan_loader`, …). Each campaign reuses its predecessor's readers
+and machinery rather than forking them. See `real/README.md` for the module
+map, layering, and `-m` entry points. `projectile/` is an older standalone
+real-projectile trainer kept for reference (its `physics_finetune` dependency
+is not present on this filesystem).
+
 ## Run
 
 ```bash

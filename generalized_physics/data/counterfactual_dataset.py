@@ -74,6 +74,8 @@ class GroupBatcher:
                  for k in i.tolist()]),
             "idx": i,
         }
+        if "roi" in c:
+            b["roi"] = c["roi"][i]
         return b
 
     def episode_batch(self, batch_size):

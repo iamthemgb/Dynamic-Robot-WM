@@ -10,14 +10,21 @@ frozen eval fixtures, flow convention):
                 -> shared projector (8 x 256 fixed tokens) -> FOUR quarter-
                 depth zero-gated adapters + rank-16 zero-init LoRA on q/v.
 
-Losses are the generalized plan's Phase-1 objective (eq. 16-19):
-    L_T = w_fm * L_FM(correct)
-        + w_rank * max(0, m + L_FM(correct) - L_FM(wrong))   [shared (sigma, eps)]
-        + w_meta * L_meta                                     [query decoder]
-with the 10% learned-null / 10% code-noise corruption mixture. The paired
-eval reports the plan's correct / wrong(shuffled donor) / null losses under
-frozen shared noise, with cluster bootstrap; the dataset has no
-counterfactual groups, so "wrong" is the frozen donor derangement — the
+Losses (deliberate departure from the plan's eq. 16-19):
+    L_T = w_fm * L_FM(conditioned) + w_meta * L_meta          [query decoder]
+with the 10% learned-null / 10% code-noise corruption mixture. The
+shuffled-code rank hinge is NOT optimized any more — training the
+correct-below-wrong margin was circular with the correct/wrong gap used to
+certify that the physics vector has been learned. Instead, every
+``rank_monitor_interval`` steps (default 10) the wrong-code loss is
+recomputed under ``torch.no_grad`` with the SAME (sigma, eps) and the
+signed ``rank_gap = L_FM(wrong) - L_FM(correct)`` is logged as a training
+diagnostic; the paired eval remains the checking point. A ``w_rank`` key in
+the config is ignored with a warning.
+
+The paired eval reports the plan's correct / wrong(shuffled donor) / null
+losses under frozen shared noise, with cluster bootstrap; the dataset has
+no counterfactual groups, so "wrong" is the frozen donor derangement — the
 same definition both prior arms used. At the first and final eval the paired
 losses are ALSO computed with LoRA switched off (adapter-only attribution).
 
@@ -161,7 +168,7 @@ def sample_condition(cfg):
 
 
 def train_forward(model, teacher, decoder, projector, schema, batch, cfg,
-                  device, phys_matrix, ema_fm):
+                  device, phys_matrix, monitor_rank=False):
     """One micro-batch. Returns (loss, parts dict, condition)."""
     latent = batch["latent"].to(device)
     B = latent.size(0)
@@ -188,26 +195,26 @@ def train_forward(model, teacher, decoder, projector, schema, batch, cfg,
     l_fm = flow_loss(pred, v_target)
     loss = cfg.get("w_fm", 1.0) * l_fm + cfg.get("w_meta", 0.2) * l_meta
 
-    l_rank = None
-    if cfg.get("w_rank", 0.5) > 0 and cond == "clean":
-        # wrong code = another training episode's records, SAME (sigma, eps)
+    rank_gap = None
+    if monitor_rank and cond == "clean":
+        # Diagnostic only, never optimized: wrong code = another training
+        # episode's records under the SAME (sigma, eps).  A positive gap
+        # means the physics vector is informative to the prediction.
         j = int(torch.randint(len(phys_matrix), (1,)))
         wrong = phys_matrix[j][None].expand(B, -1)
         if torch.allclose(wrong, batch["phys"]):
             j = (j + 1) % len(phys_matrix)
             wrong = phys_matrix[j][None].expand(B, -1)
-        b_w = teacher.forward_batch(schema.batch(wrong, device=device))
-        with torch.autocast("cuda", torch.bfloat16):
-            pred_w = model(x=list(x_t), t=t, context=context,
-                           seq_len=seq_len_of(latent),
-                           physics_ctx=projector(b_w))
-        l_fm_w = flow_loss(pred_w, v_target)
-        margin = cfg.get("rank_margin_frac", 0.05) * (ema_fm or float(l_fm))
-        l_rank = torch.relu(margin + l_fm - l_fm_w)
-        loss = loss + cfg.get("w_rank", 0.5) * l_rank
+        with torch.no_grad():
+            b_w = teacher.forward_batch(schema.batch(wrong, device=device))
+            with torch.autocast("cuda", torch.bfloat16):
+                pred_w = model(x=list(x_t), t=t, context=context,
+                               seq_len=seq_len_of(latent),
+                               physics_ctx=projector(b_w))
+            l_fm_w = flow_loss(pred_w, v_target)
+        rank_gap = float(l_fm_w) - float(l_fm)
 
-    parts = {"fm": float(l_fm), "meta": float(l_meta),
-             "rank": None if l_rank is None else float(l_rank)}
+    parts = {"fm": float(l_fm), "meta": float(l_meta), "rank_gap": rank_gap}
     return loss, parts, cond
 
 
@@ -377,11 +384,16 @@ def main():
         np.random.set_state(state["rng"]["numpy"])
         print(f"resumed from {ck} at step {step}", flush=True)
 
+    if cfg.get("w_rank"):
+        print("NOTE: w_rank is set in the config but the rank hinge is "
+              "monitor-only now; it is NOT optimized (see module docstring).",
+              flush=True)
+
     csv_path = out_dir / "train_log.csv"
     if not csv_path.exists():
         with open(csv_path, "w", newline="") as f:
             csv.writer(f).writerow(
-                ["step", "loss", "fm", "ema_fm", "rank", "meta", "cond",
+                ["step", "loss", "fm", "ema_fm", "rank_gap", "meta", "cond",
                  "gate_mean", "gate_max", "lora_b_norm", "lr", "sec"])
 
     perm = EpochPermutation(len(train_ds), cfg.get("seed", 0))
@@ -395,11 +407,13 @@ def main():
                  fixtures, cfg, device, out_dir,
                  stride=cfg.get("subset_stride", 3), with_lora_off=True)
 
+    monitor_interval = cfg.get("rank_monitor_interval", 10)
     while step < cfg["max_steps"]:
         t0 = time.time()
         opt.zero_grad(set_to_none=True)
-        parts_acc, conds = {"fm": 0.0, "meta": 0.0, "rank": 0.0}, []
-        n_rank = 0
+        parts_acc, conds = {"fm": 0.0, "meta": 0.0}, []
+        gap_vals = []
+        monitor_step = monitor_interval and (step + 1) % monitor_interval == 0
         for micro in range(accum):
             idx = [perm.index_at((step * accum + micro) * bs + i)
                    for i in range(bs)]
@@ -409,14 +423,14 @@ def main():
                      "phys": torch.stack([it["phys"] for it in items])}
             loss, parts, cond = train_forward(
                 model, teacher, decoder, projector, schema, batch, cfg,
-                device, phys_matrix, ema_fm)
+                device, phys_matrix,
+                monitor_rank=monitor_step and not gap_vals)
             (loss / accum).backward()
             conds.append(cond)
             parts_acc["fm"] += parts["fm"] / accum
             parts_acc["meta"] += parts["meta"] / accum
-            if parts["rank"] is not None:
-                parts_acc["rank"] += parts["rank"]
-                n_rank += 1
+            if parts["rank_gap"] is not None:
+                gap_vals.append(parts["rank_gap"])
         torch.nn.utils.clip_grad_norm_(trainable, cfg.get("grad_clip", 1.0))
         opt.step(), sched.step()
         step += 1
@@ -427,18 +441,20 @@ def main():
         b_norm = float(torch.stack(
             [p.detach().norm() for p in model.lora_parameters()[1::2]]
         ).mean())
+        rank_gap = round(sum(gap_vals) / len(gap_vals), 5) if gap_vals else ""
         with open(csv_path, "a", newline="") as f:
             csv.writer(f).writerow(
                 [step, round(float(parts_acc["fm"] + parts_acc["meta"]), 5),
                  round(parts_acc["fm"], 5), round(ema_fm, 5),
-                 round(parts_acc["rank"] / max(n_rank, 1), 5),
+                 rank_gap,
                  round(parts_acc["meta"], 5), "|".join(conds),
                  f"{g_mean:.5f}", f"{g_max:.5f}", f"{b_norm:.5f}",
                  sched.get_last_lr()[1], round(time.time() - t0, 2)])
         if step % cfg.get("log_interval", 10) == 0:
+            gap_text = f"{rank_gap}" if gap_vals else "-"
             print(f"step {step} fm {parts_acc['fm']:.4f} ema {ema_fm:.4f} "
                   f"meta {parts_acc['meta']:.4f} "
-                  f"rank {parts_acc['rank'] / max(n_rank, 1):.4f} "
+                  f"gap {gap_text} "
                   f"gates {g_mean:.4f}/{g_max:.4f} loraB {b_norm:.4f} "
                   f"({time.time() - t0:.1f}s)", flush=True)
 

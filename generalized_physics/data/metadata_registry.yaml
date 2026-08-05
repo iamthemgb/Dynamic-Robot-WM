@@ -2,7 +2,7 @@
 # Property keys, canonical semantic scopes, and unit descriptors form closed
 # vocabularies; raw simulator entity IDs (body_17, geom_3, ...) must never
 # appear here or in episode records.
-version: 1
+version: 2
 
 scopes:
   - global
@@ -25,6 +25,7 @@ units:
   - m
   - m_per_s
   - s
+  - newton_second        # v2: contact impulse (f1_10h)
 
 properties:
   gravity_z:
@@ -117,3 +118,76 @@ properties:
     transform: identity
     unit: s
     allowed_scopes: [robot]
+
+  # -- v3: projectile-catch state-groups dataset (pbc_state_groups) -------
+  # Conditioning = the sibling's initial-condition bundle: the 14 projectile
+  # keys above (camera-frame state, intended catch target, planned close
+  # time) plus these three. All are action-PLAN quantities fixed before the
+  # rollout; realized outcomes never enter records.
+  release_time_s:
+    transform: identity
+    unit: s
+    allowed_scopes: [global]
+  controller_hold_home:          # wrong_action branch: arm stays at home
+    transform: identity
+    unit: dimensionless
+    allowed_scopes: [robot]
+  grasp_capture_enabled:         # success branch: grasp-capture weld active
+    transform: identity
+    unit: dimensionless
+    allowed_scopes: [robot]
+
+  # -- v2: f1_10h falling-catch corpus (mzl7/f1_10h) ----------------------
+  # The 14 keys above are reused verbatim. These seven cover what actually
+  # VARIES in f1_10h: the intrinsic material constants are near-degenerate
+  # there (gravity identical across all episodes, object mass spans 6% and is
+  # constant for half of them, radius spans 2%), so the identifiable physics
+  # is the scene initial condition, the embodiment, and the contact outcome.
+  # Values are raw SI here -- MetadataNormalizer whitens them from train-split
+  # statistics -- so transforms are real rather than identity.
+  key_event_time_s:
+    transform: identity
+    unit: s
+    allowed_scopes: [global]
+  intercept_offset_m:          # |ballistic intercept - grasp centre| in xy;
+    transform: identity        # the single most catch-predictive scalar
+    unit: m
+    allowed_scopes: [global]
+  tool_is_parallel_pad:        # embodiment indicator (robotiq vs franka hand)
+    transform: identity
+    unit: dimensionless
+    allowed_scopes: [robot]
+  impact_speed:
+    transform: log
+    unit: m_per_s
+    allowed_scopes: [primary_object--secondary_object]
+  impact_normal_impulse:
+    transform: log
+    unit: newton_second
+    allowed_scopes: [primary_object--secondary_object]
+  max_penetration_depth:
+    transform: identity
+    unit: m
+    allowed_scopes: [primary_object--secondary_object]
+  contact_duration:
+    transform: identity
+    unit: s
+    allowed_scopes: [primary_object--secondary_object]
+
+  # -- rbi: rolling-ball interception (zl664/rolling_ball_velocity_4k_v1) --
+  # Robot-base-frame initial ball velocity, the only per-episode variation
+  # the phase-1 conditioning question asks about (the 2x2 action plans are
+  # deliberately NOT records: within every velocity pair the plan is
+  # identical, and the action pathway trains in a separate stage).
+  # NOTE: appending keys grows RecordEmbedder's key table (n_keys), so
+  # phase-1 checkpoints written BEFORE this block will not strict-load for
+  # future re-runs; append-only ordering keeps old key ids stable, so the
+  # remedy would be a 2-row zero-pad of embed.key.weight.
+  v0_robot_x:
+    transform: identity
+    unit: m_per_s
+    allowed_scopes: [primary_object]
+  v0_robot_y:
+    transform: identity
+    unit: m_per_s
+    allowed_scopes: [primary_object]

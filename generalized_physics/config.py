@@ -101,12 +101,26 @@ class TrainConfig:
     seed: int = 0
     # phase-1 loss weights (normalized starting values from the plan)
     w_fm: float = 1.0
+    # DEPRECATED: the shuffled-code rank hinge is monitor-only now (it was
+    # circular to optimize the same correct/wrong gap used as the phase
+    # gate).  w_rank and rank_margin are ignored by every trainer; the gap
+    # is logged as a no-grad ``rank_gap`` diagnostic instead.
     w_rank: float = 0.5
     w_meta: float = 0.2
     rank_margin: float = 0.05
     p_null: float = 0.10          # learned-null-code batches
     p_noise: float = 0.10         # small-code-noise batches
     noise_scale: float = 0.1
+    # ROI-weighted flow loss (real backend only): cells inside the cache's
+    # roi mask get weight 1 + roi_lambda (mean-normalized per sample).
+    # 0.0 = exact unweighted path, and the only mode for caches without roi.
+    roi_lambda: float = 0.0
+    # High-noise oversampling (real backend only): with prob sigma_high_frac
+    # a TRAINING step draws sigma uniformly from sigma_high_range instead of
+    # the shifted-uniform schedule. 0.0 = exact current behavior; paired
+    # evals (explicit generator) always use the standard schedule.
+    sigma_high_frac: float = 0.0
+    sigma_high_range: tuple = (0.9, 1.0)
     # phase-3 conditioning mixture
     mix_teacher: float = 0.40
     mix_student: float = 0.40

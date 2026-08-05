@@ -18,11 +18,14 @@ lora_alpha: 16.0
 lora_dropout: 0.05
 lora_targets: [q, v]     # self- AND cross-attention projections, all blocks
 
-# plan Phase-1 losses (eq. 19): L_FM + 0.5 L_rank + 0.2 L_meta
+# Phase-1 losses: L_FM + 0.2 L_meta.  The plan's eq.-19 rank hinge is NOT
+# optimized (circular with the paired-eval gap used as the learning gate);
+# it is monitored instead: every rank_monitor_interval steps the wrong-code
+# loss is recomputed under no_grad and rank_gap = L_FM(wrong)-L_FM(correct)
+# is logged.
 w_fm: 1.0
-w_rank: 0.5
 w_meta: 0.2
-rank_margin_frac: 0.05   # m = frac * EMA(L_FM), per the smoke-plan recipe
+rank_monitor_interval: 10
 p_null: 0.10             # learned null code batches
 p_noise: 0.10            # small belief-space code noise
 noise_scale: 0.1
