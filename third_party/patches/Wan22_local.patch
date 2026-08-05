@@ -1,0 +1,41 @@
+diff --git a/wan/__init__.py b/wan/__init__.py
+index c49c77e..69ca7f0 100644
+--- a/wan/__init__.py
++++ b/wan/__init__.py
+@@ -1,7 +1,17 @@
+ # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
+ from . import configs, distributed, modules
+-from .image2video import WanI2V
+-from .speech2video import WanS2V
+-from .text2video import WanT2V
+-from .textimage2video import WanTI2V
+-from .animate import WanAnimate
+\ No newline at end of file
++
++# PATCH: the end-to-end pipeline classes pull optional heavy deps that are not
++# installed here (speech2video -> decord, animate -> its own preprocess stack).
++# We only ever use wan.modules.{model,vae2_2,t5}, so make those imports
++# best-effort instead of fatal. Nothing below is used by this project.
++try:
++    from .image2video import WanI2V
++    from .speech2video import WanS2V
++    from .text2video import WanT2V
++    from .textimage2video import WanTI2V
++    from .animate import WanAnimate
++except ImportError as _e:  # pragma: no cover - optional pipeline deps
++    import warnings
++
++    warnings.warn(f"wan pipeline classes unavailable ({_e}); modules still usable")
+diff --git a/wan/modules/model.py b/wan/modules/model.py
+index 6982fa1..ad57b47 100644
+--- a/wan/modules/model.py
++++ b/wan/modules/model.py
+@@ -6,7 +6,7 @@ import torch.nn as nn
+ from diffusers.configuration_utils import ConfigMixin, register_to_config
+ from diffusers.models.modeling_utils import ModelMixin
+ 
+-from .attention import flash_attention
++from .attention import attention as flash_attention  # PATCH: no flash-attn on Blackwell/torch2.11; attention() falls back to SDPA
+ 
+ __all__ = ['WanModel']
+ 

@@ -1,0 +1,13 @@
+diff --git a/wan/modules/model.py b/wan/modules/model.py
+index a5425da..76ad6e4 100644
+--- a/wan/modules/model.py
++++ b/wan/modules/model.py
+@@ -7,7 +7,7 @@ import torch.nn as nn
+ from diffusers.configuration_utils import ConfigMixin, register_to_config
+ from diffusers.models.modeling_utils import ModelMixin
+ 
+-from .attention import flash_attention
++from .attention import attention as flash_attention  # PATCH: no flash-attn on Blackwell/torch2.11; attention() falls back to SDPA
+ 
+ __all__ = ['WanModel']
+ 
